@@ -29,7 +29,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -39,6 +38,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.State
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -48,16 +48,17 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.swaralab.domain.audio.VocalMetrics
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.ViewModel
@@ -67,6 +68,7 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
+import com.swaralab.domain.audio.VocalMetrics
 import com.swaralab.domain.layout.SessionLayout
 import com.swaralab.domain.model.GearRoute
 import com.swaralab.domain.model.LyricLine
@@ -90,6 +92,7 @@ import com.swaralab.domain.usecase.UpdateVocalPreset
 import com.swaralab.ui.ChoiceCard
 import com.swaralab.ui.SwaraColors
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -102,6 +105,8 @@ import java.io.RandomAccessFile
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import kotlin.math.PI
+import kotlin.math.abs
+import kotlin.math.roundToInt
 import kotlin.math.sin
 
 data class VoicePartUi(
@@ -291,7 +296,7 @@ class StudioViewModel(
                 }.getOrDefault(false)
             }
             if (ok) {
-                importBackingTrack(sessionId, relativePath, durationMs, "Tanpura Drone · C (Sa-Pa)")
+                importBackingTrack(sessionId, relativePath, durationMs, "Tanpura Drone · C (Sa)")
                 stageNote = "Sample Tanpura backing loaded. Tap Preview or hit Sing."
                 refresh()
             }
@@ -374,7 +379,7 @@ class StudioViewModel(
     }
 
     fun stopAudioOnExit() {
-        audio.stopPlayback()
+        audio.disarm()
     }
 
     private fun refresh() {
@@ -934,7 +939,7 @@ fun StudioRoute(
             }
         }
 
-        LiveVocalMonitorCard(
+        RecordingControlBar(
             audioStateFlow = viewModel.audio.state,
             stageNote = state.stageNote,
             onSingClick = { currentlyRecording ->
@@ -950,6 +955,10 @@ fun StudioRoute(
                     }
                 }
             },
+        )
+
+        LiveVocalMonitorCard(
+            audioStateFlow = viewModel.audio.state,
         )
 
         if (state.takes.isNotEmpty()) {
@@ -1054,27 +1063,118 @@ fun StudioRoute(
     }
 }
 
+/**
+ * Dedicated recording control bar. Only observes `isRecording` and 1-second timer ticks
+ * (`elapsedMs / 1000L`), so the Sing/Stop button never recomposes on fast audio meter frames.
+ */
 @Composable
-private fun LiveVocalMonitorCard(
+private fun RecordingControlBar(
     audioStateFlow: StateFlow<AudioEngineState>,
     stageNote: String?,
     onSingClick: (Boolean) -> Unit,
 ) {
-    val audioState by audioStateFlow.collectAsState()
-    val metrics = audioState.metrics
-    val isRecording = audioState.status == EngineStatus.RECORDING
-    val elapsedText = formatDuration(audioState.elapsedMs)
-    val modeLabel = when {
-        isRecording -> "LIVE MIC"
-        audioState.playingRelativePath != null -> "PLAYBACK"
-        else -> "READY"
+    val isRecording by remember(audioStateFlow) {
+        audioStateFlow.map { it.status == EngineStatus.RECORDING }.distinctUntilChanged()
+    }.collectAsState(initial = false)
+    val elapsedSeconds by remember(audioStateFlow) {
+        audioStateFlow.map { it.elapsedMs / 1000L }.distinctUntilChanged()
+    }.collectAsState(initial = 0L)
+
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(22.dp),
+        color = if (isRecording) SwaraColors.TealWash else SwaraColors.Card,
+        border = BorderStroke(1.dp, if (isRecording) SwaraColors.Teal else SwaraColors.Line),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 18.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            Surface(
+                onClick = { onSingClick(isRecording) },
+                modifier = Modifier
+                    .size(72.dp)
+                    .clip(CircleShape),
+                color = if (isRecording) SwaraColors.Clay else SwaraColors.Teal,
+                shape = CircleShape,
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Text(
+                        text = if (isRecording) "Stop" else "Sing",
+                        color = Color.White,
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+                    )
+                }
+            }
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = if (isRecording) {
+                        "Recording live · ${formatDuration(elapsedSeconds * 1000L)}"
+                    } else {
+                        "Stage microphone ready"
+                    },
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.titleMedium.copy(fontFamily = FontFamily.Monospace),
+                    color = if (isRecording) SwaraColors.Clay else SwaraColors.Ink,
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    text = stageNote
+                        ?: if (isRecording) {
+                            "Sing along with your lyrics. Tap Stop to save the take."
+                        } else {
+                            "Tap Sing to record your voice live."
+                        },
+                    minLines = 2,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = SwaraColors.Muted,
+                )
+            }
+        }
     }
-    val isActive = isRecording || modeLabel == "PLAYBACK"
+}
+
+/**
+ * Reads `audioState.value` inside the `Canvas` draw scope so high-frequency waveform/pitch/EQ
+ * updates only trigger GPU draw invalidation without recomposing or re-laying out text.
+ * Text readouts update at a calm 400 ms cadence.
+ */
+@Composable
+private fun LiveVocalMonitorCard(
+    audioStateFlow: StateFlow<AudioEngineState>,
+) {
+    val audioState = audioStateFlow.collectAsState()
+    var calmMetrics by remember { mutableStateOf(VocalMetrics()) }
+    var calmModeLabel by remember { mutableStateOf("READY") }
+    var calmActive by remember { mutableStateOf(false) }
+
+    LaunchedEffect(audioStateFlow) {
+        while (true) {
+            val current = audioStateFlow.value
+            val rec = current.status == EngineStatus.RECORDING
+            val play = current.playingRelativePath != null
+            calmActive = rec || play
+            calmModeLabel = when {
+                rec -> "LIVE MIC"
+                play -> "PLAYBACK"
+                else -> "READY"
+            }
+            calmMetrics = current.metrics
+            delay(380L)
+        }
+    }
+
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(22.dp),
         color = SwaraColors.Card,
-        border = BorderStroke(1.dp, if (isActive) SwaraColors.Teal else SwaraColors.Line),
+        border = BorderStroke(1.dp, if (calmActive) SwaraColors.Teal else SwaraColors.Line),
     ) {
         Column(
             modifier = Modifier
@@ -1089,20 +1189,20 @@ private fun LiveVocalMonitorCard(
             ) {
                 Column(Modifier.weight(1f).padding(end = 8.dp)) {
                     Text(
-                        text = if (isRecording) "Recording Live · $elapsedText" else "Live Pitch & Sound Graph",
+                        text = "Live Pitch & Sound Graph",
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         style = MaterialTheme.typography.titleLarge,
-                        color = if (isRecording) SwaraColors.Clay else SwaraColors.Ink,
+                        color = SwaraColors.Ink,
                     )
                     Text(
-                        text = if (metrics.pitchHz > 0f) {
+                        text = if (calmMetrics.pitchHz > 0f) {
                             val tuning = when {
-                                kotlin.math.abs(metrics.centsOffset) <= 10 -> "In tune"
-                                metrics.centsOffset < 0 -> "Flat (${metrics.centsOffset}c)"
-                                else -> "Sharp (+${metrics.centsOffset}c)"
+                                abs(calmMetrics.centsOffset) <= 12 -> "In tune"
+                                calmMetrics.centsOffset < 0 -> "Flat (${calmMetrics.centsOffset}c)"
+                                else -> "Sharp (+${calmMetrics.centsOffset}c)"
                             }
-                            "${metrics.pitchHz.toInt()} Hz · $tuning · ${metrics.rmsDb.toInt()} dB"
+                            "${calmMetrics.pitchHz.roundToInt()} Hz · $tuning · ${calmMetrics.rmsDb.roundToInt()} dB"
                         } else {
                             "Sing or play a take to see your live pitch"
                         },
@@ -1113,15 +1213,15 @@ private fun LiveVocalMonitorCard(
                     )
                 }
                 Surface(
-                    modifier = Modifier.width(108.dp),
+                    modifier = Modifier.width(112.dp),
                     shape = RoundedCornerShape(12.dp),
-                    color = if (isActive) SwaraColors.TealWash else SwaraColors.Paper,
+                    color = if (calmActive) SwaraColors.TealWash else SwaraColors.Paper,
                 ) {
                     Text(
-                        text = if (metrics.noteName != "—") {
-                            "${metrics.noteName} · ${metrics.swaraName}"
+                        text = if (calmMetrics.noteName != "—") {
+                            "${calmMetrics.noteName} · ${calmMetrics.swaraName}"
                         } else {
-                            modeLabel
+                            calmModeLabel
                         },
                         modifier = Modifier
                             .fillMaxWidth()
@@ -1129,7 +1229,7 @@ private fun LiveVocalMonitorCard(
                         maxLines = 1,
                         textAlign = TextAlign.Center,
                         style = MaterialTheme.typography.titleMedium,
-                        color = if (isActive) SwaraColors.Teal else SwaraColors.Muted,
+                        color = if (calmActive) SwaraColors.Teal else SwaraColors.Muted,
                     )
                 }
             }
@@ -1142,117 +1242,27 @@ private fun LiveVocalMonitorCard(
                 color = SwaraColors.Paper,
                 border = BorderStroke(1.dp, SwaraColors.Line),
             ) {
-                Canvas(modifier = Modifier.fillMaxSize().padding(horizontal = 10.dp, vertical = 10.dp)) {
-                    val width = size.width
-                    val height = size.height
-                    listOf(0.22f, 0.5f, 0.78f).forEach { frac ->
-                        val y = height * frac
-                        drawLine(
-                            color = SwaraColors.Line,
-                            start = Offset(0f, y),
-                            end = Offset(width, y),
-                            strokeWidth = 1.dp.toPx(),
-                        )
-                    }
-
-                    val wave = metrics.waveformHistory
-                    val pitches = metrics.pitchHistory
-                    val slots = 42
-                    val stepX = if (slots > 1) width / (slots - 1).toFloat() else width
-
-                    wave.forEachIndexed { idx, amp ->
-                        val x = idx * stepX
-                        val barHalf = (amp.coerceIn(0.03f, 1f) * height * 0.44f)
-                        drawLine(
-                            color = SwaraColors.Teal.copy(alpha = 0.35f),
-                            start = Offset(x, (height / 2f) - barHalf),
-                            end = Offset(x, (height / 2f) + barHalf),
-                            strokeWidth = 3.dp.toPx(),
-                            cap = StrokeCap.Round,
-                        )
-                    }
-
-                    val path = Path()
-                    var penDown = false
-                    pitches.forEachIndexed { idx, normPitch ->
-                        val x = idx * stepX
-                        if (normPitch > 0.01f) {
-                            val y = height * (1f - normPitch.coerceIn(0.05f, 0.95f))
-                            if (!penDown) {
-                                path.moveTo(x, y)
-                                penDown = true
-                            } else {
-                                path.lineTo(x, y)
-                            }
-                            drawCircle(
-                                color = SwaraColors.Gold,
-                                radius = 2.8.dp.toPx(),
-                                center = Offset(x, y),
-                            )
-                        } else {
-                            penDown = false
-                        }
-                    }
-                    drawPath(
-                        path = path,
-                        color = SwaraColors.Gold,
-                        style = Stroke(width = 2.5.dp.toPx(), cap = StrokeCap.Round),
-                    )
-                }
+                PitchAndWaveformCanvas(audioState = audioState)
             }
 
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 EqBandRow(
                     label = "Bass (Warmth)",
-                    level = metrics.bassLevel,
+                    levelProvider = { audioState.value.metrics.bassLevel },
+                    calmPercent = (calmMetrics.bassLevel * 100).roundToInt().coerceIn(0, 100),
                     color = SwaraColors.Teal,
                 )
                 EqBandRow(
                     label = "Vocal Mid (Clarity)",
-                    level = metrics.midLevel,
+                    levelProvider = { audioState.value.metrics.midLevel },
+                    calmPercent = (calmMetrics.midLevel * 100).roundToInt().coerceIn(0, 100),
                     color = SwaraColors.Gold,
                 )
                 EqBandRow(
                     label = "Treble (Air & Presence)",
-                    level = metrics.trebleLevel,
+                    levelProvider = { audioState.value.metrics.trebleLevel },
+                    calmPercent = (calmMetrics.trebleLevel * 100).roundToInt().coerceIn(0, 100),
                     color = SwaraColors.Ink,
-                )
-            }
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(14.dp),
-            ) {
-                Surface(
-                    onClick = { onSingClick(isRecording) },
-                    modifier = Modifier
-                        .size(72.dp)
-                        .clip(CircleShape),
-                    color = if (isRecording) SwaraColors.Clay else SwaraColors.Teal,
-                    shape = CircleShape,
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Text(
-                            text = if (isRecording) "Stop" else "Sing",
-                            color = Color.White,
-                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
-                        )
-                    }
-                }
-                Text(
-                    text = stageNote
-                        ?: if (isRecording) {
-                            "Sing along with your lyrics above. Tap Stop to save the take."
-                        } else {
-                            "Tap Sing to start recording your voice live."
-                        },
-                    modifier = Modifier.weight(1f),
-                    minLines = 2,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = SwaraColors.Muted,
                 )
             }
         }
@@ -1260,9 +1270,75 @@ private fun LiveVocalMonitorCard(
 }
 
 @Composable
+private fun PitchAndWaveformCanvas(
+    audioState: State<AudioEngineState>,
+) {
+    val path = remember { Path() }
+    Canvas(modifier = Modifier.fillMaxSize().padding(horizontal = 10.dp, vertical = 10.dp)) {
+        val metrics = audioState.value.metrics
+        val width = size.width
+        val height = size.height
+        listOf(0.22f, 0.5f, 0.78f).forEach { frac ->
+            val y = height * frac
+            drawLine(
+                color = SwaraColors.Line,
+                start = Offset(0f, y),
+                end = Offset(width, y),
+                strokeWidth = 1.dp.toPx(),
+            )
+        }
+
+        val wave = metrics.waveformHistory
+        val pitches = metrics.pitchHistory
+        val slots = 42
+        val stepX = if (slots > 1) width / (slots - 1).toFloat() else width
+
+        wave.forEachIndexed { idx, amp ->
+            val x = idx * stepX
+            val barHalf = (amp.coerceIn(0.03f, 1f) * height * 0.44f)
+            drawLine(
+                color = SwaraColors.Teal.copy(alpha = 0.35f),
+                start = Offset(x, (height / 2f) - barHalf),
+                end = Offset(x, (height / 2f) + barHalf),
+                strokeWidth = 3.dp.toPx(),
+                cap = StrokeCap.Round,
+            )
+        }
+
+        path.reset()
+        var penDown = false
+        pitches.forEachIndexed { idx, normPitch ->
+            val x = idx * stepX
+            if (normPitch > 0.01f) {
+                val y = height * (1f - normPitch.coerceIn(0.05f, 0.95f))
+                if (!penDown) {
+                    path.moveTo(x, y)
+                    penDown = true
+                } else {
+                    path.lineTo(x, y)
+                }
+                drawCircle(
+                    color = SwaraColors.Gold,
+                    radius = 2.8.dp.toPx(),
+                    center = Offset(x, y),
+                )
+            } else {
+                penDown = false
+            }
+        }
+        drawPath(
+            path = path,
+            color = SwaraColors.Gold,
+            style = Stroke(width = 2.5.dp.toPx(), cap = StrokeCap.Round),
+        )
+    }
+}
+
+@Composable
 private fun EqBandRow(
     label: String,
-    level: Float,
+    levelProvider: () -> Float,
+    calmPercent: Int,
     color: Color,
 ) {
     Row(
@@ -1285,18 +1361,18 @@ private fun EqBandRow(
                 .clip(RoundedCornerShape(4.dp)),
         ) {
             drawRect(color = SwaraColors.Line)
-            val fillWidth = size.width * level.coerceIn(0.03f, 1f)
+            val fillWidth = size.width * levelProvider().coerceIn(0.03f, 1f)
             drawRect(
                 color = color,
-                size = androidx.compose.ui.geometry.Size(fillWidth, size.height),
+                size = Size(fillWidth, size.height),
             )
         }
         Text(
-            text = "${(level * 100).toInt().coerceIn(0, 100)}%",
+            text = "$calmPercent%",
             modifier = Modifier.width(46.dp),
             maxLines = 1,
             textAlign = TextAlign.End,
-            style = MaterialTheme.typography.bodyMedium,
+            style = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
             color = SwaraColors.Ink,
         )
     }
@@ -1330,7 +1406,7 @@ private fun writeSampleDroneWav(file: File, sampleRate: Int, durationSeconds: In
             putInt(totalAudioBytes.toInt())
         }
         raf.write(header.array())
-        // Warm C3 (130.81 Hz) + G3 (196.00 Hz) + C4 (261.63 Hz) tanpura drone
+        // Pure harmonic C3 (130.81 Hz) + C4 (261.63 Hz) tanpura drone so pitch tracking is rock-steady
         val chunk = ByteBuffer.allocate(4096).order(ByteOrder.LITTLE_ENDIAN)
         for (i in 0 until totalSamples) {
             if (chunk.remaining() < 2) {
@@ -1338,11 +1414,10 @@ private fun writeSampleDroneWav(file: File, sampleRate: Int, durationSeconds: In
                 chunk.clear()
             }
             val t = i.toDouble() / sampleRate.toDouble()
-            val swell = 0.75 + 0.25 * sin(2.0 * PI * 0.25 * t)
+            val swell = 0.82 + 0.18 * sin(2.0 * PI * 0.20 * t)
             val wave = (
-                0.50 * sin(2.0 * PI * 130.81 * t) +
-                    0.32 * sin(2.0 * PI * 196.00 * t) +
-                    0.18 * sin(2.0 * PI * 261.63 * t)
+                0.72 * sin(2.0 * PI * 130.81 * t) +
+                    0.28 * sin(2.0 * PI * 261.63 * t)
                 ) * swell
             val pcm = (wave * 9500.0).toInt().coerceIn(-32767, 32767).toShort()
             chunk.putShort(pcm)

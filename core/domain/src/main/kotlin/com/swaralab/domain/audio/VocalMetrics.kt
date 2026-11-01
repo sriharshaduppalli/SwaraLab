@@ -15,6 +15,8 @@ data class VocalMetrics(
     val midLevel: Float = 0f,
     val trebleLevel: Float = 0f,
     val silentFrames: Int = 0,
+    val candidateNote: String = "—",
+    val candidateCount: Int = 0,
     val waveformHistory: List<Float> = emptyList(),
     val pitchHistory: List<Float> = emptyList(),
 )
@@ -25,7 +27,7 @@ object VocalSignalAnalyzer {
     private const val HISTORY_SIZE = 42
     private const val MIN_VOCAL_HZ = 75f
     private const val MAX_VOCAL_HZ = 1000f
-    private const val NOTE_HOLD_FRAMES = 6
+    private const val NOTE_HOLD_FRAMES = 8
 
     fun analyzeFrame(
         samples: ShortArray,
@@ -67,8 +69,10 @@ object VocalSignalAnalyzer {
 
         val rms = sqrt(sumSquares / length).toFloat()
         val rawRmsDb = if (rms > 1e-5f) (20.0 * ln(rms.toDouble()) / ln(10.0)).toFloat().coerceIn(-60f, 0f) else -60f
-        val smoothedRmsDb = if (previous.rmsDb <= -59f) rawRmsDb else (previous.rmsDb * 0.65f + rawRmsDb * 0.35f)
-        val visualAmp = sqrt((peak / 32768f).coerceIn(0f, 1f).toDouble()).toFloat().coerceIn(0f, 1f)
+        val smoothedRmsDb = if (previous.rmsDb <= -59f) rawRmsDb else (previous.rmsDb * 0.75f + rawRmsDb * 0.25f)
+        val rawVisualAmp = sqrt((peak / 32768f).coerceIn(0f, 1f).toDouble()).toFloat().coerceIn(0f, 1f)
+        val prevAmp = previous.waveformHistory.lastOrNull() ?: rawVisualAmp
+        val visualAmp = (prevAmp * 0.45f + rawVisualAmp * 0.55f).coerceIn(0f, 1f)
 
         val bassRms = sqrt(bassEnergy / length).toFloat()
         val midRms = sqrt(midEnergy / length).toFloat()
@@ -79,11 +83,11 @@ object VocalSignalAnalyzer {
         val rawTreble = sqrt((trebleRms * 28f).coerceIn(0f, 1f).toDouble()).toFloat()
 
         val hasPreviousHistory = previous.waveformHistory.isNotEmpty()
-        val bassLevel = if (hasPreviousHistory) (previous.bassLevel * 0.68f + rawBass * 0.32f) else rawBass
-        val midLevel = if (hasPreviousHistory) (previous.midLevel * 0.68f + rawMid * 0.32f) else rawMid
-        val trebleLevel = if (hasPreviousHistory) (previous.trebleLevel * 0.68f + rawTreble * 0.32f) else rawTreble
+        val bassLevel = if (hasPreviousHistory) (previous.bassLevel * 0.78f + rawBass * 0.22f) else rawBass
+        val midLevel = if (hasPreviousHistory) (previous.midLevel * 0.78f + rawMid * 0.22f) else rawMid
+        val trebleLevel = if (hasPreviousHistory) (previous.trebleLevel * 0.78f + rawTreble * 0.22f) else rawTreble
 
-        val rawDetectedHz = if (rms >= 0.0022f) {
+        val rawDetectedHz = if (rms >= 0.0025f) {
             detectPitchHz(normalized, length, sampleRate)
         } else {
             0f
@@ -95,37 +99,69 @@ object VocalSignalAnalyzer {
         val swara: String
         val cents: Int
         val nextSilentFrames: Int
+        val nextCandidateNote: String
+        val nextCandidateCount: Int
 
         if (isValidPitch) {
-            effectiveHz = if (previous.pitchHz > 0f && abs(rawDetectedHz - previous.pitchHz) < 45f) {
-                previous.pitchHz * 0.55f + rawDetectedHz * 0.45f
+            effectiveHz = if (previous.pitchHz > 0f && abs(rawDetectedHz - previous.pitchHz) < 60f) {
+                previous.pitchHz * 0.65f + rawDetectedHz * 0.35f
             } else {
                 rawDetectedHz
             }
             val mapped = pitchToNoteAndSwara(effectiveHz)
-            note = mapped.first
-            swara = mapped.second
-            cents = mapped.third
+            val rawNote = mapped.first
+            val rawSwara = mapped.second
+            val rawCents = mapped.third
+
+            if (previous.noteName == "—" || rawNote == previous.noteName) {
+                note = rawNote
+                swara = rawSwara
+                cents = if (previous.noteName == rawNote) {
+                    ((previous.centsOffset * 2 + rawCents) / 3)
+                } else {
+                    rawCents
+                }
+                nextCandidateNote = rawNote
+                nextCandidateCount = 0
+            } else if (rawNote == previous.candidateNote && previous.candidateCount >= 1) {
+                // Require 2 consecutive frames on a new note before switching the label (hysteresis)
+                note = rawNote
+                swara = rawSwara
+                cents = rawCents
+                nextCandidateNote = rawNote
+                nextCandidateCount = 0
+            } else {
+                note = previous.noteName
+                swara = previous.swaraName
+                cents = previous.centsOffset
+                nextCandidateNote = rawNote
+                nextCandidateCount = if (rawNote == previous.candidateNote) previous.candidateCount + 1 else 1
+            }
             nextSilentFrames = 0
         } else if (previous.pitchHz > 0f && previous.silentFrames < NOTE_HOLD_FRAMES) {
-            // Hold the last detected note briefly across consonants/breaths so UI never flickers
             effectiveHz = previous.pitchHz
             note = previous.noteName
             swara = previous.swaraName
             cents = previous.centsOffset
             nextSilentFrames = previous.silentFrames + 1
+            nextCandidateNote = previous.candidateNote
+            nextCandidateCount = 0
         } else {
             effectiveHz = 0f
             note = "—"
             swara = "—"
             cents = 0
             nextSilentFrames = previous.silentFrames + 1
+            nextCandidateNote = "—"
+            nextCandidateCount = 0
         }
 
         val normalizedPitch = if (effectiveHz in MIN_VOCAL_HZ..MAX_VOCAL_HZ) {
             val minLog = ln(80.0)
             val maxLog = ln(880.0)
-            ((ln(effectiveHz.toDouble()) - minLog) / (maxLog - minLog)).toFloat().coerceIn(0.05f, 0.98f)
+            val rawNorm = ((ln(effectiveHz.toDouble()) - minLog) / (maxLog - minLog)).toFloat().coerceIn(0.05f, 0.98f)
+            val prevNorm = previous.pitchHistory.lastOrNull()?.takeIf { it > 0.01f }
+            if (prevNorm != null) (prevNorm * 0.5f + rawNorm * 0.5f) else rawNorm
         } else {
             0f
         }
@@ -143,6 +179,8 @@ object VocalSignalAnalyzer {
             midLevel = midLevel,
             trebleLevel = trebleLevel,
             silentFrames = nextSilentFrames,
+            candidateNote = nextCandidateNote,
+            candidateCount = nextCandidateCount,
             waveformHistory = nextWave,
             pitchHistory = nextPitch,
         )
@@ -191,7 +229,7 @@ object VocalSignalAnalyzer {
             }
         }
 
-        if (bestLag <= 0 || bestCorr < 0.28f) return 0f
+        if (bestLag <= 0 || bestCorr < 0.35f) return 0f
         return effRate.toFloat() / bestLag.toFloat()
     }
 

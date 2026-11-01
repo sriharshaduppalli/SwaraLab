@@ -56,6 +56,8 @@ import com.swaralab.domain.usecase.UpdateVocalSyncOffset
 import com.swaralab.ui.ChoiceCard
 import com.swaralab.ui.SwaraColors
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -99,6 +101,7 @@ class PublishViewModel(
     val ui: StateFlow<PublishUi?> = uiState.asStateFlow()
     private var exportedRelativePath: String? = null
     private var status: String? = null
+    private var sliderSaveJob: Job? = null
 
     init {
         refresh()
@@ -116,14 +119,11 @@ class PublishViewModel(
 
     fun setTrackGain(trackId: String, gainDb: Float) {
         val current = uiState.value ?: return
-        val row = current.tracks.firstOrNull { it.id == trackId } ?: return
         val updatedTracks = current.tracks.map {
             if (it.id == trackId) it.copy(gainDb = gainDb) else it
         }
         uiState.value = current.copy(tracks = updatedTracks)
-        viewModelScope.launch {
-            updateTrackMix(sessionId, trackId, gainDb, row.mute)
-        }
+        scheduleSliderSave()
     }
 
     fun toggleTrackMute(trackId: String) {
@@ -134,17 +134,13 @@ class PublishViewModel(
             if (it.id == trackId) it.copy(mute = nextMute) else it
         }
         uiState.value = current.copy(tracks = updatedTracks)
-        viewModelScope.launch {
-            updateTrackMix(sessionId, trackId, row.gainDb, nextMute)
-        }
+        scheduleSliderSave()
     }
 
     fun setSyncOffset(offsetMs: Float) {
         val current = uiState.value ?: return
         uiState.value = current.copy(syncOffsetMs = offsetMs)
-        viewModelScope.launch {
-            updateVocalSyncOffset(sessionId, offsetMs.toDouble())
-        }
+        scheduleSliderSave()
     }
 
     fun updateChainSliders(
@@ -164,14 +160,31 @@ class PublishViewModel(
             backingDuckDb = backingDuckDb,
         )
         uiState.value = current.copy(chain = updatedChain)
-        viewModelScope.launch {
+        scheduleSliderSave()
+    }
+
+    private fun scheduleSliderSave() {
+        sliderSaveJob?.cancel()
+        sliderSaveJob = viewModelScope.launch {
+            delay(140L)
+            flushSlidersToDisk()
+        }
+    }
+
+    private suspend fun flushSlidersToDisk() {
+        val snap = uiState.value ?: return
+        for (row in snap.tracks) {
+            updateTrackMix(sessionId, row.id, row.gainDb, row.mute)
+        }
+        updateVocalSyncOffset(sessionId, snap.syncOffsetMs.toDouble())
+        if (snap.chain.preset == VocalPreset.CUSTOM) {
             updateVocalChain(
                 id = sessionId,
-                reverb = reverb,
-                delay = delay,
-                compression = compression,
-                denoise = denoise,
-                backingDuckDb = backingDuckDb,
+                reverb = snap.chain.reverb,
+                delay = snap.chain.delay,
+                compression = snap.chain.compression,
+                denoise = snap.chain.denoise,
+                backingDuckDb = snap.chain.backingDuckDb,
             )
         }
     }
@@ -180,6 +193,8 @@ class PublishViewModel(
         viewModelScope.launch {
             val current = uiState.value ?: return@launch
             if (current.busy) return@launch
+            sliderSaveJob?.cancel()
+            flushSlidersToDisk()
             audio.stopPlayback()
             uiState.value = current.copy(busy = true, status = "Mixing backing music & vocal tracks...")
             val document = loadSession(sessionId) ?: return@launch
