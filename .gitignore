@@ -5,11 +5,25 @@
 build/
 **/build/
 local.properties
+keystore.properties
+keystore/
+*.jks
+*.keystore
 captures/
 .externalNativeBuild/
 .cxx/
 *.apk
 *.ap_
 *.aab
+/releases/
 *.hprof
 .kotlin/
+
+# Private to this machine. Do not publish.
+ARCHITECTURE.md
+PRIVACY.md
+version.properties
+release-bundle.ps1
+play-store/
+internal/
+.cursor/

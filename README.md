@@ -4,8 +4,6 @@ SwaraLab is an open-source Android studio for singers. Record a vocal, keep ever
 
 The app is Apache-2.0. It does not ship a catalog of commercial songs. Imported tracks stay in the session only after the singer confirms they can use them.
 
-This first build is the architecture: session folders, the command model, listening policy, and the Create, Library, Session, and Share screens. The microphone transport and the mix engine plug into ports that are already in place. See [ARCHITECTURE.md](ARCHITECTURE.md).
-
 ## Open
 
 Open this folder in Android Studio. The app module is `com.swaralab.app`, minimum Android 8.0.
