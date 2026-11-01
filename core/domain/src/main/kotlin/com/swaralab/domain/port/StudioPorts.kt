@@ -13,6 +13,7 @@ data class SessionSummary(
     val title: String,
     val kind: SessionKind,
     val updatedAtEpochMs: Long,
+    val takeCount: Int = 0,
 )
 
 interface SessionRepository {
@@ -29,6 +30,7 @@ enum class EngineStatus {
     IDLE,
     ARMED,
     BLOCKED,
+    COUNTING,
     RECORDING,
 }
 
@@ -42,6 +44,7 @@ data class AudioEngineState(
     val elapsedMs: Long = 0L,
     val playingRelativePath: String? = null,
     val metrics: VocalMetrics = VocalMetrics(),
+    val countInBeat: Int = 0,
 )
 
 data class ArmRequest(
@@ -49,6 +52,16 @@ data class ArmRequest(
     val output: GearRoute,
     val sampleRate: Int = 48_000,
     val backingRelativePath: String? = null,
+    val rootKeyName: String = "C",
+    val tempoBpm: Double = 80.0,
+    val countInEnabled: Boolean = true,
+    val metronomeEnabled: Boolean = false,
+    val punchStartMs: Long = 0L,
+    val playbackRate: Float = 1f,
+    val keyShiftSemitones: Int = 0,
+    val monitorEnabled: Boolean = false,
+    val monitorReverb: Float = 0f,
+    val monitorDelay: Float = 0f,
 )
 
 sealed interface TakeControl {
@@ -78,21 +91,32 @@ interface AudioEngine {
 
     suspend fun stopTake(): FinishedTake?
 
-    suspend fun playClip(sessionId: String, relativePath: String) {}
+    suspend fun playClip(sessionId: String, relativePath: String, loop: Boolean = false) {}
 
     fun stopPlayback() {}
 
     fun disarm()
 }
 
+enum class ExportKind {
+    MIX,
+    VOCALS,
+    BACKING,
+    COMPACT,
+    VIDEO,
+    LYRIC_VIDEO,
+}
+
 data class ExportRequest(
     val target: PublishTarget,
+    val kind: ExportKind = ExportKind.MIX,
 )
 
 sealed interface ExportResult {
     data class Written(
         val relativePath: String,
         val durationMs: Long,
+        val videoRelativePath: String? = null,
     ) : ExportResult
 
     data class Waiting(val message: String) : ExportResult

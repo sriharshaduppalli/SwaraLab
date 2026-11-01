@@ -1,9 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.SwaraLab" parent="android:Theme.Material.NoActionBar">
-        <item name="android:statusBarColor">#12110F</item>
-        <item name="android:navigationBarColor">#12110F</item>
-        <item name="android:windowBackground">#12110F</item>
-        <item name="android:windowLightStatusBar">false</item>
+    <style name="Theme.SwaraLab" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">#F7F4EF</item>
+        <item name="android:windowLightStatusBar">true</item>
     </style>
 </resources>

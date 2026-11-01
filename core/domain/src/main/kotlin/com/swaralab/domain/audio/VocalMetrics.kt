@@ -1,9 +1,67 @@
 package com.swaralab.domain.audio
 
+import com.swaralab.domain.model.ScaleMode
 import kotlin.math.abs
 import kotlin.math.ln
+import kotlin.math.pow
 import kotlin.math.roundToInt
 import kotlin.math.sqrt
+
+data class ScaleTargetNote(
+    val swara: String,
+    val westernNote: String,
+    val hz: Float,
+)
+
+object MusicalKeys {
+    val ALL: List<String> = listOf("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
+    private val majorSwaras = arrayOf("Sa", "Re", "Ga", "Ma", "Pa", "Dha", "Ni", "Sa'")
+
+    fun semitoneOf(keyName: String?): Int {
+        if (keyName.isNullOrBlank()) return 0
+        val idx = ALL.indexOfFirst { it.equals(keyName.trim(), ignoreCase = true) }
+        return if (idx >= 0) idx else 0
+    }
+
+    fun tonicC3Hz(keyName: String?): Double {
+        val semitone = semitoneOf(keyName)
+        return 130.81278265 * 2.0.pow(semitone / 12.0)
+    }
+
+    fun scaleForKey(keyName: String?, mode: ScaleMode? = null): List<ScaleTargetNote> {
+        val rootSemi = semitoneOf(keyName)
+        val steps = stepsFor(mode)
+        val swaras = swarasFor(mode)
+        val baseMidi = 60 + rootSemi
+        return steps.mapIndexed { idx, offset ->
+            val midi = baseMidi + offset
+            val noteIdx = ((midi % 12) + 12) % 12
+            val octave = (midi / 12) - 1
+            val hz = (440.0 * 2.0.pow((midi - 69) / 12.0)).toFloat()
+            ScaleTargetNote(
+                swara = swaras.getOrElse(idx) { majorSwaras[idx.coerceAtMost(majorSwaras.lastIndex)] },
+                westernNote = "${ALL[noteIdx]}$octave",
+                hz = hz,
+            )
+        }
+    }
+
+    private fun stepsFor(mode: ScaleMode?): IntArray = when (mode) {
+        ScaleMode.MINOR -> intArrayOf(0, 2, 3, 5, 7, 8, 10, 12)
+        ScaleMode.MOHANAM -> intArrayOf(0, 2, 4, 7, 9, 12)
+        ScaleMode.BHAIRAV -> intArrayOf(0, 1, 4, 5, 7, 8, 11, 12)
+        ScaleMode.YAMAN -> intArrayOf(0, 2, 4, 6, 7, 9, 11, 12)
+        else -> intArrayOf(0, 2, 4, 5, 7, 9, 11, 12)
+    }
+
+    private fun swarasFor(mode: ScaleMode?): Array<String> = when (mode) {
+        ScaleMode.MOHANAM -> arrayOf("Sa", "Re", "Ga", "Pa", "Dha", "Sa'")
+        ScaleMode.BHAIRAV -> arrayOf("Sa", "Re♭", "Ga", "Ma", "Pa", "Dha♭", "Ni", "Sa'")
+        ScaleMode.MINOR -> arrayOf("Sa", "Re", "Ga♭", "Ma", "Pa", "Dha♭", "Ni♭", "Sa'")
+        ScaleMode.YAMAN -> arrayOf("Sa", "Re", "Ga", "Ma♯", "Pa", "Dha", "Ni", "Sa'")
+        else -> majorSwaras
+    }
+}
 
 data class VocalMetrics(
     val pitchHz: Float = 0f,
@@ -34,6 +92,7 @@ object VocalSignalAnalyzer {
         length: Int,
         sampleRate: Int,
         previous: VocalMetrics,
+        rootSemitone: Int = 0,
     ): VocalMetrics {
         if (length <= 0 || sampleRate <= 0) return previous
 
@@ -108,7 +167,7 @@ object VocalSignalAnalyzer {
             } else {
                 rawDetectedHz
             }
-            val mapped = pitchToNoteAndSwara(effectiveHz)
+            val mapped = pitchToNoteAndSwara(effectiveHz, rootSemitone)
             val rawNote = mapped.first
             val rawSwara = mapped.second
             val rawCents = mapped.third
@@ -124,7 +183,6 @@ object VocalSignalAnalyzer {
                 nextCandidateNote = rawNote
                 nextCandidateCount = 0
             } else if (rawNote == previous.candidateNote && previous.candidateCount >= 1) {
-                // Require 2 consecutive frames on a new note before switching the label (hysteresis)
                 note = rawNote
                 swara = rawSwara
                 cents = rawCents
@@ -233,14 +291,15 @@ object VocalSignalAnalyzer {
         return effRate.toFloat() / bestLag.toFloat()
     }
 
-    internal fun pitchToNoteAndSwara(hz: Float): Triple<String, String, Int> {
+    fun pitchToNoteAndSwara(hz: Float, rootSemitone: Int = 0): Triple<String, String, Int> {
         val midiExact = 69.0 + 12.0 * (ln(hz / 440.0) / ln(2.0))
         val midiNearest = midiExact.roundToInt()
         val cents = ((midiExact - midiNearest) * 100.0).roundToInt().coerceIn(-50, 50)
         val noteIndex = ((midiNearest % 12) + 12) % 12
         val octave = (midiNearest / 12) - 1
         val noteName = "${noteNames[noteIndex]}$octave"
-        val swaraName = swaraNames[noteIndex]
+        val relativeSemi = ((noteIndex - (rootSemitone % 12)) + 12) % 12
+        val swaraName = swaraNames[relativeSemi]
         return Triple(noteName, swaraName, cents)
     }
 }

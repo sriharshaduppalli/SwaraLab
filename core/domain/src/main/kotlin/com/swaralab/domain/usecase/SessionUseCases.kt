@@ -5,11 +5,15 @@ import com.swaralab.domain.command.SessionCommand
 import com.swaralab.domain.command.SessionEdit
 import com.swaralab.domain.command.SessionReducer
 import com.swaralab.domain.identity.IdGenerator
+import com.swaralab.domain.audio.MusicalKeys
 import com.swaralab.domain.model.GearRoute
 import com.swaralab.domain.model.LyricAlignment
 import com.swaralab.domain.model.LyricLine
 import com.swaralab.domain.model.LyricSheet
+import com.swaralab.domain.model.MusicalSettings
+import com.swaralab.domain.model.PracticeStats
 import com.swaralab.domain.model.PublishTarget
+import com.swaralab.domain.model.ScaleMode
 import com.swaralab.domain.model.SessionDocument
 import com.swaralab.domain.model.SessionKind
 import com.swaralab.domain.model.TrackRole
@@ -28,16 +32,7 @@ class CreateSession(
     suspend operator fun invoke(kind: SessionKind, title: String): SessionDocument {
         var document = reducer.create(kind, title)
         if (kind == SessionKind.PRACTICE) {
-            val warmupLines = listOf(
-                LyricLine(id = "warmup-1", text = "Sa (C4 · 262 Hz) — Steady lower tonic", startMs = 0L),
-                LyricLine(id = "warmup-2", text = "Re (D4 · 294 Hz) — Step up smoothly", startMs = 2_000L),
-                LyricLine(id = "warmup-3", text = "Ga (E4 · 330 Hz) — Open major third", startMs = 4_000L),
-                LyricLine(id = "warmup-4", text = "Ma (F4 · 349 Hz) — Gentle fourth", startMs = 6_000L),
-                LyricLine(id = "warmup-5", text = "Pa (G4 · 392 Hz) — Strong fifth resonance", startMs = 8_000L),
-                LyricLine(id = "warmup-6", text = "Dha (A4 · 440 Hz) — Clear sixth", startMs = 10_000L),
-                LyricLine(id = "warmup-7", text = "Ni (B4 · 494 Hz) — Leading seventh", startMs = 12_000L),
-                LyricLine(id = "warmup-8", text = "Sa' (C5 · 523 Hz) — Upper octave tonic", startMs = 14_000L),
-            )
+            val warmupLines = warmupLinesForKey("C")
             val sheet = LyricSheet(
                 rawText = warmupLines.joinToString("\n") { it.text },
                 lines = warmupLines,
@@ -223,6 +218,7 @@ class CommitRecordedTake(
         sessionId: String,
         trackId: String?,
         take: FinishedTake,
+        timelineStartMs: Long = 0L,
     ): SessionEdit {
         val document = sessions.load(sessionId) ?: return SessionEdit.Rejected(RejectReason.UNKNOWN_SESSION)
         val voiceTracks = document.tracks.filter { it.role != TrackRole.BACKING }
@@ -230,6 +226,7 @@ class CommitRecordedTake(
             ?: voiceTracks.firstOrNull()
             ?: return SessionEdit.Rejected(RejectReason.UNKNOWN_TRACK)
         val takeNumber = targetTrack.clips.size + 1
+        val punchLabel = if (timelineStartMs > 0L) " · punch" else ""
         return applyAndSave(
             reducer,
             sessions,
@@ -238,9 +235,72 @@ class CommitRecordedTake(
                 trackId = targetTrack.id,
                 relativePath = take.relativePath,
                 durationMs = take.durationMs.coerceAtLeast(1L),
-                label = "${targetTrack.name} · Take $takeNumber",
+                timelineStartMs = timelineStartMs.coerceAtLeast(0L),
+                label = "${targetTrack.name} · Take $takeNumber$punchLabel",
             ),
         )
+    }
+}
+
+class TrimRecordedClip(
+    private val reducer: SessionReducer,
+    private val sessions: SessionRepository,
+) {
+    suspend operator fun invoke(
+        sessionId: String,
+        clipId: String,
+        sourceInMs: Long,
+        durationMs: Long,
+    ): SessionEdit {
+        val document = sessions.load(sessionId) ?: return SessionEdit.Rejected(RejectReason.UNKNOWN_SESSION)
+        return applyAndSave(
+            reducer,
+            sessions,
+            document,
+            SessionCommand.TrimClip(clipId, sourceInMs, durationMs),
+        )
+    }
+}
+
+class PreferRecordedClip(
+    private val reducer: SessionReducer,
+    private val sessions: SessionRepository,
+) {
+    suspend operator fun invoke(sessionId: String, clipId: String, preferred: Boolean): SessionEdit {
+        val document = sessions.load(sessionId) ?: return SessionEdit.Rejected(RejectReason.UNKNOWN_SESSION)
+        return applyAndSave(reducer, sessions, document, SessionCommand.PreferClip(clipId, preferred))
+    }
+}
+
+class UpdateMusicalSettings(
+    private val reducer: SessionReducer,
+    private val sessions: SessionRepository,
+) {
+    suspend operator fun invoke(sessionId: String, settings: MusicalSettings): SessionEdit {
+        val document = sessions.load(sessionId) ?: return SessionEdit.Rejected(RejectReason.UNKNOWN_SESSION)
+        val edit = applyAndSave(reducer, sessions, document, SessionCommand.SetMusical(settings))
+        val userWroteLyrics = document.lyrics.lines.any { !it.id.startsWith("warmup-") }
+        if (edit is SessionEdit.Applied && edit.document.kind == SessionKind.PRACTICE && !userWroteLyrics) {
+            val key = settings.keyName ?: "C"
+            val warmupLines = warmupLinesForKey(key, settings.mode)
+            val sheet = LyricSheet(
+                rawText = warmupLines.joinToString("\n") { it.text },
+                lines = warmupLines,
+                alignment = LyricAlignment.LINE,
+            )
+            return applyAndSave(reducer, sessions, edit.document, SessionCommand.SetLyrics(sheet))
+        }
+        return edit
+    }
+}
+
+class UpdatePracticeStats(
+    private val reducer: SessionReducer,
+    private val sessions: SessionRepository,
+) {
+    suspend operator fun invoke(sessionId: String, stats: PracticeStats): SessionEdit {
+        val document = sessions.load(sessionId) ?: return SessionEdit.Rejected(RejectReason.UNKNOWN_SESSION)
+        return applyAndSave(reducer, sessions, document, SessionCommand.SetPractice(stats))
     }
 }
 
@@ -263,6 +323,7 @@ class ImportBackingTrack(
         relativePath: String,
         durationMs: Long,
         label: String,
+        rightsConfirmed: Boolean = true,
     ): SessionEdit {
         var document = sessions.load(sessionId) ?: return SessionEdit.Rejected(RejectReason.UNKNOWN_SESSION)
         if (document.tracks.none { it.role == TrackRole.BACKING }) {
@@ -286,7 +347,7 @@ class ImportBackingTrack(
                 trackId = backingTrack.id,
                 relativePath = relativePath,
                 durationMs = durationMs.coerceAtLeast(1_000L),
-                rightsConfirmed = true,
+                rightsConfirmed = rightsConfirmed,
                 note = label,
             ),
         )
@@ -306,6 +367,26 @@ class UpdatePublishSettings(
 
 private val lrcTimestampRegex = Regex("""^\[(\d{1,2}):(\d{2})(?:[.:](\d{1,3}))?](.*)$""")
 private val lrcMetaRegex = Regex("""^\[[a-zA-Z]+:.*]$""")
+
+internal fun warmupLinesForKey(keyName: String, mode: ScaleMode? = null): List<LyricLine> {
+    val cues = listOf(
+        "Steady lower tonic",
+        "Step up smoothly",
+        "Hold this swara",
+        "Keep the phrase even",
+        "Strong fifth resonance",
+        "Clear next step",
+        "Leading tone",
+        "Upper octave tonic",
+    )
+    return MusicalKeys.scaleForKey(keyName, mode).mapIndexed { index, note ->
+        LyricLine(
+            id = "warmup-${index + 1}",
+            text = "${note.swara} (${note.westernNote} · ${note.hz.toInt()} Hz) — ${cues.getOrElse(index) { "Hold this swara" }}",
+            startMs = index * 2_000L,
+        )
+    }
+}
 
 internal fun parseLyricLines(raw: String, ids: IdGenerator): List<LyricLine> {
     val lines = mutableListOf<LyricLine>()

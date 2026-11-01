@@ -17,12 +17,16 @@ import com.swaralab.domain.usecase.DeleteSession
 import com.swaralab.domain.usecase.ImportBackingTrack
 import com.swaralab.domain.usecase.ListSessions
 import com.swaralab.domain.usecase.LoadSession
+import com.swaralab.domain.usecase.PreferRecordedClip
 import com.swaralab.domain.usecase.RegisterAccount
 import com.swaralab.domain.usecase.RenameSession
 import com.swaralab.domain.usecase.SignIn
 import com.swaralab.domain.usecase.SignOut
+import com.swaralab.domain.usecase.TrimRecordedClip
 import com.swaralab.domain.usecase.UpdateGear
 import com.swaralab.domain.usecase.UpdateLyrics
+import com.swaralab.domain.usecase.UpdateMusicalSettings
+import com.swaralab.domain.usecase.UpdatePracticeStats
 import com.swaralab.domain.usecase.UpdatePublishSettings
 import com.swaralab.domain.usecase.UpdateTrackMix
 import com.swaralab.domain.usecase.UpdateVocalChain
@@ -31,7 +35,9 @@ import com.swaralab.domain.usecase.UpdateVocalSyncOffset
 import com.swaralab.engine.audio.AndroidAudioEngine
 import com.swaralab.engine.render.WavMixRenderEngine
 import com.swaralab.session.FileAccountRepository
+import com.swaralab.session.FileAppSettings
 import com.swaralab.session.FileSessionRepository
+import com.swaralab.session.SessionInvitePack
 import java.io.File
 
 /**
@@ -45,6 +51,7 @@ class SwaraLabGraph(filesDir: File) {
     val projectsDir = File(filesDir, "swaralab/projects")
     val sessions: SessionRepository = FileSessionRepository(projectsDir, SessionCodec())
     val accounts: AccountRepository = FileAccountRepository(File(filesDir, "swaralab/accounts.json"))
+    val appSettings = FileAppSettings(File(filesDir, "swaralab/settings.properties"))
     val audio: AudioEngine = AndroidAudioEngine(projectsDir, ids)
     val render: RenderEngine = WavMixRenderEngine(projectsDir)
     val createSession = CreateSession(reducer, sessions)
@@ -63,6 +70,11 @@ class SwaraLabGraph(filesDir: File) {
     val deleteRecordedClip = DeleteRecordedClip(reducer, sessions)
     val importBackingTrack = ImportBackingTrack(reducer, sessions)
     val updatePublish = UpdatePublishSettings(reducer, sessions)
+    val updateMusical = UpdateMusicalSettings(reducer, sessions)
+    val trimRecordedClip = TrimRecordedClip(reducer, sessions)
+    val preferRecordedClip = PreferRecordedClip(reducer, sessions)
+    val updatePractice = UpdatePracticeStats(reducer, sessions)
+    val invitePack = SessionInvitePack(projectsDir, SessionCodec(), ids, clock)
     val registerAccount = RegisterAccount(accounts, ids)
     val signIn = SignIn(accounts)
     val signOut = SignOut(accounts)

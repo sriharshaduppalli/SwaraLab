@@ -2,6 +2,8 @@ package com.swaralab.feature.account
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -11,6 +13,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -36,7 +39,10 @@ import com.swaralab.domain.usecase.CurrentAccount
 import com.swaralab.domain.usecase.RegisterAccount
 import com.swaralab.domain.usecase.SignIn
 import com.swaralab.domain.usecase.SignOut
+import com.swaralab.ui.AppLanguage
+import com.swaralab.ui.LocalAppCopy
 import com.swaralab.ui.SwaraColors
+import com.swaralab.ui.SwaraThemeId
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -150,12 +156,17 @@ private fun AccountReject.message(): String = when (this) {
     AccountReject.WRONG_PASSWORD -> "That password does not match."
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun AccountRoute(
     registerAccount: RegisterAccount,
     signIn: SignIn,
     signOut: SignOut,
     currentAccount: CurrentAccount,
+    appLanguage: AppLanguage,
+    onAppLanguage: (AppLanguage) -> Unit,
+    themeId: SwaraThemeId,
+    onTheme: (SwaraThemeId) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val viewModel: AccountViewModel = viewModel(
@@ -163,6 +174,7 @@ fun AccountRoute(
     )
     val form by viewModel.form.collectAsState()
     val signedIn = form.signedIn
+    val copy = LocalAppCopy.current
 
     Column(
         modifier
@@ -172,6 +184,48 @@ fun AccountRoute(
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Text(text = "Singer profile", style = MaterialTheme.typography.headlineLarge)
+        Text(
+            text = copy.rightsNote,
+            style = MaterialTheme.typography.bodyMedium,
+            color = SwaraColors.Muted,
+        )
+        Text(
+            text = copy.appLanguage,
+            style = MaterialTheme.typography.titleMedium,
+        )
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            AppLanguage.entries.forEach { language ->
+                FilterChip(
+                    selected = language == appLanguage,
+                    onClick = { onAppLanguage(language) },
+                    label = { Text(language.label) },
+                )
+            }
+        }
+        Text(
+            text = copy.appTheme,
+            style = MaterialTheme.typography.titleMedium,
+        )
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            SwaraThemeId.entries.forEach { theme ->
+                FilterChip(
+                    selected = theme == themeId,
+                    onClick = { onTheme(theme) },
+                    label = { Text(theme.label) },
+                )
+            }
+        }
+        Text(
+            text = themeId.body,
+            style = MaterialTheme.typography.bodyMedium,
+            color = SwaraColors.Muted,
+        )
         if (signedIn != null) {
             Text(text = signedIn.displayName, style = MaterialTheme.typography.titleLarge)
             Text(

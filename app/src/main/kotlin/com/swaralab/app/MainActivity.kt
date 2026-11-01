@@ -7,21 +7,17 @@ import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import com.swaralab.app.nav.SwaraLabNav
-import com.swaralab.ui.SwaraLabTheme
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        val paper = Color.parseColor("#F7F4EF")
         enableEdgeToEdge(
-            statusBarStyle = SystemBarStyle.light(paper, paper),
-            navigationBarStyle = SystemBarStyle.light(paper, paper),
+            statusBarStyle = SystemBarStyle.auto(Color.TRANSPARENT, Color.TRANSPARENT),
+            navigationBarStyle = SystemBarStyle.auto(Color.TRANSPARENT, Color.TRANSPARENT),
         )
+        super.onCreate(savedInstanceState)
         val graph = (application as SwaraLabApplication).graph
         setContent {
-            SwaraLabTheme {
-                SwaraLabNav(graph)
-            }
+            SwaraLabNav(graph)
         }
     }
 }

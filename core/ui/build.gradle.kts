@@ -24,5 +24,6 @@ dependencies {
     implementation(libs.compose.foundation)
     implementation(libs.compose.material3)
     implementation(libs.compose.ui.tooling.preview)
+    implementation("androidx.core:core-ktx:1.16.0")
     debugImplementation(libs.compose.ui.tooling)
 }

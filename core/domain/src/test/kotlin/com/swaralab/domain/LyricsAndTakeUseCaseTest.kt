@@ -12,6 +12,8 @@ import com.swaralab.domain.usecase.CommitRecordedTake
 import com.swaralab.domain.usecase.CreateSession
 import com.swaralab.domain.usecase.ImportBackingTrack
 import com.swaralab.domain.usecase.LoadSession
+import com.swaralab.domain.usecase.PreferRecordedClip
+import com.swaralab.domain.usecase.TrimRecordedClip
 import com.swaralab.domain.usecase.UpdateLyrics
 import com.swaralab.domain.usecase.UpdateTrackMix
 import com.swaralab.domain.usecase.UpdateVocalChain
@@ -63,6 +65,31 @@ class LyricsAndTakeUseCaseTest {
         assertEquals(1, leadClips.size)
         assertEquals("Lead · Take 1", leadClips.single().label)
         assertEquals("media/takes/take-1.wav", leadClips.single().sourceRelativePath)
+        assertTrue(leadClips.single().preferred)
+    }
+
+    @Test
+    fun trimAndPreferKeepTheChosenPhraseInTheMix() = runBlocking {
+        val (_, reducer) = testReducer()
+        val store = InMemorySessions()
+        val created = CreateSession(reducer, store)(SessionKind.SONG, "My Song")
+        val leadTrackId = created.tracks.first { it.role == TrackRole.LEAD }.id
+        val commit = CommitRecordedTake(reducer, store)
+        commit(created.id, leadTrackId, FinishedTake("media/takes/take-1.wav", 8_000L, 0.5f))
+        commit(created.id, leadTrackId, FinishedTake("media/takes/take-2.wav", 8_000L, 0.5f))
+        val afterSecond = LoadSession(store)(created.id)!!
+        val second = afterSecond.tracks.first { it.id == leadTrackId }.clips.last()
+        assertTrue(second.preferred)
+
+        val first = afterSecond.tracks.first { it.id == leadTrackId }.clips.first()
+        TrimRecordedClip(reducer, store)(created.id, first.id, sourceInMs = 1_000L, durationMs = 2_500L)
+        PreferRecordedClip(reducer, store)(created.id, first.id, preferred = true)
+        val loaded = LoadSession(store)(created.id)!!
+        val clips = loaded.tracks.first { it.id == leadTrackId }.clips
+        assertEquals(1_000L, clips.first().sourceInMs)
+        assertEquals(2_500L, clips.first().durationMs)
+        assertTrue(clips.first().preferred)
+        assertTrue(clips.last().preferred.not())
     }
 
     @Test
@@ -127,7 +154,13 @@ private class InMemorySessions : SessionRepository {
     override suspend fun load(id: String) = map[id]
 
     override suspend fun list(): List<SessionSummary> = map.values.map {
-        SessionSummary(it.id, it.title, it.kind, it.updatedAtEpochMs)
+        SessionSummary(
+            it.id,
+            it.title,
+            it.kind,
+            it.updatedAtEpochMs,
+            takeCount = it.tracks.filter { track -> track.role != TrackRole.BACKING }.sumOf { track -> track.clips.size },
+        )
     }
 
     override suspend fun delete(id: String) {

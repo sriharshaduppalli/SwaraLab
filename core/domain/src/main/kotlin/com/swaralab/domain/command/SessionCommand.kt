@@ -3,6 +3,7 @@ package com.swaralab.domain.command
 import com.swaralab.domain.model.GearSnapshot
 import com.swaralab.domain.model.LyricSheet
 import com.swaralab.domain.model.MusicalSettings
+import com.swaralab.domain.model.PracticeStats
 import com.swaralab.domain.model.PublishSettings
 import com.swaralab.domain.model.SessionDocument
 import com.swaralab.domain.model.SongwriterNotes
@@ -37,6 +38,21 @@ sealed interface SessionCommand {
 
     data class DeleteClip(
         val clipId: String,
+    ) : SessionCommand
+
+    data class TrimClip(
+        val clipId: String,
+        val sourceInMs: Long,
+        val durationMs: Long,
+    ) : SessionCommand
+
+    data class PreferClip(
+        val clipId: String,
+        val preferred: Boolean,
+    ) : SessionCommand
+
+    data class SetPractice(
+        val stats: PracticeStats,
     ) : SessionCommand
 
     data class SetTrackMix(

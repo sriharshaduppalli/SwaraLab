@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.media.MediaMetadataRetriever
 import android.provider.OpenableColumns
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
@@ -15,8 +16,12 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.wrapContentWidth
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -27,11 +32,14 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -54,6 +62,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -68,10 +77,17 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
+import com.swaralab.domain.audio.LiveLyricFollower
+import com.swaralab.domain.audio.LyricLanguage
+import com.swaralab.domain.audio.MusicalKeys
 import com.swaralab.domain.audio.VocalMetrics
+import com.swaralab.domain.audio.VocalSignalAnalyzer
+import com.swaralab.domain.model.ScaleMode
 import com.swaralab.domain.layout.SessionLayout
 import com.swaralab.domain.model.GearRoute
 import com.swaralab.domain.model.LyricLine
+import com.swaralab.domain.model.MusicalSettings
+import com.swaralab.domain.model.PracticeStats
 import com.swaralab.domain.model.PublishTarget
 import com.swaralab.domain.model.SessionKind
 import com.swaralab.domain.model.TrackRole
@@ -86,12 +102,18 @@ import com.swaralab.domain.usecase.CommitRecordedTake
 import com.swaralab.domain.usecase.DeleteRecordedClip
 import com.swaralab.domain.usecase.ImportBackingTrack
 import com.swaralab.domain.usecase.LoadSession
+import com.swaralab.domain.usecase.PreferRecordedClip
 import com.swaralab.domain.usecase.RenameSession
+import com.swaralab.domain.usecase.TrimRecordedClip
 import com.swaralab.domain.usecase.UpdateGear
 import com.swaralab.domain.usecase.UpdateLyrics
+import com.swaralab.domain.usecase.UpdateMusicalSettings
+import com.swaralab.domain.usecase.UpdatePracticeStats
 import com.swaralab.domain.usecase.UpdatePublishSettings
 import com.swaralab.domain.usecase.UpdateVocalPreset
 import com.swaralab.ui.ChoiceCard
+import com.swaralab.ui.AppCopy
+import com.swaralab.ui.LocalAppCopy
 import com.swaralab.ui.SwaraColors
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -122,6 +144,11 @@ data class RecordedTakeUi(
     val label: String,
     val durationText: String,
     val relativePath: String,
+    val sourceInMs: Long,
+    val durationMs: Long,
+    val sourceDurationMs: Long,
+    val timelineStartMs: Long,
+    val preferred: Boolean,
 )
 
 data class BackingTrackUi(
@@ -145,6 +172,18 @@ data class StudioUi(
     val takes: List<RecordedTakeUi>,
     val route: GearRoute,
     val stageNote: String?,
+    val keyName: String,
+    val tempoBpm: Float,
+    val keyShiftSemitones: Int,
+    val playbackRate: Float,
+    val countInEnabled: Boolean,
+    val metronomeEnabled: Boolean,
+    val punchStartMs: Long,
+    val practice: PracticeStats,
+    val lyricLanguage: String,
+    val scaleMode: ScaleMode,
+    val headphoneFx: Boolean,
+    val heardLyric: String?,
 )
 
 class StudioViewModel(
@@ -160,6 +199,10 @@ class StudioViewModel(
     private val deleteRecordedClip: DeleteRecordedClip,
     private val importBackingTrack: ImportBackingTrack,
     private val updatePublish: UpdatePublishSettings,
+    private val updateMusical: UpdateMusicalSettings,
+    private val trimRecordedClip: TrimRecordedClip,
+    private val preferRecordedClip: PreferRecordedClip,
+    private val updatePractice: UpdatePracticeStats,
     val audio: AudioEngine,
 ) : ViewModel() {
     private val uiState = MutableStateFlow<StudioUi?>(null)
@@ -167,6 +210,14 @@ class StudioViewModel(
     private var activeLine = 0
     private var selectedPartId: String? = null
     private var stageNote: String? = null
+    private var punchStartMs: Long = 0L
+    private var lyricFollow = LiveLyricFollower.State()
+    private var heardLyric: String? = null
+    private var headphoneFx = true
+    private var liveHits = 0
+    private var liveAttempts = 0
+    private var liveLowHz = 0f
+    private var liveHighHz = 0f
 
     init {
         refresh()
@@ -190,6 +241,7 @@ class StudioViewModel(
     fun saveLyrics(text: String, note: String? = null) {
         viewModelScope.launch {
             activeLine = 0
+            lyricFollow = LiveLyricFollower.State()
             stageNote = note
             updateLyrics(sessionId, text)
             refresh()
@@ -200,6 +252,7 @@ class StudioViewModel(
         val current = uiState.value ?: return
         if (index !in current.lines.indices) return
         activeLine = index
+        lyricFollow = LiveLyricFollower.State(lineIndex = index)
         uiState.value = current.copy(activeLine = index)
     }
 
@@ -208,7 +261,47 @@ class StudioViewModel(
         if (current.lines.isEmpty()) return
         val next = (current.activeLine + delta).coerceIn(0, current.lines.lastIndex)
         activeLine = next
+        lyricFollow = LiveLyricFollower.State(lineIndex = next)
         uiState.value = current.copy(activeLine = next)
+    }
+
+    fun beginLyricFollow() {
+        lyricFollow = LiveLyricFollower.State(lineIndex = activeLine)
+    }
+
+    fun onHeardLyric(text: String) {
+        heardLyric = text
+        uiState.value = uiState.value?.copy(heardLyric = text)
+    }
+
+    fun setHeadphoneFx(enabled: Boolean) {
+        headphoneFx = enabled
+        uiState.value = uiState.value?.copy(headphoneFx = enabled)
+    }
+
+    fun followSungLyric(dtMs: Long) {
+        val current = uiState.value ?: return
+        if (current.lines.isEmpty()) return
+        if (current.lines.any { it.startMs != null }) return
+        val metrics = audio.state.value.metrics
+        val voiced = LiveLyricFollower.isVoiced(metrics.pitchHz, metrics.rmsDb, metrics.silentFrames)
+        val language = LyricLanguage.resolve(current.lyricLanguage, current.rawLyrics)
+        val next = LiveLyricFollower.step(
+            previous = lyricFollow,
+            lineCount = current.lines.size,
+            currentLineText = current.lines.getOrNull(lyricFollow.lineIndex)?.text.orEmpty(),
+            voiced = voiced,
+            dtMs = dtMs,
+            language = language,
+            heardText = heardLyric,
+            allLines = current.lines.map { it.text },
+        )
+        heardLyric = null
+        lyricFollow = next
+        if (next.lineIndex != current.activeLine) {
+            activeLine = next.lineIndex
+            uiState.value = current.copy(activeLine = next.lineIndex)
+        }
     }
 
     fun syncTimedLyric(elapsedMs: Long) {
@@ -251,6 +344,72 @@ class StudioViewModel(
         }
     }
 
+    fun setMusical(
+        keyName: String? = uiState.value?.keyName,
+        tempoBpm: Float? = uiState.value?.tempoBpm,
+        keyShiftSemitones: Int? = uiState.value?.keyShiftSemitones,
+        playbackRate: Float? = uiState.value?.playbackRate,
+        countInEnabled: Boolean? = uiState.value?.countInEnabled,
+        metronomeEnabled: Boolean? = uiState.value?.metronomeEnabled,
+        lyricLanguage: String? = uiState.value?.lyricLanguage,
+        scaleMode: ScaleMode? = uiState.value?.scaleMode,
+    ) {
+        val current = uiState.value ?: return
+        viewModelScope.launch {
+            updateMusical(
+                sessionId,
+                MusicalSettings(
+                    tempoBpm = (tempoBpm ?: current.tempoBpm).toDouble(),
+                    keyName = keyName ?: current.keyName,
+                    mode = scaleMode ?: current.scaleMode,
+                    keyShiftSemitones = keyShiftSemitones ?: current.keyShiftSemitones,
+                    playbackRate = playbackRate ?: current.playbackRate,
+                    countInEnabled = countInEnabled ?: current.countInEnabled,
+                    metronomeEnabled = metronomeEnabled ?: current.metronomeEnabled,
+                    lyricLanguage = lyricLanguage ?: current.lyricLanguage,
+                ),
+            )
+            stageNote = null
+            refresh()
+        }
+    }
+
+    fun trimTake(clipId: String, sourceInMs: Long, durationMs: Long) {
+        viewModelScope.launch {
+            trimRecordedClip(sessionId, clipId, sourceInMs, durationMs)
+            stageNote = "Take trimmed. The mix will use only this window."
+            refresh()
+        }
+    }
+
+    fun preferTake(clipId: String) {
+        viewModelScope.launch {
+            preferRecordedClip(sessionId, clipId, preferred = true)
+            stageNote = "This take is now the one used in Mix & Save."
+            refresh()
+        }
+    }
+
+    fun punchFrom(take: RecordedTakeUi, startMs: Long) {
+        punchStartMs = startMs.coerceAtLeast(0L)
+        stageNote = "Punch-in armed at ${formatDuration(punchStartMs)}. Tap Sing to replace from there."
+        uiState.value = uiState.value?.copy(punchStartMs = punchStartMs, stageNote = stageNote)
+    }
+
+    fun clearPunch() {
+        punchStartMs = 0L
+        uiState.value = uiState.value?.copy(punchStartMs = 0L)
+    }
+
+    fun tickPractice() {
+        val metrics = audio.state.value.metrics
+        if (metrics.pitchHz < 70f) return
+        liveAttempts += 1
+        if (abs(metrics.centsOffset) <= 45) liveHits += 1
+        if (liveLowHz <= 0f || metrics.pitchHz < liveLowHz) liveLowHz = metrics.pitchHz
+        if (metrics.pitchHz > liveHighHz) liveHighHz = metrics.pitchHz
+    }
+
     fun selectVideoTarget(target: PublishTarget) {
         viewModelScope.launch {
             updatePublish(sessionId, target)
@@ -284,7 +443,7 @@ class StudioViewModel(
                 }
             }
             if (durationMs != null) {
-                importBackingTrack(sessionId, relativePath, durationMs, fileName)
+                importBackingTrack(sessionId, relativePath, durationMs, fileName, rightsConfirmed = true)
                 stageNote = "Backing track loaded ($fileName). It will play while you sing."
                 refresh()
             } else {
@@ -303,14 +462,49 @@ class StudioViewModel(
             val ok = withContext(Dispatchers.IO) {
                 runCatching {
                     destination.parentFile?.mkdirs()
-                    writeSampleDroneWav(destination, sampleRate = 48_000, durationSeconds = 16)
+                    writeSampleDroneWav(
+                        destination,
+                        sampleRate = 48_000,
+                        durationSeconds = 16,
+                        keyName = uiState.value?.keyName ?: "C",
+                    )
                     true
                 }.getOrDefault(false)
             }
             if (ok) {
-                importBackingTrack(sessionId, relativePath, durationMs, "Tanpura Drone · C (Sa)")
-                stageNote = "Sample Tanpura backing loaded. Tap Preview or hit Sing."
+                val key = uiState.value?.keyName ?: "C"
+                importBackingTrack(sessionId, relativePath, durationMs, "Tanpura Drone · $key (Sa)")
+                stageNote = "Sample Tanpura backing loaded in $key. Tap Preview or hit Sing."
                 refresh()
+            }
+        }
+    }
+
+    fun playGuideMelody() {
+        viewModelScope.launch {
+            val current = uiState.value ?: return@launch
+            val relativePath = SessionLayout.backingFile("Guide_Melody.wav")
+            val destination = File(File(projectsDir, sessionId), relativePath)
+            val ok = withContext(Dispatchers.IO) {
+                runCatching {
+                    destination.parentFile?.mkdirs()
+                    writeGuideMelodyWav(
+                        destination,
+                        sampleRate = 48_000,
+                        keyName = current.keyName,
+                        mode = current.scaleMode,
+                    )
+                    true
+                }.getOrDefault(false)
+            }
+            if (ok) {
+                if (audio.state.value.playingRelativePath == relativePath) {
+                    audio.stopPlayback()
+                } else {
+                    audio.playClip(sessionId, relativePath)
+                }
+                stageNote = "Guide melody in ${current.keyName} ${current.scaleMode.label()}."
+                uiState.value = current.copy(stageNote = stageNote)
             }
         }
     }
@@ -328,25 +522,74 @@ class StudioViewModel(
     fun toggleRecording() {
         viewModelScope.launch {
             val current = uiState.value ?: return@launch
-            if (audio.state.value.status == EngineStatus.RECORDING) {
+            if (audio.state.value.status == EngineStatus.RECORDING ||
+                audio.state.value.status == EngineStatus.COUNTING
+            ) {
                 val finished = audio.stopTake()
                 if (finished != null) {
-                    commitRecordedTake(sessionId, current.selectedPartId, finished)
-                    stageNote = "Saved take (${formatDuration(finished.durationMs)}). Tap Play below to hear it."
+                    commitRecordedTake(
+                        sessionId,
+                        current.selectedPartId,
+                        finished,
+                        timelineStartMs = punchStartMs,
+                    )
+                    val punchNote = if (punchStartMs > 0L) " Punch starts at ${formatDuration(punchStartMs)}." else ""
+                    stageNote = "Saved take (${formatDuration(finished.durationMs)}).$punchNote Tap Play below to hear it."
+                    punchStartMs = 0L
                 } else {
                     stageNote = "Take stopped."
                 }
+                if (current.kind == SessionKind.PRACTICE && liveAttempts > 0) {
+                    val merged = PracticeStats(
+                        hits = current.practice.hits + liveHits,
+                        attempts = current.practice.attempts + liveAttempts,
+                        lowestHz = listOf(current.practice.lowestHz, liveLowHz).filter { it > 0f }.minOrNull() ?: 0f,
+                        highestHz = maxOf(current.practice.highestHz, liveHighHz),
+                        lastScore = ((liveHits * 100f) / liveAttempts).toInt().coerceIn(0, 100),
+                    )
+                    updatePractice(sessionId, merged)
+                    liveHits = 0
+                    liveAttempts = 0
+                }
                 refresh()
             } else {
+                liveHits = 0
+                liveAttempts = 0
+                liveLowHz = 0f
+                liveHighHz = 0f
                 audio.arm(
                     ArmRequest(
                         sessionId = sessionId,
                         output = current.route,
                         backingRelativePath = current.backing?.relativePath,
+                        rootKeyName = current.keyName,
+                        tempoBpm = current.tempoBpm.toDouble(),
+                        countInEnabled = current.countInEnabled,
+                        metronomeEnabled = current.metronomeEnabled,
+                        punchStartMs = punchStartMs,
+                        playbackRate = current.playbackRate,
+                        keyShiftSemitones = current.keyShiftSemitones,
+                        monitorEnabled = headphoneFx &&
+                            (current.route == GearRoute.WIRED || current.route == GearRoute.USB),
+                        monitorReverb = if (headphoneFx) 0.35f else 0f,
+                        monitorDelay = if (headphoneFx) 0.18f else 0f,
                     ),
                 )
                 stageNote = when (audio.startTake()) {
-                    is TakeControl.Started -> "Recording live. Sing into the mic and tap Stop when done."
+                    is TakeControl.Started -> {
+                        beginLyricFollow()
+                        val followsVoice = current.lines.isNotEmpty() && current.lines.none { it.startMs != null }
+                        when {
+                            current.countInEnabled && followsVoice ->
+                                "Count-in started. After 4, lyrics will follow the lines you sing."
+                            current.countInEnabled ->
+                                "Count-in started. Sing after 4."
+                            followsVoice ->
+                                "Recording. Lyrics will follow each line as you sing."
+                            else ->
+                                "Recording live. Sing into the mic and tap Stop when done."
+                        }
+                    }
                     is TakeControl.Refused ->
                         "Switch to Headphones top-right so the backing track does not bleed into the mic."
                     TakeControl.TransportUnavailable ->
@@ -378,20 +621,39 @@ class StudioViewModel(
         refresh()
     }
 
-    fun onPermissionDenied() {
+    fun onPermissionDenied(message: String) {
         val current = uiState.value ?: return
-        stageNote = "Microphone permission is needed to record your voice."
+        stageNote = message
         uiState.value = current.copy(stageNote = stageNote)
     }
 
     fun togglePlayClip(relativePath: String) {
         viewModelScope.launch {
-            audio.playClip(sessionId, relativePath)
+            val loop = relativePath.contains("/backing/") || relativePath.endsWith("Guide_Melody.wav")
+            audio.playClip(sessionId, relativePath, loop)
         }
     }
 
     fun stopAudioOnExit() {
-        audio.disarm()
+        val live = audio.state.value.status == EngineStatus.RECORDING ||
+            audio.state.value.status == EngineStatus.COUNTING
+        if (!live) {
+            audio.disarm()
+            return
+        }
+        viewModelScope.launch {
+            val current = uiState.value
+            val finished = audio.stopTake()
+            if (finished != null && current != null) {
+                commitRecordedTake(
+                    sessionId,
+                    current.selectedPartId,
+                    finished,
+                    timelineStartMs = punchStartMs,
+                )
+            }
+            audio.disarm()
+        }
     }
 
     private fun refresh() {
@@ -417,6 +679,13 @@ class StudioViewModel(
                     sessionId = document.id,
                     output = route,
                     backingRelativePath = backingClip?.sourceRelativePath,
+                    rootKeyName = document.musical.keyName ?: "C",
+                    tempoBpm = document.musical.tempoBpm ?: 80.0,
+                    countInEnabled = document.musical.countInEnabled,
+                    metronomeEnabled = document.musical.metronomeEnabled,
+                    punchStartMs = punchStartMs,
+                    playbackRate = document.musical.playbackRate,
+                    keyShiftSemitones = document.musical.keyShiftSemitones,
                 ),
             )
             val lines = document.lyrics.lines
@@ -435,8 +704,17 @@ class StudioViewModel(
                     RecordedTakeUi(
                         id = clip.id,
                         label = clip.label.ifBlank { track.name },
-                        durationText = formatDuration(clip.durationMs),
+                        durationText = buildString {
+                            append(formatDuration(clip.durationMs))
+                            if (clip.timelineStartMs > 0L) append(" · from ${formatDuration(clip.timelineStartMs)}")
+                            if (clip.preferred) append(" · in mix")
+                        },
                         relativePath = clip.sourceRelativePath,
+                        sourceInMs = clip.sourceInMs,
+                        durationMs = clip.durationMs,
+                        sourceDurationMs = clip.usableSourceDurationMs,
+                        timelineStartMs = clip.timelineStartMs,
+                        preferred = clip.preferred,
                     )
                 }
             }.reversed()
@@ -457,6 +735,18 @@ class StudioViewModel(
                 takes = takes,
                 route = route,
                 stageNote = stageNote,
+                keyName = document.musical.keyName ?: "C",
+                tempoBpm = (document.musical.tempoBpm ?: 80.0).toFloat(),
+                keyShiftSemitones = document.musical.keyShiftSemitones,
+                playbackRate = document.musical.playbackRate,
+                countInEnabled = document.musical.countInEnabled,
+                metronomeEnabled = document.musical.metronomeEnabled,
+                punchStartMs = punchStartMs,
+                practice = document.practice,
+                lyricLanguage = document.musical.lyricLanguage,
+                scaleMode = document.musical.mode ?: ScaleMode.MAJOR,
+                headphoneFx = headphoneFx,
+                heardLyric = heardLyric,
             )
         }
     }
@@ -475,6 +765,10 @@ class StudioViewModel(
             deleteRecordedClip: DeleteRecordedClip,
             importBackingTrack: ImportBackingTrack,
             updatePublish: UpdatePublishSettings,
+            updateMusical: UpdateMusicalSettings,
+            trimRecordedClip: TrimRecordedClip,
+            preferRecordedClip: PreferRecordedClip,
+            updatePractice: UpdatePracticeStats,
             audio: AudioEngine,
         ): ViewModelProvider.Factory = viewModelFactory {
             initializer {
@@ -491,6 +785,10 @@ class StudioViewModel(
                     deleteRecordedClip = deleteRecordedClip,
                     importBackingTrack = importBackingTrack,
                     updatePublish = updatePublish,
+                    updateMusical = updateMusical,
+                    trimRecordedClip = trimRecordedClip,
+                    preferRecordedClip = preferRecordedClip,
+                    updatePractice = updatePractice,
                     audio = audio,
                 )
             }
@@ -527,6 +825,10 @@ fun StudioRoute(
     deleteRecordedClip: DeleteRecordedClip,
     importBackingTrack: ImportBackingTrack,
     updatePublish: UpdatePublishSettings,
+    updateMusical: UpdateMusicalSettings,
+    trimRecordedClip: TrimRecordedClip,
+    preferRecordedClip: PreferRecordedClip,
+    updatePractice: UpdatePracticeStats,
     audio: AudioEngine,
     onBack: () -> Unit,
     onPublish: () -> Unit,
@@ -546,6 +848,10 @@ fun StudioRoute(
             deleteRecordedClip = deleteRecordedClip,
             importBackingTrack = importBackingTrack,
             updatePublish = updatePublish,
+            updateMusical = updateMusical,
+            trimRecordedClip = trimRecordedClip,
+            preferRecordedClip = preferRecordedClip,
+            updatePractice = updatePractice,
             audio = audio,
         ),
     )
@@ -555,12 +861,34 @@ fun StudioRoute(
     }.collectAsState(initial = null)
     val state = ui ?: return
     val context = LocalContext.current
+    val copy = LocalAppCopy.current
+    val cameraController = remember { SingerCameraController(context) }
+    val lyricListener = remember {
+        OnDeviceLyricListener(context) { heard -> viewModel.onHeardLyric(heard) }
+    }
+    val engineStatus by remember(viewModel.audio) {
+        viewModel.audio.state.map { it.status }.distinctUntilChanged()
+    }.collectAsState(initial = EngineStatus.IDLE)
+    val isLiveTake = engineStatus == EngineStatus.RECORDING
+    val isCapturing = engineStatus == EngineStatus.RECORDING || engineStatus == EngineStatus.COUNTING
+    val view = LocalView.current
 
     var editingTitle by remember { mutableStateOf(false) }
     var draftTitle by remember(state.title) { mutableStateOf(state.title) }
     var editingLyrics by remember { mutableStateOf(false) }
     var draftLyrics by remember(state.rawLyrics) { mutableStateOf(state.rawLyrics) }
     var pickingRoute by remember { mutableStateOf(false) }
+    var showMusical by remember { mutableStateOf(false) }
+    var rightsOk by remember { mutableStateOf(false) }
+    var confirmLeave by remember { mutableStateOf(false) }
+    var pendingDeleteTake by remember { mutableStateOf<String?>(null) }
+
+    BackHandler(isCapturing) { confirmLeave = true }
+
+    DisposableEffect(isCapturing) {
+        view.keepScreenOn = isCapturing
+        onDispose { view.keepScreenOn = false }
+    }
 
     fun readClipboardText(): String? {
         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
@@ -570,18 +898,43 @@ fun StudioRoute(
 
     LaunchedEffect(viewModel) {
         viewModel.audio.state
-            .map { (it.status == EngineStatus.RECORDING) to (it.elapsedMs / 250L) }
+            .map { (it.status == EngineStatus.RECORDING) to (it.elapsedMs / 100L) }
             .distinctUntilChanged()
-            .collect { (recording, quarterSec) ->
+            .collect { (recording, tenthSec) ->
                 if (recording) {
-                    viewModel.syncTimedLyric(quarterSec * 250L)
+                    val elapsed = tenthSec * 100L
+                    viewModel.syncTimedLyric(elapsed)
+                    viewModel.followSungLyric(100L)
+                    if (state.kind == SessionKind.PRACTICE) viewModel.tickPractice()
                 }
             }
     }
 
     DisposableEffect(Unit) {
         onDispose {
+            lyricListener.stop()
+            cameraController.stop()
+            cameraController.release()
             viewModel.stopAudioOnExit()
+        }
+    }
+
+    LaunchedEffect(isLiveTake, state.lyricLanguage, state.rawLyrics) {
+        if (isLiveTake) {
+            val language = LyricLanguage.resolve(state.lyricLanguage, state.rawLyrics)
+            lyricListener.start(language.speechTag)
+        } else {
+            lyricListener.stop()
+        }
+    }
+
+    LaunchedEffect(isLiveTake, state.kind) {
+        if (state.kind == SessionKind.VIDEO && isLiveTake) {
+            cameraController.start(
+                File(File(projectsDir, sessionId), SessionLayout.performanceVideo()),
+            )
+        } else {
+            cameraController.stop()
         }
     }
 
@@ -638,19 +991,57 @@ fun StudioRoute(
         }
     }
 
-    val micPermissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestPermission(),
-    ) { granted ->
-        if (granted) {
+    val recordPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions(),
+    ) { grants ->
+        if (grants[Manifest.permission.RECORD_AUDIO] == true) {
             viewModel.toggleRecording()
         } else {
-            viewModel.onPermissionDenied()
+            viewModel.onPermissionDenied(copy.micNeeded)
         }
     }
 
+    if (confirmLeave) {
+        AlertDialog(
+            onDismissRequest = { confirmLeave = false },
+            title = { Text(copy.keepTake) },
+            text = { Text(copy.rightsNote) },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        confirmLeave = false
+                        viewModel.toggleRecording()
+                        onBack()
+                    },
+                ) { Text(copy.stop) }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmLeave = false }) { Text(copy.stayOnStage) }
+            },
+        )
+    }
+    pendingDeleteTake?.let { takeId ->
+        AlertDialog(
+            onDismissRequest = { pendingDeleteTake = null },
+            title = { Text(copy.delete) },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        viewModel.deleteTake(takeId)
+                        pendingDeleteTake = null
+                    },
+                ) { Text(copy.delete) }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDeleteTake = null }) { Text(copy.cancel) }
+            },
+        )
+    }
+
+    Column(modifier.fillMaxSize()) {
     Column(
-        modifier
-            .fillMaxSize()
+        Modifier
+            .weight(1f)
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
@@ -660,7 +1051,11 @@ fun StudioRoute(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            TextButton(onClick = onBack) { Text("Back") }
+            TextButton(
+                onClick = {
+                    if (isCapturing) confirmLeave = true else onBack()
+                },
+            ) { Text(copy.back) }
             TextButton(onClick = { pickingRoute = !pickingRoute }) {
                 Text(state.route.label())
             }
@@ -722,8 +1117,64 @@ fun StudioRoute(
             }
         }
 
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(18.dp),
+            color = SwaraColors.Card,
+            border = BorderStroke(1.dp, SwaraColors.Line),
+            onClick = { showMusical = !showMusical },
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 18.dp, vertical = 14.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(copy.keyAndTiming, style = MaterialTheme.typography.titleMedium)
+                Text(
+                    text = if (showMusical) copy.back else "${state.keyName} · ${state.tempoBpm.roundToInt()} BPM",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = SwaraColors.Muted,
+                )
+            }
+        }
+        if (showMusical) MusicalSetupCard(
+            keyName = state.keyName,
+            scaleMode = state.scaleMode,
+            tempoBpm = state.tempoBpm,
+            keyShiftSemitones = state.keyShiftSemitones,
+            playbackRate = state.playbackRate,
+            countInEnabled = state.countInEnabled,
+            metronomeEnabled = state.metronomeEnabled,
+            headphoneFx = state.headphoneFx,
+            punchStartMs = state.punchStartMs,
+            showBackingShift = state.backing != null,
+            guidePlaying = playingRelativePath?.endsWith("Guide_Melody.wav") == true,
+            onKey = { viewModel.setMusical(keyName = it) },
+            onMode = { viewModel.setMusical(scaleMode = it) },
+            onTempo = { viewModel.setMusical(tempoBpm = it) },
+            onShift = { viewModel.setMusical(keyShiftSemitones = it) },
+            onRate = { viewModel.setMusical(playbackRate = it) },
+            onCountIn = { viewModel.setMusical(countInEnabled = it) },
+            onMetronome = { viewModel.setMusical(metronomeEnabled = it) },
+            onHeadphoneFx = viewModel::setHeadphoneFx,
+            onPlayGuide = viewModel::playGuideMelody,
+            onClearPunch = viewModel::clearPunch,
+        )
+        if (state.headphoneFx) {
+            Text(
+                text = copy.headphoneFxHint,
+                style = MaterialTheme.typography.bodyMedium,
+                color = SwaraColors.Muted,
+            )
+        }
+
         if (state.kind == SessionKind.PRACTICE) {
             WarmupScaleCoachCard(
+                keyName = state.keyName,
+                scaleMode = state.scaleMode,
+                practice = state.practice,
                 audioStateFlow = viewModel.audio.state,
                 backing = state.backing,
                 playingRelativePath = playingRelativePath,
@@ -737,43 +1188,81 @@ fun StudioRoute(
                 color = SwaraColors.Card,
                 border = BorderStroke(1.dp, SwaraColors.Line),
             ) {
-                Row(
+                Column(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 18.dp, vertical = 14.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
-                    Column(Modifier.weight(1f)) {
-                        Text(text = "Backing track", style = MaterialTheme.typography.titleMedium)
-                        val backing = state.backing
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
                         Text(
-                            text = if (backing != null) {
-                                "${backing.name} · ${backing.durationText}"
-                            } else {
-                                "Optional: upload an instrumental or karaoke track from your phone."
-                            },
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = SwaraColors.Muted,
+                            text = "Backing track",
+                            modifier = Modifier.weight(1f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            style = MaterialTheme.typography.titleMedium,
                         )
-                    }
-                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                        if (state.backing == null) {
-                            TextButton(onClick = viewModel::loadSampleBacking) {
-                                Text("Sample drone")
+                        Row(
+                            modifier = Modifier.wrapContentWidth(),
+                            horizontalArrangement = Arrangement.End,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            val compactPad = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
+                            if (state.backing == null) {
+                                TextButton(
+                                    onClick = viewModel::loadSampleBacking,
+                                    contentPadding = compactPad,
+                                ) {
+                                    Text("Sample drone", maxLines = 1, softWrap = false)
+                                }
+                            } else {
+                                val isPlayingBacking = playingRelativePath == state.backing.relativePath
+                                TextButton(
+                                    onClick = { viewModel.togglePlayClip(state.backing.relativePath) },
+                                    contentPadding = compactPad,
+                                ) {
+                                    Text(
+                                        if (isPlayingBacking) "Stop" else "Preview",
+                                        maxLines = 1,
+                                        softWrap = false,
+                                    )
+                                }
                             }
-                        } else {
-                            val isPlayingBacking = playingRelativePath == state.backing.relativePath
-                            TextButton(onClick = { viewModel.togglePlayClip(state.backing.relativePath) }) {
-                                Text(if (isPlayingBacking) "Stop" else "Preview")
+                            TextButton(
+                                onClick = {
+                                    if (state.backing != null || rightsOk) {
+                                        backingFileLauncher.launch(arrayOf("audio/*"))
+                                    }
+                                },
+                                enabled = state.backing != null || rightsOk,
+                                contentPadding = compactPad,
+                            ) {
+                                Text(
+                                    if (state.backing == null) "Track" else "Change",
+                                    maxLines = 1,
+                                    softWrap = false,
+                                )
                             }
                         }
-                        TextButton(
-                            onClick = {
-                                backingFileLauncher.launch(arrayOf("audio/*"))
-                            },
-                        ) {
-                            Text(if (state.backing == null) "Upload track" else "Change")
+                    }
+                    val backing = state.backing
+                    Text(
+                        text = if (backing != null) {
+                            "${backing.name} · ${backing.durationText}"
+                        } else {
+                            "Optional: upload an instrumental or karaoke track from your phone."
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = SwaraColors.Muted,
+                    )
+                    if (backing == null) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(checked = rightsOk, onCheckedChange = { rightsOk = it })
+                            Text(copy.iCanUseTrack, style = MaterialTheme.typography.bodyMedium)
                         }
                     }
                 }
@@ -788,6 +1277,7 @@ fun StudioRoute(
                     ?: "Add or paste lyrics below to preview them on your 9:16 video stage",
                 nextLyric = state.lines.getOrNull(state.activeLine + 1)?.text.orEmpty(),
                 audioStateFlow = viewModel.audio.state,
+                cameraController = cameraController,
                 onSelectTarget = viewModel::selectVideoTarget,
             )
         }
@@ -804,7 +1294,7 @@ fun StudioRoute(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text(text = "Lyrics", style = MaterialTheme.typography.titleLarge)
+                    Text(text = copy.lyrics, style = MaterialTheme.typography.titleLarge)
                     Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                         TextButton(
                             onClick = {
@@ -819,7 +1309,7 @@ fun StudioRoute(
                                 }
                             },
                         ) {
-                            Text("Paste")
+                            Text(copy.paste)
                         }
                         TextButton(
                             onClick = {
@@ -840,13 +1330,32 @@ fun StudioRoute(
                         }
                     }
                 }
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    LyricLanguage.entries.forEach { language ->
+                        FilterChip(
+                            selected = state.lyricLanguage.equals(language.tag, ignoreCase = true),
+                            onClick = { viewModel.setMusical(lyricLanguage = language.tag) },
+                            label = { Text(language.englishName) },
+                        )
+                    }
+                }
+                Text(
+                    text = copy.lyricLanguage + " · " +
+                        LyricLanguage.resolve(state.lyricLanguage, state.rawLyrics).englishName +
+                        if (state.heardLyric.isNullOrBlank()) "" else " · ${state.heardLyric}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = SwaraColors.Muted,
+                )
                 if (editingLyrics) {
                     OutlinedTextField(
                         value = draftLyrics,
                         onValueChange = { draftLyrics = it },
                         modifier = Modifier.fillMaxWidth(),
                         minLines = 5,
-                        label = { Text("Paste or type lyrics here (one line per row)") },
+                        label = { Text("Paste lyrics, one line per row. Sing and they will scroll with you.") },
                     )
                     FlowRow(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -878,7 +1387,7 @@ fun StudioRoute(
                     }
                 } else if (state.lines.isEmpty()) {
                     Text(
-                        text = "Copy lyrics from anywhere and tap Paste, upload a .txt / .lrc file, or type your lines below.",
+                        text = "Copy lyrics from anywhere and tap Paste. When you Sing, the highlight follows each line you sing.",
                         style = MaterialTheme.typography.bodyLarge,
                         color = SwaraColors.Muted,
                     )
@@ -929,7 +1438,11 @@ fun StudioRoute(
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Text(
-                            text = "Line ${state.activeLine + 1} of ${state.lines.size}",
+                            text = if (state.lines.any { it.startMs != null }) {
+                                "Line ${state.activeLine + 1} of ${state.lines.size}"
+                            } else {
+                                "Line ${state.activeLine + 1} of ${state.lines.size} · ${copy.followsVoice}"
+                            },
                             style = MaterialTheme.typography.bodyMedium,
                             color = SwaraColors.Muted,
                         )
@@ -963,7 +1476,7 @@ fun StudioRoute(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .padding(horizontal = 12.dp, vertical = 6.dp),
-                                maxLines = 1,
+                                maxLines = if (active) 3 else 2,
                                 overflow = TextOverflow.Ellipsis,
                                 style = MaterialTheme.typography.bodyLarge.copy(
                                     fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal,
@@ -976,24 +1489,6 @@ fun StudioRoute(
             }
         }
 
-        RecordingControlBar(
-            audioStateFlow = viewModel.audio.state,
-            stageNote = state.stageNote,
-            onSingClick = { currentlyRecording ->
-                if (currentlyRecording) {
-                    viewModel.toggleRecording()
-                } else {
-                    val granted = context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
-                        PackageManager.PERMISSION_GRANTED
-                    if (granted) {
-                        viewModel.toggleRecording()
-                    } else {
-                        micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                    }
-                }
-            },
-        )
-
         LiveVocalMonitorCard(
             audioStateFlow = viewModel.audio.state,
         )
@@ -1001,41 +1496,15 @@ fun StudioRoute(
         if (state.takes.isNotEmpty()) {
             Text(text = "Recorded takes", style = MaterialTheme.typography.titleLarge)
             state.takes.forEach { take ->
-                val isPlaying = playingRelativePath == take.relativePath
-                Surface(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(16.dp),
-                    color = if (isPlaying) SwaraColors.TealWash else SwaraColors.Card,
-                    border = BorderStroke(1.dp, if (isPlaying) SwaraColors.Teal else SwaraColors.Line),
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 12.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Column(Modifier.weight(1f)) {
-                            Text(text = take.label, style = MaterialTheme.typography.titleMedium)
-                            Text(
-                                text = take.durationText,
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = SwaraColors.Muted,
-                            )
-                        }
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(4.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            TextButton(onClick = { viewModel.deleteTake(take.id) }) {
-                                Text("Delete", color = SwaraColors.Clay)
-                            }
-                            Button(onClick = { viewModel.togglePlayClip(take.relativePath) }) {
-                                Text(if (isPlaying) "Stop" else "Play")
-                            }
-                        }
-                    }
-                }
+                TakeEditCard(
+                    take = take,
+                    isPlaying = playingRelativePath == take.relativePath,
+                    onPlay = { viewModel.togglePlayClip(take.relativePath) },
+                    onDelete = { pendingDeleteTake = take.id },
+                    onPrefer = { viewModel.preferTake(take.id) },
+                    onTrim = { start, duration -> viewModel.trimTake(take.id, start, duration) },
+                    onPunch = { start -> viewModel.punchFrom(take, start) },
+                )
             }
         }
 
@@ -1095,8 +1564,38 @@ fun StudioRoute(
         }
 
         OutlinedButton(onClick = onPublish, modifier = Modifier.fillMaxWidth()) {
-            Text("Mix & Save song")
+            Text(copy.mixSave)
         }
+    }
+    RecordingControlBar(
+        audioStateFlow = viewModel.audio.state,
+        stageNote = state.stageNote,
+        copy = copy,
+        onSingClick = { currentlyRecording ->
+            if (currentlyRecording) {
+                viewModel.toggleRecording()
+            } else {
+                val needed = buildList {
+                    if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) !=
+                        PackageManager.PERMISSION_GRANTED
+                    ) {
+                        add(Manifest.permission.RECORD_AUDIO)
+                    }
+                    if (state.kind == SessionKind.VIDEO &&
+                        context.checkSelfPermission(Manifest.permission.CAMERA) !=
+                        PackageManager.PERMISSION_GRANTED
+                    ) {
+                        add(Manifest.permission.CAMERA)
+                    }
+                }
+                if (needed.isEmpty()) {
+                    viewModel.toggleRecording()
+                } else {
+                    recordPermissionLauncher.launch(needed.toTypedArray())
+                }
+            }
+        },
+    )
     }
 }
 
@@ -1108,11 +1607,19 @@ fun StudioRoute(
 private fun RecordingControlBar(
     audioStateFlow: StateFlow<AudioEngineState>,
     stageNote: String?,
+    copy: AppCopy,
     onSingClick: (Boolean) -> Unit,
 ) {
     val isRecording by remember(audioStateFlow) {
-        audioStateFlow.map { it.status == EngineStatus.RECORDING }.distinctUntilChanged()
+        audioStateFlow.map { it.status == EngineStatus.RECORDING || it.status == EngineStatus.COUNTING }
+            .distinctUntilChanged()
     }.collectAsState(initial = false)
+    val isCounting by remember(audioStateFlow) {
+        audioStateFlow.map { it.status == EngineStatus.COUNTING }.distinctUntilChanged()
+    }.collectAsState(initial = false)
+    val countInBeat by remember(audioStateFlow) {
+        audioStateFlow.map { it.countInBeat }.distinctUntilChanged()
+    }.collectAsState(initial = 0)
     val elapsedSeconds by remember(audioStateFlow) {
         audioStateFlow.map { it.elapsedMs / 1000L }.distinctUntilChanged()
     }.collectAsState(initial = 0L)
@@ -1140,7 +1647,11 @@ private fun RecordingControlBar(
             ) {
                 Box(contentAlignment = Alignment.Center) {
                     Text(
-                        text = if (isRecording) "Stop" else "Sing",
+                        text = when {
+                            isCounting -> "$countInBeat"
+                            isRecording -> copy.stop
+                            else -> copy.sing
+                        },
                         color = Color.White,
                         style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
                     )
@@ -1148,10 +1659,10 @@ private fun RecordingControlBar(
             }
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = if (isRecording) {
-                        "Recording live · ${formatDuration(elapsedSeconds * 1000L)}"
-                    } else {
-                        "Stage microphone ready"
+                    text = when {
+                        isCounting -> if (countInBeat <= 1) copy.singOnOne else "$countInBeat"
+                        isRecording -> "${copy.recordingLive} · ${formatDuration(elapsedSeconds * 1000L)}"
+                        else -> copy.tapToSing
                     },
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -1161,13 +1672,9 @@ private fun RecordingControlBar(
                 Spacer(Modifier.height(2.dp))
                 Text(
                     text = stageNote
-                        ?: if (isRecording) {
-                            "Sing along with your lyrics. Tap Stop to save the take."
-                        } else {
-                            "Tap Sing to record your voice live."
-                        },
+                        ?: if (isRecording) copy.recordingLive else copy.tapToSing,
                     minLines = 2,
-                    maxLines = 2,
+                    maxLines = 3,
                     overflow = TextOverflow.Ellipsis,
                     style = MaterialTheme.typography.bodyMedium,
                     color = SwaraColors.Muted,
@@ -1421,20 +1928,12 @@ private data class ScaleTarget(
     val hz: Float,
 )
 
-private val cMajorSwaraScale = listOf(
-    ScaleTarget("Sa", "C4", 261.63f),
-    ScaleTarget("Re", "D4", 293.66f),
-    ScaleTarget("Ga", "E4", 329.63f),
-    ScaleTarget("Ma", "F4", 349.23f),
-    ScaleTarget("Pa", "G4", 392.00f),
-    ScaleTarget("Dha", "A4", 440.00f),
-    ScaleTarget("Ni", "B4", 493.88f),
-    ScaleTarget("Sa'", "C5", 523.25f),
-)
-
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun WarmupScaleCoachCard(
+    keyName: String,
+    scaleMode: ScaleMode,
+    practice: PracticeStats,
     audioStateFlow: StateFlow<AudioEngineState>,
     backing: BackingTrackUi?,
     playingRelativePath: String?,
@@ -1443,7 +1942,8 @@ private fun WarmupScaleCoachCard(
 ) {
     var selectedIdx by remember { mutableStateOf(0) }
     var calmPitchHz by remember { mutableStateOf(0f) }
-    val target = cMajorSwaraScale[selectedIdx]
+    val scale = remember(keyName, scaleMode) { MusicalKeys.scaleForKey(keyName, scaleMode) }
+    val target = scale.getOrElse(selectedIdx.coerceIn(0, scale.lastIndex)) { scale.first() }
 
     LaunchedEffect(audioStateFlow) {
         while (true) {
@@ -1477,7 +1977,7 @@ private fun WarmupScaleCoachCard(
                 Column(Modifier.weight(1f)) {
                     Text(text = "Swara & Scale Coach", style = MaterialTheme.typography.titleLarge)
                     Text(
-                        text = "Target: ${target.swara} (${target.note} · ${target.hz.roundToInt()} Hz)",
+                        text = "Target: ${target.swara} (${target.westernNote} · ${target.hz.roundToInt()} Hz)",
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         style = MaterialTheme.typography.bodyMedium,
@@ -1500,11 +2000,11 @@ private fun WarmupScaleCoachCard(
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                cMajorSwaraScale.forEachIndexed { idx, item ->
+                scale.forEachIndexed { idx, item ->
                     FilterChip(
                         selected = selectedIdx == idx,
                         onClick = { selectedIdx = idx },
-                        label = { Text("${item.swara} (${item.note})") },
+                        label = { Text("${item.swara} (${item.westernNote})") },
                     )
                 }
             }
@@ -1515,10 +2015,10 @@ private fun WarmupScaleCoachCard(
                 color = if (isHit) SwaraColors.TealWash else SwaraColors.Paper,
             ) {
                 val feedback = when {
-                    centsDiff == null -> "Tap Sing below and hold ${target.swara} (${target.note})"
-                    abs(centsDiff) <= 45 -> "Locked on ${target.swara} (${target.note})! Hold steady."
-                    centsDiff < 0 -> "Sing slightly higher ↑ to reach ${target.swara} (${target.note})"
-                    else -> "Sing slightly lower ↓ to reach ${target.swara} (${target.note})"
+                    centsDiff == null -> "Tap Sing below and hold ${target.swara} (${target.westernNote})"
+                    abs(centsDiff) <= 45 -> "Locked on ${target.swara} (${target.westernNote})! Hold steady."
+                    centsDiff < 0 -> "Sing slightly higher ↑ to reach ${target.swara} (${target.westernNote})"
+                    else -> "Sing slightly lower ↓ to reach ${target.swara} (${target.westernNote})"
                 }
                 Text(
                     text = feedback,
@@ -1529,6 +2029,23 @@ private fun WarmupScaleCoachCard(
                     color = if (isHit) SwaraColors.Teal else SwaraColors.Ink,
                 )
             }
+            val low = if (practice.lowestHz > 0f) {
+                VocalSignalAnalyzer.pitchToNoteAndSwara(practice.lowestHz).first
+            } else {
+                "—"
+            }
+            val high = if (practice.highestHz > 0f) {
+                VocalSignalAnalyzer.pitchToNoteAndSwara(practice.highestHz).first
+            } else {
+                "—"
+            }
+            Text(
+                text = "Score ${practice.scorePercent}% · ${practice.hits}/${practice.attempts} in tune · Range $low–$high",
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                style = MaterialTheme.typography.bodyMedium,
+                color = SwaraColors.Muted,
+            )
         }
     }
 }
@@ -1547,6 +2064,7 @@ private fun VerticalVideoStageCard(
     activeLyric: String,
     nextLyric: String,
     audioStateFlow: StateFlow<AudioEngineState>,
+    cameraController: SingerCameraController,
     onSelectTarget: (PublishTarget) -> Unit,
 ) {
     val audioState = audioStateFlow.collectAsState()
@@ -1597,29 +2115,33 @@ private fun VerticalVideoStageCard(
                 }
             }
 
-            // 9:16 vertical stage preview box
-            Surface(
+            Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(230.dp),
+                    .height(320.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+            Surface(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .aspectRatio(9f / 16f),
                 shape = RoundedCornerShape(18.dp),
                 color = SwaraColors.Ink,
             ) {
-                Box(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+                Box(modifier = Modifier.fillMaxSize()) {
+                    SingerCameraPreview(
+                        controller = cameraController,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                    Box(modifier = Modifier.fillMaxSize().padding(16.dp)) {
                     Canvas(modifier = Modifier.fillMaxSize()) {
                         val m = audioState.value.metrics
                         val amp = (m.midLevel * 0.6f + m.bassLevel * 0.4f).coerceIn(0.08f, 1f)
                         val center = Offset(size.width / 2f, size.height * 0.44f)
                         drawCircle(
-                            color = SwaraColors.Teal.copy(alpha = 0.25f),
-                            radius = size.minDimension * (0.22f + amp * 0.22f),
+                            color = SwaraColors.Teal.copy(alpha = 0.18f),
+                            radius = size.minDimension * (0.18f + amp * 0.16f),
                             center = center,
-                        )
-                        drawCircle(
-                            color = SwaraColors.Gold.copy(alpha = 0.35f),
-                            radius = size.minDimension * (0.14f + amp * 0.14f),
-                            center = center,
-                            style = Stroke(width = 2.dp.toPx()),
                         )
                     }
                     Row(
@@ -1664,6 +2186,8 @@ private fun VerticalVideoStageCard(
                         }
                     }
                 }
+                }
+            }
             }
         }
     }
@@ -1676,7 +2200,204 @@ private fun formatDuration(durationMs: Long): String {
     return "%d:%02d".format(minutes, seconds)
 }
 
-private fun writeSampleDroneWav(file: File, sampleRate: Int, durationSeconds: Int) {
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun MusicalSetupCard(
+    keyName: String,
+    scaleMode: ScaleMode,
+    tempoBpm: Float,
+    keyShiftSemitones: Int,
+    playbackRate: Float,
+    countInEnabled: Boolean,
+    metronomeEnabled: Boolean,
+    headphoneFx: Boolean,
+    punchStartMs: Long,
+    showBackingShift: Boolean,
+    guidePlaying: Boolean,
+    onKey: (String) -> Unit,
+    onMode: (ScaleMode) -> Unit,
+    onTempo: (Float) -> Unit,
+    onShift: (Int) -> Unit,
+    onRate: (Float) -> Unit,
+    onCountIn: (Boolean) -> Unit,
+    onMetronome: (Boolean) -> Unit,
+    onHeadphoneFx: (Boolean) -> Unit,
+    onPlayGuide: () -> Unit,
+    onClearPunch: () -> Unit,
+) {
+    val copy = LocalAppCopy.current
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+        color = SwaraColors.Card,
+        border = BorderStroke(1.dp, SwaraColors.Line),
+    ) {
+        Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(text = "Start in time & in key", style = MaterialTheme.typography.titleLarge)
+            Text(
+                text = "4-beat count-in, click, and a key that matches your range.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = SwaraColors.Muted,
+            )
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                MusicalKeys.ALL.forEach { key ->
+                    FilterChip(
+                        selected = key == keyName,
+                        onClick = { onKey(key) },
+                        label = { Text(key) },
+                    )
+                }
+            }
+            Text(
+                text = copy.raga,
+                style = MaterialTheme.typography.bodyMedium,
+                color = SwaraColors.Muted,
+            )
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                ScaleMode.entries.forEach { mode ->
+                    FilterChip(
+                        selected = mode == scaleMode,
+                        onClick = { onMode(mode) },
+                        label = { Text(mode.label()) },
+                    )
+                }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterChip(
+                    selected = countInEnabled,
+                    onClick = { onCountIn(!countInEnabled) },
+                    label = { Text(if (countInEnabled) "Count-in on" else "Count-in off") },
+                )
+                FilterChip(
+                    selected = metronomeEnabled,
+                    onClick = { onMetronome(!metronomeEnabled) },
+                    label = { Text(if (metronomeEnabled) "Click on" else "Click off") },
+                )
+                FilterChip(
+                    selected = headphoneFx,
+                    onClick = { onHeadphoneFx(!headphoneFx) },
+                    label = { Text(copy.headphoneFx) },
+                )
+                FilterChip(
+                    selected = guidePlaying,
+                    onClick = onPlayGuide,
+                    label = { Text(if (guidePlaying) copy.stopGuide else copy.playGuide) },
+                )
+            }
+            Text(
+                text = "Click tempo ${tempoBpm.roundToInt()} BPM",
+                style = MaterialTheme.typography.bodyMedium,
+                color = SwaraColors.Muted,
+            )
+            Slider(
+                value = tempoBpm,
+                onValueChange = onTempo,
+                valueRange = 60f..140f,
+            )
+            if (showBackingShift) {
+                Text(
+                    text = "Backing pitch ${if (keyShiftSemitones >= 0) "+" else ""}$keyShiftSemitones · speed ${(playbackRate * 100).roundToInt()}%",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = SwaraColors.Muted,
+                )
+                Slider(
+                    value = keyShiftSemitones.toFloat(),
+                    onValueChange = { onShift(it.roundToInt()) },
+                    valueRange = -6f..6f,
+                    steps = 11,
+                )
+                Slider(
+                    value = playbackRate,
+                    onValueChange = onRate,
+                    valueRange = 0.8f..1.2f,
+                )
+            }
+            if (punchStartMs > 0L) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = "Punch-in armed at ${formatDuration(punchStartMs)}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = SwaraColors.Gold,
+                    )
+                    TextButton(onClick = onClearPunch) { Text("Clear") }
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun TakeEditCard(
+    take: RecordedTakeUi,
+    isPlaying: Boolean,
+    onPlay: () -> Unit,
+    onDelete: () -> Unit,
+    onPrefer: () -> Unit,
+    onTrim: (Long, Long) -> Unit,
+    onPunch: (Long) -> Unit,
+) {
+    var startMs by remember(take.id, take.sourceInMs) { mutableStateOf(take.sourceInMs.toFloat()) }
+    var endMs by remember(take.id, take.sourceInMs, take.durationMs) {
+        mutableStateOf((take.sourceInMs + take.durationMs).toFloat())
+    }
+    val maxMs = take.sourceDurationMs.toFloat().coerceAtLeast(1f)
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        color = if (take.preferred) SwaraColors.TealWash else if (isPlaying) SwaraColors.TealWash else SwaraColors.Card,
+        border = BorderStroke(1.dp, if (take.preferred || isPlaying) SwaraColors.Teal else SwaraColors.Line),
+    ) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(text = take.label, style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        text = take.durationText,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = SwaraColors.Muted,
+                    )
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TextButton(onClick = onDelete) { Text("Delete", color = SwaraColors.Clay) }
+                    Button(onClick = onPlay) { Text(if (isPlaying) "Stop" else "Play") }
+                }
+            }
+            Text(
+                text = "Keep ${formatDuration(startMs.toLong())}–${formatDuration(endMs.toLong())}",
+                style = MaterialTheme.typography.bodyMedium,
+                color = SwaraColors.Muted,
+            )
+            Slider(value = startMs, onValueChange = { startMs = it.coerceIn(0f, endMs - 250f) }, valueRange = 0f..maxMs)
+            Slider(value = endMs, onValueChange = { endMs = it.coerceIn(startMs + 250f, maxMs) }, valueRange = 0f..maxMs)
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                    onClick = {
+                        val start = startMs.toLong().coerceAtLeast(0L)
+                        val duration = (endMs.toLong() - start).coerceAtLeast(250L)
+                        onTrim(start, duration)
+                    },
+                ) { Text("Trim") }
+                OutlinedButton(onClick = { onPunch(startMs.toLong()) }) { Text("Punch from here") }
+                FilterChip(
+                    selected = take.preferred,
+                    onClick = onPrefer,
+                    label = { Text(if (take.preferred) "In mix" else "Use in mix") },
+                )
+            }
+        }
+    }
+}
+
+private fun writeSampleDroneWav(file: File, sampleRate: Int, durationSeconds: Int, keyName: String = "C") {
     val totalSamples = sampleRate * durationSeconds
     val totalAudioBytes = totalSamples * 2L
     RandomAccessFile(file, "rw").use { raf ->
@@ -1697,7 +2418,8 @@ private fun writeSampleDroneWav(file: File, sampleRate: Int, durationSeconds: In
             putInt(totalAudioBytes.toInt())
         }
         raf.write(header.array())
-        // Pure harmonic C3 (130.81 Hz) + C4 (261.63 Hz) tanpura drone so pitch tracking is rock-steady
+        val tonic = MusicalKeys.tonicC3Hz(keyName)
+        val octave = tonic * 2.0
         val chunk = ByteBuffer.allocate(4096).order(ByteOrder.LITTLE_ENDIAN)
         for (i in 0 until totalSamples) {
             if (chunk.remaining() < 2) {
@@ -1707,8 +2429,8 @@ private fun writeSampleDroneWav(file: File, sampleRate: Int, durationSeconds: In
             val t = i.toDouble() / sampleRate.toDouble()
             val swell = 0.82 + 0.18 * sin(2.0 * PI * 0.20 * t)
             val wave = (
-                0.72 * sin(2.0 * PI * 130.81 * t) +
-                    0.28 * sin(2.0 * PI * 261.63 * t)
+                0.72 * sin(2.0 * PI * tonic * t) +
+                    0.28 * sin(2.0 * PI * octave * t)
                 ) * swell
             val pcm = (wave * 9500.0).toInt().coerceIn(-32767, 32767).toShort()
             chunk.putShort(pcm)
@@ -1717,6 +2439,76 @@ private fun writeSampleDroneWav(file: File, sampleRate: Int, durationSeconds: In
             raf.write(chunk.array(), 0, chunk.position())
         }
     }
+}
+
+private fun writeGuideMelodyWav(
+    file: File,
+    sampleRate: Int,
+    keyName: String,
+    mode: ScaleMode,
+) {
+    val scale = MusicalKeys.scaleForKey(keyName, mode)
+    val noteMs = 420
+    val gapMs = 80
+    val totalMs = scale.size * (noteMs + gapMs)
+    val totalSamples = (sampleRate * totalMs) / 1000
+    val totalAudioBytes = totalSamples * 2L
+    RandomAccessFile(file, "rw").use { raf ->
+        raf.setLength(0L)
+        val header = ByteBuffer.allocate(44).order(ByteOrder.LITTLE_ENDIAN).apply {
+            put("RIFF".toByteArray(Charsets.US_ASCII))
+            putInt((36L + totalAudioBytes).toInt())
+            put("WAVE".toByteArray(Charsets.US_ASCII))
+            put("fmt ".toByteArray(Charsets.US_ASCII))
+            putInt(16)
+            putShort(1)
+            putShort(1)
+            putInt(sampleRate)
+            putInt(sampleRate * 2)
+            putShort(2)
+            putShort(16)
+            put("data".toByteArray(Charsets.US_ASCII))
+            putInt(totalAudioBytes.toInt())
+        }
+        raf.write(header.array())
+        val chunk = ByteBuffer.allocate(4096).order(ByteOrder.LITTLE_ENDIAN)
+        val noteSamples = (sampleRate * noteMs) / 1000
+        val gapSamples = (sampleRate * gapMs) / 1000
+        var written = 0
+        fun putSample(value: Short) {
+            if (chunk.remaining() < 2) {
+                raf.write(chunk.array(), 0, chunk.position())
+                chunk.clear()
+            }
+            chunk.putShort(value)
+            written += 1
+        }
+        scale.forEach { note ->
+            for (i in 0 until noteSamples) {
+                val t = i.toDouble() / sampleRate.toDouble()
+                val env = when {
+                    i < noteSamples / 12 -> i.toDouble() / (noteSamples / 12.0)
+                    i > noteSamples * 3 / 4 -> ((noteSamples - i).toDouble() / (noteSamples / 4.0))
+                    else -> 1.0
+                }.coerceIn(0.0, 1.0)
+                val wave = sin(2.0 * PI * note.hz * t) * env
+                putSample((wave * 11_000.0).toInt().coerceIn(-32767, 32767).toShort())
+            }
+            repeat(gapSamples) { putSample(0) }
+        }
+        while (written < totalSamples) putSample(0)
+        if (chunk.position() > 0) {
+            raf.write(chunk.array(), 0, chunk.position())
+        }
+    }
+}
+
+private fun ScaleMode.label(): String = when (this) {
+    ScaleMode.MAJOR -> "Major"
+    ScaleMode.MINOR -> "Minor"
+    ScaleMode.MOHANAM -> "Mohanam"
+    ScaleMode.BHAIRAV -> "Bhairav"
+    ScaleMode.YAMAN -> "Yaman"
 }
 
 private fun SessionKind.label(): String = when (this) {

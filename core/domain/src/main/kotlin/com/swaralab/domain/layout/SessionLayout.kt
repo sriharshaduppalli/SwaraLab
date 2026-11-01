@@ -12,9 +12,13 @@ object SessionLayout {
 
     fun takeWav(takeId: String): String = "$TAKES/$takeId.wav"
 
+    fun performanceVideo(): String = "$VIDEO/performance.mp4"
+
     fun backingFile(fileName: String): String = "$BACKING/$fileName"
 
     fun exportFile(fileName: String): String = "$EXPORTS/$fileName"
+
+    fun inviteFile(fileName: String): String = "$EXPORTS/$fileName"
 
     fun isSafeRelative(path: String): Boolean {
         if (path.isBlank()) return false

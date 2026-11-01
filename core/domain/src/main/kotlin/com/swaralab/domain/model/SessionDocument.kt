@@ -20,15 +20,23 @@ fun defaultTitle(kind: SessionKind): String = when (kind) {
 enum class ScaleMode {
     MAJOR,
     MINOR,
+    MOHANAM,
+    BHAIRAV,
+    YAMAN,
 }
 
 @Serializable
 data class MusicalSettings(
-    val tempoBpm: Double? = null,
-    val keyName: String? = null,
-    val mode: ScaleMode? = null,
+    val tempoBpm: Double? = 80.0,
+    val keyName: String? = "C",
+    val mode: ScaleMode? = ScaleMode.MAJOR,
     val timeSignature: String = "4/4",
     val rangeProfileId: String? = null,
+    val keyShiftSemitones: Int = 0,
+    val playbackRate: Float = 1f,
+    val countInEnabled: Boolean = true,
+    val metronomeEnabled: Boolean = false,
+    val lyricLanguage: String = "auto",
 )
 
 @Serializable
@@ -89,7 +97,12 @@ data class ClipState(
     val sourceInMs: Long,
     val durationMs: Long,
     val label: String = "",
-)
+    val preferred: Boolean = false,
+    val sourceDurationMs: Long = 0L,
+) {
+    val usableSourceDurationMs: Long
+        get() = sourceDurationMs.takeIf { it > 0L } ?: (sourceInMs + durationMs).coerceAtLeast(durationMs)
+}
 
 @Serializable
 data class TrackState(
@@ -277,6 +290,18 @@ data class SongwriterNotes(
     val midiRelativePath: String? = null,
 )
 
+@Serializable
+data class PracticeStats(
+    val hits: Int = 0,
+    val attempts: Int = 0,
+    val lowestHz: Float = 0f,
+    val highestHz: Float = 0f,
+    val lastScore: Int = 0,
+) {
+    val scorePercent: Int
+        get() = if (attempts <= 0) lastScore else ((hits * 100f) / attempts).toInt().coerceIn(0, 100)
+}
+
 /**
  * Snapshot of one performance. Media bytes live beside this file in the session folder.
  * The folder is the source of truth. A database, if added later, only indexes these files.
@@ -300,4 +325,5 @@ data class SessionDocument(
     val chain: VocalChain = VocalChain(),
     val publish: PublishSettings = PublishSettings(),
     val songwriter: SongwriterNotes = SongwriterNotes(),
+    val practice: PracticeStats = PracticeStats(),
 )

@@ -1,11 +1,14 @@
 package com.swaralab.engine.audio
 
 import android.annotation.SuppressLint
+import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioRecord
+import android.media.AudioTrack
 import android.media.MediaPlayer
 import android.media.MediaRecorder
 import android.os.Build
+import com.swaralab.domain.audio.MusicalKeys
 import com.swaralab.domain.audio.VocalMetrics
 import com.swaralab.domain.audio.VocalSignalAnalyzer
 import com.swaralab.domain.identity.IdGenerator
@@ -68,7 +71,16 @@ class AndroidAudioEngine(
     private var mediaPlayer: MediaPlayer? = null
 
     @Volatile
-    private var armedBackingRelativePath: String? = null
+    private var armedRequest: ArmRequest? = null
+
+    @Volatile
+    private var countInJob: Job? = null
+
+    @Volatile
+    private var clickTrack: AudioTrack? = null
+
+    @Volatile
+    private var monitorTrack: AudioTrack? = null
 
     private data class ActiveRecording(
         val sessionId: String,
@@ -76,13 +88,13 @@ class AndroidAudioEngine(
         val relativePath: String,
         val wavFile: File,
         val sampleRate: Int,
-        val startedAtMs: Long,
+        var startedAtMs: Long,
         @Volatile var maxPeak: Float = 0f,
         @Volatile var totalAudioBytes: Long = 0L,
     )
 
     override suspend fun arm(request: ArmRequest): MonitorDecision {
-        armedBackingRelativePath = request.backingRelativePath
+        armedRequest = request
         val decision = if (request.backingRelativePath != null) {
             MonitorPolicy.evaluate(request.output, MonitorPurpose.RECORD)
         } else {
@@ -106,48 +118,23 @@ class AndroidAudioEngine(
     @SuppressLint("MissingPermission")
     override suspend fun startTake(): TakeControl = withContext(Dispatchers.IO) {
         stopPlayback()
+        countInJob?.cancel()
         val current = states.value
         val sessionId = current.sessionId ?: return@withContext TakeControl.TransportUnavailable
         val decision = current.decision ?: MonitorDecision.ALLOW
         if (decision == MonitorDecision.BLOCK) {
             return@withContext TakeControl.Refused(decision)
         }
-        if (recordingJob?.isActive == true) {
-            val runningId = activeTake?.takeId ?: return@withContext TakeControl.TransportUnavailable
+        if (recordingJob?.isActive == true || current.status == EngineStatus.COUNTING) {
+            val runningId = activeTake?.takeId ?: return@withContext TakeControl.Started("counting")
             return@withContext TakeControl.Started(runningId)
         }
-
-        val sampleRate = 48_000
-        val channelConfig = AudioFormat.CHANNEL_IN_MONO
-        val audioFormat = AudioFormat.ENCODING_PCM_16BIT
-        val minBuffer = AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat)
-        if (minBuffer <= 0) {
-            return@withContext TakeControl.TransportUnavailable
-        }
-        val bufferSize = max(minBuffer * 2, 8192)
-
-        val recorder = try {
-            AudioRecord(
-                MediaRecorder.AudioSource.MIC,
-                sampleRate,
-                channelConfig,
-                audioFormat,
-                bufferSize,
-            )
-        } catch (_: Throwable) {
-            return@withContext TakeControl.TransportUnavailable
-        }
-
-        if (recorder.state != AudioRecord.STATE_INITIALIZED) {
-            recorder.release()
-            return@withContext TakeControl.TransportUnavailable
-        }
-
+        val request = armedRequest
         val takeId = ids.newId()
         val relativePath = SessionLayout.takeWav(takeId)
         val wavFile = File(File(projectsRoot, sessionId), relativePath)
         wavFile.parentFile?.mkdirs()
-
+        val sampleRate = 48_000
         val active = ActiveRecording(
             sessionId = sessionId,
             takeId = takeId,
@@ -158,22 +145,100 @@ class AndroidAudioEngine(
         )
         activeTake = active
 
-        try {
-            recorder.startRecording()
-        } catch (_: Throwable) {
-            recorder.release()
+        val countInBeats = if (request?.countInEnabled == true) 4 else 0
+        val tempoBpm = (request?.tempoBpm ?: 80.0).coerceIn(40.0, 200.0)
+        val beatMs = ((60_000.0 / tempoBpm).toLong()).coerceIn(280L, 1_500L)
+        if (countInBeats > 0) {
+            states.update {
+                it.copy(
+                    status = EngineStatus.COUNTING,
+                    countInBeat = countInBeats,
+                    peak = 0f,
+                    elapsedMs = 0L,
+                    playingRelativePath = null,
+                    metrics = VocalMetrics(),
+                )
+            }
+            countInJob = scope.launch {
+                for (beat in countInBeats downTo 1) {
+                    if (!isActive) return@launch
+                    states.update { state -> state.copy(status = EngineStatus.COUNTING, countInBeat = beat) }
+                    playClick(sampleRate, accent = beat == countInBeats)
+                    delay(beatMs)
+                }
+                if (isActive) {
+                    val opened = openRecorder(sampleRate)
+                    if (opened != null) {
+                        beginCapture(opened, active, request)
+                    } else {
+                        activeTake = null
+                        states.update { it.copy(status = EngineStatus.ARMED, countInBeat = 0) }
+                    }
+                }
+            }
+            return@withContext TakeControl.Started(takeId)
+        }
+
+        val recorder = openRecorder(sampleRate) ?: run {
             activeTake = null
             return@withContext TakeControl.TransportUnavailable
         }
+        beginCapture(recorder, active, request)
+        TakeControl.Started(takeId)
+    }
 
-        val backingRelative = armedBackingRelativePath
+    @SuppressLint("MissingPermission")
+    private fun openRecorder(sampleRate: Int): AudioRecord? {
+        val channelConfig = AudioFormat.CHANNEL_IN_MONO
+        val audioFormat = AudioFormat.ENCODING_PCM_16BIT
+        val minBuffer = AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat)
+        if (minBuffer <= 0) return null
+        val bufferSize = max(minBuffer * 2, 8192)
+        val recorder = try {
+            AudioRecord(
+                MediaRecorder.AudioSource.MIC,
+                sampleRate,
+                channelConfig,
+                audioFormat,
+                bufferSize,
+            )
+        } catch (_: Throwable) {
+            return null
+        }
+        if (recorder.state != AudioRecord.STATE_INITIALIZED) {
+            recorder.release()
+            return null
+        }
+        return try {
+            recorder.startRecording()
+            recorder
+        } catch (_: Throwable) {
+            recorder.release()
+            null
+        }
+    }
+
+    private fun beginCapture(
+        recorder: AudioRecord,
+        active: ActiveRecording,
+        request: ArmRequest?,
+    ) {
+        val backingRelative = request?.backingRelativePath
         if (backingRelative != null) {
-            val backingFile = File(File(projectsRoot, sessionId), backingRelative)
+            val backingFile = File(File(projectsRoot, active.sessionId), backingRelative)
             if (backingFile.isFile) {
                 runCatching {
                     mediaPlayer = MediaPlayer().apply {
                         setDataSource(backingFile.absolutePath)
+                        isLooping = true
                         prepare()
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                            val pitch = Math.pow(2.0, (request?.keyShiftSemitones ?: 0) / 12.0).toFloat()
+                            val speed = (request?.playbackRate ?: 1f).coerceIn(0.7f, 1.35f)
+                            playbackParams = playbackParams.setPitch(pitch).setSpeed(speed)
+                        }
+                        val punch = (request?.punchStartMs ?: 0L).toInt().coerceAtLeast(0)
+                        if (punch > 0) seekTo(punch)
                         start()
                     }
                 }
@@ -183,11 +248,26 @@ class AndroidAudioEngine(
         states.update {
             it.copy(
                 status = EngineStatus.RECORDING,
+                countInBeat = 0,
                 peak = 0f,
                 elapsedMs = 0L,
                 playingRelativePath = null,
                 metrics = VocalMetrics(),
             )
+        }
+        active.startedAtMs = System.currentTimeMillis()
+
+        val metronomeEnabled = request?.metronomeEnabled == true
+        val tempoBpm = (request?.tempoBpm ?: 80.0).coerceIn(40.0, 200.0)
+        val beatSamples = ((active.sampleRate * 60.0) / tempoBpm).toInt().coerceAtLeast(1)
+        val rootSemi = MusicalKeys.semitoneOf(request?.rootKeyName)
+        val sampleRate = active.sampleRate
+        val wavFile = active.wavFile
+        val monitorEnabled = request?.monitorEnabled == true
+        val monitorReverb = (request?.monitorReverb ?: 0f).coerceIn(0f, 1f)
+        val monitorDelay = (request?.monitorDelay ?: 0f).coerceIn(0f, 1f)
+        if (monitorEnabled) {
+            openMonitorTrack(sampleRate)
         }
 
         recordingJob = scope.launch {
@@ -196,6 +276,9 @@ class AndroidAudioEngine(
                 writeWavHeader(raf, sampleRate, 0L)
                 val shorts = ShortArray(2048)
                 val byteBuffer = ByteBuffer.allocate(shorts.size * 2).order(ByteOrder.LITTLE_ENDIAN)
+                val delayLine = FloatArray(((sampleRate * 0.18).toInt()).coerceAtLeast(1))
+                val monitorState = intArrayOf(0)
+                val reverbState = floatArrayOf(0f)
                 val isEmulator = Build.FINGERPRINT.contains("generic", ignoreCase = true) ||
                     Build.MODEL.contains("sdk", ignoreCase = true) ||
                     Build.HARDWARE.contains("ranchu", ignoreCase = true)
@@ -229,7 +312,11 @@ class AndroidAudioEngine(
                                 }
                                 peakSample = 14_500
                             }
+                            val previousCursor = sampleCursor
                             sampleCursor += read.toLong()
+                            if (metronomeEnabled && previousCursor / beatSamples != sampleCursor / beatSamples) {
+                                playClick(sampleRate, accent = (sampleCursor / beatSamples) % 4L == 0L)
+                            }
                             for (i in 0 until read) {
                                 val sample = shorts[i]
                                 byteBuffer.putShort(sample)
@@ -238,6 +325,17 @@ class AndroidAudioEngine(
                             }
                             raf.write(byteBuffer.array(), 0, read * 2)
                             active.totalAudioBytes += (read * 2).toLong()
+                            if (monitorEnabled) {
+                                writeMonitor(
+                                    shorts = shorts,
+                                    length = read,
+                                    delayLine = delayLine,
+                                    delayIndex = monitorState,
+                                    reverbState = reverbState,
+                                    reverb = monitorReverb,
+                                    delay = monitorDelay,
+                                )
+                            }
                             val normalizedPeak = (peakSample / 32768f).coerceIn(0f, 1f)
                             if (normalizedPeak > active.maxPeak) {
                                 active.maxPeak = normalizedPeak
@@ -251,6 +349,7 @@ class AndroidAudioEngine(
                                     length = read,
                                     sampleRate = sampleRate,
                                     previous = states.value.metrics,
+                                    rootSemitone = rootSemi,
                                 )
                                 states.update { state ->
                                     state.copy(
@@ -270,12 +369,12 @@ class AndroidAudioEngine(
                 }
             }
         }
-
-        TakeControl.Started(takeId)
     }
 
     override suspend fun stopTake(): FinishedTake? = withContext(Dispatchers.IO) {
         stopPlayback()
+        countInJob?.cancelAndJoin()
+        countInJob = null
         val job = recordingJob
         val active = activeTake
         recordingJob = null
@@ -283,11 +382,14 @@ class AndroidAudioEngine(
         if (job != null) {
             job.cancelAndJoin()
         }
+        releaseClickTrack()
+        releaseMonitorTrack()
         states.update {
             it.copy(
                 status = EngineStatus.ARMED,
                 peak = 0f,
                 elapsedMs = 0L,
+                countInBeat = 0,
             )
         }
         if (active == null || !active.wavFile.isFile || active.totalAudioBytes <= 0L) {
@@ -301,7 +403,7 @@ class AndroidAudioEngine(
         )
     }
 
-    override suspend fun playClip(sessionId: String, relativePath: String): Unit = withContext(Dispatchers.IO) {
+    override suspend fun playClip(sessionId: String, relativePath: String, loop: Boolean): Unit = withContext(Dispatchers.IO) {
         if (states.value.playingRelativePath == relativePath) {
             stopPlayback()
             return@withContext
@@ -312,8 +414,11 @@ class AndroidAudioEngine(
         runCatching {
             val player = MediaPlayer().apply {
                 setDataSource(file.absolutePath)
-                setOnCompletionListener {
-                    stopPlayback()
+                isLooping = loop
+                if (!loop) {
+                    setOnCompletionListener {
+                        stopPlayback()
+                    }
                 }
                 prepare()
                 start()
@@ -383,11 +488,125 @@ class AndroidAudioEngine(
 
     override fun disarm() {
         stopPlayback()
+        countInJob?.cancel()
+        countInJob = null
         val job = recordingJob
         recordingJob = null
         activeTake = null
         job?.cancel()
+        releaseClickTrack()
+        releaseMonitorTrack()
         states.value = AudioEngineState(transportConnected = true)
+    }
+
+    private fun playClick(sampleRate: Int, accent: Boolean) {
+        runCatching {
+            val frames = (sampleRate * 0.035).toInt().coerceAtLeast(32)
+            val freq = if (accent) 1320.0 else 880.0
+            val shorts = ShortArray(frames)
+            for (i in 0 until frames) {
+                val env = 1.0 - (i / frames.toDouble())
+                shorts[i] = (sin(2.0 * PI * freq * i / sampleRate) * env * 18_000.0)
+                    .toInt()
+                    .coerceIn(-32767, 32767)
+                    .toShort()
+            }
+            val bytes = ByteBuffer.allocate(frames * 2).order(ByteOrder.LITTLE_ENDIAN)
+            shorts.forEach { bytes.putShort(it) }
+            val track = clickTrack ?: AudioTrack.Builder()
+                .setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                        .build(),
+                )
+                .setAudioFormat(
+                    AudioFormat.Builder()
+                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                        .setSampleRate(sampleRate)
+                        .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                        .build(),
+                )
+                .setTransferMode(AudioTrack.MODE_STREAM)
+                .setBufferSizeInBytes(sampleRate / 4)
+                .build()
+                .also {
+                    clickTrack = it
+                    it.play()
+                }
+            track.write(bytes.array(), 0, frames * 2)
+        }
+    }
+
+    private fun openMonitorTrack(sampleRate: Int) {
+        if (monitorTrack != null) return
+        runCatching {
+            monitorTrack = AudioTrack.Builder()
+                .setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                        .build(),
+                )
+                .setAudioFormat(
+                    AudioFormat.Builder()
+                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                        .setSampleRate(sampleRate)
+                        .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                        .build(),
+                )
+                .setTransferMode(AudioTrack.MODE_STREAM)
+                .setBufferSizeInBytes(sampleRate / 5)
+                .build()
+                .also { it.play() }
+        }
+    }
+
+    private fun writeMonitor(
+        shorts: ShortArray,
+        length: Int,
+        delayLine: FloatArray,
+        delayIndex: IntArray,
+        reverbState: FloatArray,
+        reverb: Float,
+        delay: Float,
+    ) {
+        val track = monitorTrack ?: return
+        val wet = ByteBuffer.allocate(length * 2).order(ByteOrder.LITTLE_ENDIAN)
+        var idx = delayIndex[0]
+        var rev = reverbState[0]
+        val delayMix = delay * 0.35f
+        val reverbMix = reverb * 0.28f
+        for (i in 0 until length) {
+            val dry = shorts[i] / 32768f
+            val delayed = delayLine[idx]
+            delayLine[idx] = dry + delayed * 0.25f
+            idx = (idx + 1) % delayLine.size
+            rev = rev * 0.92f + dry * 0.08f
+            val mixed = (dry + delayed * delayMix + rev * reverbMix).coerceIn(-1f, 1f)
+            wet.putShort((mixed * 22000f).toInt().coerceIn(-32767, 32767).toShort())
+        }
+        delayIndex[0] = idx
+        reverbState[0] = rev
+        track.write(wet.array(), 0, length * 2)
+    }
+
+    private fun releaseMonitorTrack() {
+        val track = monitorTrack
+        monitorTrack = null
+        if (track != null) {
+            runCatching { track.stop() }
+            runCatching { track.release() }
+        }
+    }
+
+    private fun releaseClickTrack() {
+        val track = clickTrack
+        clickTrack = null
+        if (track != null) {
+            runCatching { track.stop() }
+            runCatching { track.release() }
+        }
     }
 
     private fun writeWavHeader(raf: RandomAccessFile, sampleRate: Int, totalAudioBytes: Long) {

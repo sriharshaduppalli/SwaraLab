@@ -3,6 +3,7 @@ package com.swaralab.session
 import com.swaralab.domain.codec.SessionCodec
 import com.swaralab.domain.layout.SessionLayout
 import com.swaralab.domain.model.SessionDocument
+import com.swaralab.domain.model.TrackRole
 import com.swaralab.domain.port.SessionRepository
 import com.swaralab.domain.port.SessionSummary
 import kotlinx.coroutines.Dispatchers
@@ -52,6 +53,9 @@ class FileSessionRepository(
                     title = document.title,
                     kind = document.kind,
                     updatedAtEpochMs = document.updatedAtEpochMs,
+                    takeCount = document.tracks
+                        .filter { it.role != TrackRole.BACKING }
+                        .sumOf { it.clips.size },
                 )
             }
             .sortedByDescending { it.updatedAtEpochMs }

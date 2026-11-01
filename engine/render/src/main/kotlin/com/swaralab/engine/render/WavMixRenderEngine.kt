@@ -4,10 +4,12 @@ import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import com.swaralab.domain.layout.SessionLayout
+import com.swaralab.domain.model.ClipState
 import com.swaralab.domain.model.SessionDocument
 import com.swaralab.domain.model.TrackRole
 import com.swaralab.domain.model.VocalChain
 import com.swaralab.domain.model.VocalPreset
+import com.swaralab.domain.port.ExportKind
 import com.swaralab.domain.port.ExportRequest
 import com.swaralab.domain.port.ExportResult
 import com.swaralab.domain.port.RenderEngine
@@ -37,42 +39,11 @@ class WavMixRenderEngine(
             val sessionFolder = File(projectsRoot, document.id)
             val targetSampleRate = 48_000
 
-            // 1. Decode all unmuted vocal tracks and apply per-track gainDb
-            val vocalBuffers = mutableListOf<FloatArray>()
-            for (track in document.tracks) {
-                if (track.role == TrackRole.BACKING || track.mute) continue
-                val trackGain = dbToLinear(track.gainDb)
-                for (clip in track.clips) {
-                    val file = File(sessionFolder, clip.sourceRelativePath)
-                    if (!file.isFile || file.length() <= 44L) continue
-                    val pcm = readPcm16MonoWav(file) ?: continue
-                    if (pcm.isEmpty()) continue
-                    val floats = FloatArray(pcm.size) { idx ->
-                        (pcm[idx] / 32768f) * trackGain
-                    }
-                    vocalBuffers += floats
-                }
-            }
-
-            if (vocalBuffers.isEmpty()) {
+            val vocalMix = mixVocalTracks(document, sessionFolder, targetSampleRate)
+            if (vocalMix == null) {
                 return@withContext ExportResult.Waiting(
                     "Record at least one vocal take on the Sing stage before mixing.",
                 )
-            }
-
-            // Sum all vocal parts together and apply vocal sync offset (compensationMs)
-            val rawVocalMax = vocalBuffers.maxOf { it.size }
-            val shiftSamples = ((document.latency.compensationMs / 1000.0) * targetSampleRate).toInt()
-            val shiftedVocalSize = (rawVocalMax + max(0, shiftSamples)).coerceAtLeast(1)
-            val vocalMix = FloatArray(shiftedVocalSize)
-
-            for (buf in vocalBuffers) {
-                for (i in buf.indices) {
-                    val destIdx = i + shiftSamples
-                    if (destIdx in vocalMix.indices) {
-                        vocalMix[destIdx] += buf[i]
-                    }
-                }
             }
 
             // 2. Apply VocalChain DSP (Denoise, Compression, Presence, Reverb, Echo/Delay)
@@ -85,7 +56,15 @@ class WavMixRenderEngine(
                 val backingFile = File(sessionFolder, backingClip.sourceRelativePath)
                 if (backingFile.isFile) {
                     val gain = dbToLinear(backingTrack.gainDb)
-                    decodeAudioFileToMono48k(backingFile, targetSampleRate)?.also { arr ->
+                    val decoded = decodeAudioFileToMono48k(backingFile, targetSampleRate)
+                    val rate = document.musical.playbackRate.coerceIn(0.7f, 1.35f)
+                    val pitch = 2.0.pow(document.musical.keyShiftSemitones / 12.0).toFloat()
+                    val stretched = if (decoded != null) {
+                        resample(decoded, rate * pitch)
+                    } else {
+                        null
+                    }
+                    stretched?.also { arr ->
                         for (i in arr.indices) {
                             arr[i] *= gain
                         }
@@ -131,15 +110,145 @@ class WavMixRenderEngine(
                 .replace(Regex("[^a-z0-9]+"), "-")
                 .trim('-')
                 .ifBlank { "song" }
-            val fileName = "$safeTitle-${request.target.name.lowercase()}.wav"
-            val relativePath = SessionLayout.exportFile(fileName)
-            val outFile = File(sessionFolder, relativePath)
-            outFile.parentFile?.mkdirs()
-
-            writePcm16MonoWav(outFile, targetSampleRate, master)
             val durationMs = ((master.size * 1000L) / targetSampleRate).coerceAtLeast(1L)
-            ExportResult.Written(relativePath = relativePath, durationMs = durationMs)
+            when (request.kind) {
+                ExportKind.VOCALS -> {
+                    val fileName = "$safeTitle-vocals.wav"
+                    val relativePath = SessionLayout.exportFile(fileName)
+                    val outFile = File(sessionFolder, relativePath).also { it.parentFile?.mkdirs() }
+                    writePcm16MonoWav(outFile, targetSampleRate, vocalMix)
+                    ExportResult.Written(relativePath = relativePath, durationMs = durationMs)
+                }
+                ExportKind.BACKING -> {
+                    if (backingSamples == null) {
+                        ExportResult.Waiting("Add a backing track before exporting the instrumental stem.")
+                    } else {
+                        val fileName = "$safeTitle-backing.wav"
+                        val relativePath = SessionLayout.exportFile(fileName)
+                        val outFile = File(sessionFolder, relativePath).also { it.parentFile?.mkdirs() }
+                        writePcm16MonoWav(outFile, targetSampleRate, backingSamples)
+                        ExportResult.Written(relativePath = relativePath, durationMs = durationMs)
+                    }
+                }
+                ExportKind.COMPACT -> {
+                    val fileName = "$safeTitle-${request.target.name.lowercase()}.m4a"
+                    val relativePath = SessionLayout.exportFile(fileName)
+                    val outFile = File(sessionFolder, relativePath).also { it.parentFile?.mkdirs() }
+                    if (CompactAudioEncoder.writeAacM4a(outFile, targetSampleRate, master)) {
+                        ExportResult.Written(relativePath = relativePath, durationMs = durationMs)
+                    } else {
+                        ExportResult.Waiting("Could not encode compact audio on this device.")
+                    }
+                }
+                ExportKind.VIDEO -> {
+                    val fileName = "$safeTitle-${request.target.name.lowercase()}.mp4"
+                    val relativePath = SessionLayout.exportFile(fileName)
+                    val outFile = File(sessionFolder, relativePath).also { it.parentFile?.mkdirs() }
+                    val cameraFile = File(sessionFolder, SessionLayout.performanceVideo())
+                    val audioSidecar = File(sessionFolder, SessionLayout.exportFile("$safeTitle-video-audio.m4a"))
+                    val cameraMuxed = if (cameraFile.isFile && CompactAudioEncoder.writeAacM4a(audioSidecar, targetSampleRate, master)) {
+                        CameraMixMuxer.mux(cameraFile, audioSidecar, outFile)
+                    } else {
+                        false
+                    }
+                    audioSidecar.delete()
+                    if (cameraMuxed) {
+                        ExportResult.Written(
+                            relativePath = relativePath,
+                            durationMs = durationMs,
+                            videoRelativePath = relativePath,
+                        )
+                    } else {
+                        ExportResult.Waiting("Sing a camera take on the Video stage first, or export a lyric card.")
+                    }
+                }
+                ExportKind.LYRIC_VIDEO -> {
+                    val fileName = "$safeTitle-lyric-card.mp4"
+                    val relativePath = SessionLayout.exportFile(fileName)
+                    val outFile = File(sessionFolder, relativePath).also { it.parentFile?.mkdirs() }
+                    if (LyricVideoRenderer.writeMp4(outFile, document, master, targetSampleRate)) {
+                        ExportResult.Written(
+                            relativePath = relativePath,
+                            durationMs = durationMs,
+                            videoRelativePath = relativePath,
+                        )
+                    } else {
+                        ExportResult.Waiting("Could not render the lyric card on this device.")
+                    }
+                }
+                ExportKind.MIX -> {
+                    val fileName = "$safeTitle-${request.target.name.lowercase()}.wav"
+                    val relativePath = SessionLayout.exportFile(fileName)
+                    val outFile = File(sessionFolder, relativePath).also { it.parentFile?.mkdirs() }
+                    writePcm16MonoWav(outFile, targetSampleRate, master)
+                    ExportResult.Written(relativePath = relativePath, durationMs = durationMs)
+                }
+            }
         }
+
+    private fun mixVocalTracks(
+        document: SessionDocument,
+        sessionFolder: File,
+        sampleRate: Int,
+    ): FloatArray? {
+        val placed = mutableListOf<Pair<Int, FloatArray>>()
+        var latestEnd = 0
+        for (track in document.tracks) {
+            if (track.role == TrackRole.BACKING || track.mute) continue
+            val trackGain = dbToLinear(track.gainDb)
+            val chosen = clipsForMix(track.clips)
+            for (clip in chosen) {
+                val file = File(sessionFolder, clip.sourceRelativePath)
+                if (!file.isFile || file.length() <= 44L) continue
+                val pcm = readPcm16MonoWav(file) ?: continue
+                if (pcm.isEmpty()) continue
+                val cropped = cropClip(pcm, sampleRate, clip)
+                if (cropped.isEmpty()) continue
+                val floats = FloatArray(cropped.size) { idx -> (cropped[idx] / 32768f) * trackGain }
+                val start = ((clip.timelineStartMs * sampleRate) / 1000L).toInt().coerceAtLeast(0)
+                placed += start to floats
+                latestEnd = max(latestEnd, start + floats.size)
+            }
+        }
+        if (placed.isEmpty()) return null
+        val shiftSamples = ((document.latency.compensationMs / 1000.0) * sampleRate).toInt()
+        val vocalMix = FloatArray((latestEnd + max(0, shiftSamples)).coerceAtLeast(1))
+        for ((start, buf) in placed) {
+            for (i in buf.indices) {
+                val destIdx = i + start + shiftSamples
+                if (destIdx in vocalMix.indices) vocalMix[destIdx] += buf[i]
+            }
+        }
+        return vocalMix
+    }
+
+    private fun clipsForMix(clips: List<ClipState>): List<ClipState> {
+        val preferred = clips.filter { it.preferred }
+        return preferred.ifEmpty { clips.takeLast(1) }
+    }
+
+    private fun cropClip(pcm: ShortArray, sampleRate: Int, clip: ClipState): ShortArray {
+        val start = ((clip.sourceInMs * sampleRate) / 1000L).toInt().coerceIn(0, pcm.size)
+        val wanted = ((clip.durationMs * sampleRate) / 1000L).toInt().coerceAtLeast(1)
+        val end = (start + wanted).coerceAtMost(pcm.size)
+        if (end <= start) return ShortArray(0)
+        return pcm.copyOfRange(start, end)
+    }
+
+    private fun resample(input: FloatArray, rate: Float): FloatArray {
+        val safeRate = rate.coerceIn(0.5f, 2.0f)
+        if (kotlin.math.abs(safeRate - 1f) < 0.001f) return input
+        val outFrames = (input.size / safeRate).toInt().coerceAtLeast(1)
+        val output = FloatArray(outFrames)
+        for (i in 0 until outFrames) {
+            val srcPos = i * safeRate
+            val idx0 = srcPos.toInt().coerceIn(0, input.lastIndex)
+            val idx1 = (idx0 + 1).coerceIn(0, input.lastIndex)
+            val frac = srcPos - idx0
+            output[i] = input[idx0] * (1f - frac) + input[idx1] * frac
+        }
+        return output
+    }
 
     private fun dbToLinear(db: Float): Float = 10.0.pow(db / 20.0).toFloat()
 
