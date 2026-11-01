@@ -1,6 +1,8 @@
 package com.swaralab.feature.studio
 
 import android.Manifest
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.pm.PackageManager
 import android.media.MediaMetadataRetriever
 import android.provider.OpenableColumns
@@ -477,6 +479,12 @@ fun StudioRoute(
     var draftLyrics by remember(state.rawLyrics) { mutableStateOf(state.rawLyrics) }
     var pickingRoute by remember { mutableStateOf(false) }
 
+    fun readClipboardText(): String? {
+        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+        val item = clipboard?.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)
+        return item?.coerceToText(context)?.toString()?.takeIf { it.isNotBlank() }
+    }
+
     val isRecording = audioState.status == EngineStatus.RECORDING
 
     LaunchedEffect(audioState.elapsedMs, isRecording) {
@@ -677,6 +685,21 @@ fun StudioRoute(
                     Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                         TextButton(
                             onClick = {
+                                val pasted = readClipboardText()
+                                if (pasted != null) {
+                                    draftLyrics = pasted
+                                    editingLyrics = false
+                                    viewModel.saveLyrics(pasted, note = "Lyrics pasted from clipboard.")
+                                } else {
+                                    draftLyrics = state.rawLyrics
+                                    editingLyrics = true
+                                }
+                            },
+                        ) {
+                            Text("Paste")
+                        }
+                        TextButton(
+                            onClick = {
                                 lyricsFileLauncher.launch(
                                     arrayOf("text/*", "application/octet-stream", "*/*"),
                                 )
@@ -700,9 +723,12 @@ fun StudioRoute(
                         onValueChange = { draftLyrics = it },
                         modifier = Modifier.fillMaxWidth(),
                         minLines = 5,
-                        label = { Text("One line per row (or [mm:ss.xx] LRC lines)") },
+                        label = { Text("Paste or type lyrics here (one line per row)") },
                     )
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
                         Button(
                             onClick = {
                                 viewModel.saveLyrics(draftLyrics)
@@ -713,29 +739,53 @@ fun StudioRoute(
                         }
                         OutlinedButton(
                             onClick = {
-                                lyricsFileLauncher.launch(
-                                    arrayOf("text/*", "application/octet-stream", "*/*"),
-                                )
+                                val pasted = readClipboardText()
+                                if (pasted != null) {
+                                    draftLyrics = if (draftLyrics.isBlank()) pasted else "$draftLyrics\n$pasted"
+                                }
                             },
                         ) {
-                            Text("Upload .txt / .lrc")
+                            Text("Paste from clipboard")
+                        }
+                        if (draftLyrics.isNotBlank()) {
+                            TextButton(onClick = { draftLyrics = "" }) {
+                                Text("Clear")
+                            }
                         }
                     }
                 } else if (state.lines.isEmpty()) {
                     Text(
-                        text = "Upload a lyrics file (.txt or .lrc) or write the lines you want in front of you while you sing.",
+                        text = "Copy lyrics from anywhere and tap Paste, upload a .txt / .lrc file, or type your lines below.",
                         style = MaterialTheme.typography.bodyLarge,
                         color = SwaraColors.Muted,
                     )
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
                         Button(
+                            onClick = {
+                                val pasted = readClipboardText()
+                                if (pasted != null) {
+                                    draftLyrics = pasted
+                                    editingLyrics = false
+                                    viewModel.saveLyrics(pasted, note = "Lyrics pasted from clipboard.")
+                                } else {
+                                    draftLyrics = state.rawLyrics
+                                    editingLyrics = true
+                                }
+                            },
+                        ) {
+                            Text("Paste lyrics")
+                        }
+                        OutlinedButton(
                             onClick = {
                                 lyricsFileLauncher.launch(
                                     arrayOf("text/*", "application/octet-stream", "*/*"),
                                 )
                             },
                         ) {
-                            Text("Upload lyrics file")
+                            Text("Upload file")
                         }
                         OutlinedButton(
                             onClick = {
@@ -743,7 +793,7 @@ fun StudioRoute(
                                 editingLyrics = true
                             },
                         ) {
-                            Text("Paste or write")
+                            Text("Write")
                         }
                     }
                 } else {
