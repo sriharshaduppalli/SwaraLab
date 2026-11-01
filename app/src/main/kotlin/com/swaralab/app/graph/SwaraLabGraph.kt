@@ -12,6 +12,9 @@ import com.swaralab.domain.usecase.AddVoicePart
 import com.swaralab.domain.usecase.CommitRecordedTake
 import com.swaralab.domain.usecase.CreateSession
 import com.swaralab.domain.usecase.CurrentAccount
+import com.swaralab.domain.usecase.DeleteRecordedClip
+import com.swaralab.domain.usecase.DeleteSession
+import com.swaralab.domain.usecase.ImportBackingTrack
 import com.swaralab.domain.usecase.ListSessions
 import com.swaralab.domain.usecase.LoadSession
 import com.swaralab.domain.usecase.RegisterAccount
@@ -23,7 +26,7 @@ import com.swaralab.domain.usecase.UpdateLyrics
 import com.swaralab.domain.usecase.UpdatePublishSettings
 import com.swaralab.domain.usecase.UpdateVocalPreset
 import com.swaralab.engine.audio.AndroidAudioEngine
-import com.swaralab.engine.render.UnconnectedRenderEngine
+import com.swaralab.engine.render.WavMixRenderEngine
 import com.swaralab.session.FileAccountRepository
 import com.swaralab.session.FileSessionRepository
 import java.io.File
@@ -36,13 +39,14 @@ class SwaraLabGraph(filesDir: File) {
     private val clock = SystemClock()
     private val ids = UuidIdGenerator()
     private val reducer = SessionReducer(ids, clock)
-    private val projectsDir = File(filesDir, "swaralab/projects")
+    val projectsDir = File(filesDir, "swaralab/projects")
     val sessions: SessionRepository = FileSessionRepository(projectsDir, SessionCodec())
     val accounts: AccountRepository = FileAccountRepository(File(filesDir, "swaralab/accounts.json"))
     val audio: AudioEngine = AndroidAudioEngine(projectsDir, ids)
-    val render: RenderEngine = UnconnectedRenderEngine()
+    val render: RenderEngine = WavMixRenderEngine(projectsDir)
     val createSession = CreateSession(reducer, sessions)
     val listSessions = ListSessions(sessions)
+    val deleteSession = DeleteSession(sessions)
     val loadSession = LoadSession(sessions)
     val renameSession = RenameSession(reducer, sessions)
     val updateGear = UpdateGear(reducer, sessions)
@@ -50,6 +54,8 @@ class SwaraLabGraph(filesDir: File) {
     val updateLyrics = UpdateLyrics(reducer, sessions, ids)
     val addVoicePart = AddVoicePart(reducer, sessions)
     val commitRecordedTake = CommitRecordedTake(reducer, sessions)
+    val deleteRecordedClip = DeleteRecordedClip(reducer, sessions)
+    val importBackingTrack = ImportBackingTrack(reducer, sessions)
     val updatePublish = UpdatePublishSettings(reducer, sessions)
     val registerAccount = RegisterAccount(accounts, ids)
     val signIn = SignIn(accounts)

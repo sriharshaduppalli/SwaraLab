@@ -38,6 +38,14 @@ class ListSessions(
     suspend operator fun invoke(): List<SessionSummary> = sessions.list()
 }
 
+class DeleteSession(
+    private val sessions: SessionRepository,
+) {
+    suspend operator fun invoke(id: String) {
+        sessions.delete(id)
+    }
+}
+
 class LoadSession(
     private val sessions: SessionRepository,
 ) {
@@ -131,6 +139,49 @@ class CommitRecordedTake(
                 relativePath = take.relativePath,
                 durationMs = take.durationMs.coerceAtLeast(1L),
                 label = "${targetTrack.name} · Take $takeNumber",
+            ),
+        )
+    }
+}
+
+class DeleteRecordedClip(
+    private val reducer: SessionReducer,
+    private val sessions: SessionRepository,
+) {
+    suspend operator fun invoke(sessionId: String, clipId: String): SessionEdit {
+        val document = sessions.load(sessionId) ?: return SessionEdit.Rejected(RejectReason.UNKNOWN_SESSION)
+        return applyAndSave(reducer, sessions, document, SessionCommand.DeleteClip(clipId))
+    }
+}
+
+class ImportBackingTrack(
+    private val reducer: SessionReducer,
+    private val sessions: SessionRepository,
+) {
+    suspend operator fun invoke(
+        sessionId: String,
+        relativePath: String,
+        durationMs: Long,
+        label: String,
+    ): SessionEdit {
+        val document = sessions.load(sessionId) ?: return SessionEdit.Rejected(RejectReason.UNKNOWN_SESSION)
+        val backingTrack = document.tracks.firstOrNull { it.role == TrackRole.BACKING }
+            ?: return SessionEdit.Rejected(RejectReason.UNKNOWN_TRACK)
+        val cleared = document.copy(
+            tracks = document.tracks.map { track ->
+                if (track.role == TrackRole.BACKING) track.copy(clips = emptyList()) else track
+            },
+        )
+        return applyAndSave(
+            reducer,
+            sessions,
+            cleared,
+            SessionCommand.ImportBacking(
+                trackId = backingTrack.id,
+                relativePath = relativePath,
+                durationMs = durationMs.coerceAtLeast(1_000L),
+                rightsConfirmed = true,
+                note = label,
             ),
         )
     }

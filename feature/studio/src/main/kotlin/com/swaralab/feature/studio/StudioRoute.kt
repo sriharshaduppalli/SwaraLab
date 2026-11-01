@@ -2,6 +2,8 @@ package com.swaralab.feature.studio
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.media.MediaMetadataRetriever
+import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
@@ -51,6 +53,7 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
+import com.swaralab.domain.layout.SessionLayout
 import com.swaralab.domain.model.GearRoute
 import com.swaralab.domain.model.LyricLine
 import com.swaralab.domain.model.SessionKind
@@ -62,6 +65,8 @@ import com.swaralab.domain.port.EngineStatus
 import com.swaralab.domain.port.TakeControl
 import com.swaralab.domain.usecase.AddVoicePart
 import com.swaralab.domain.usecase.CommitRecordedTake
+import com.swaralab.domain.usecase.DeleteRecordedClip
+import com.swaralab.domain.usecase.ImportBackingTrack
 import com.swaralab.domain.usecase.LoadSession
 import com.swaralab.domain.usecase.RenameSession
 import com.swaralab.domain.usecase.UpdateGear
@@ -69,10 +74,13 @@ import com.swaralab.domain.usecase.UpdateLyrics
 import com.swaralab.domain.usecase.UpdateVocalPreset
 import com.swaralab.ui.ChoiceCard
 import com.swaralab.ui.SwaraColors
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
 
 data class VoicePartUi(
     val id: String,
@@ -86,10 +94,17 @@ data class RecordedTakeUi(
     val relativePath: String,
 )
 
+data class BackingTrackUi(
+    val name: String,
+    val durationText: String,
+    val relativePath: String,
+)
+
 data class StudioUi(
     val title: String,
     val kind: SessionKind,
     val preset: VocalPreset,
+    val backing: BackingTrackUi?,
     val lines: List<LyricLine>,
     val rawLyrics: String,
     val activeLine: Int,
@@ -103,6 +118,7 @@ data class StudioUi(
 
 class StudioViewModel(
     private val sessionId: String,
+    private val projectsDir: File,
     private val loadSession: LoadSession,
     private val renameSession: RenameSession,
     private val updateGear: UpdateGear,
@@ -110,6 +126,8 @@ class StudioViewModel(
     private val updateLyrics: UpdateLyrics,
     private val addVoicePart: AddVoicePart,
     private val commitRecordedTake: CommitRecordedTake,
+    private val deleteRecordedClip: DeleteRecordedClip,
+    private val importBackingTrack: ImportBackingTrack,
     val audio: AudioEngine,
 ) : ViewModel() {
     private val uiState = MutableStateFlow<StudioUi?>(null)
@@ -201,6 +219,42 @@ class StudioViewModel(
         }
     }
 
+    fun importBackingFile(
+        fileName: String,
+        copyToFile: (File) -> Boolean,
+    ) {
+        viewModelScope.launch {
+            val cleanName = fileName
+                .replace(Regex("[^a-zA-Z0-9._-]"), "_")
+                .ifBlank { "backing.mp3" }
+            val relativePath = SessionLayout.backingFile(cleanName)
+            val destination = File(File(projectsDir, sessionId), relativePath)
+            val durationMs = withContext(Dispatchers.IO) {
+                destination.parentFile?.mkdirs()
+                if (!copyToFile(destination)) return@withContext null
+                val retriever = MediaMetadataRetriever()
+                try {
+                    retriever.setDataSource(destination.absolutePath)
+                    retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+                        ?.toLongOrNull()
+                        ?: 180_000L
+                } catch (_: Throwable) {
+                    180_000L
+                } finally {
+                    runCatching { retriever.release() }
+                }
+            }
+            if (durationMs != null) {
+                importBackingTrack(sessionId, relativePath, durationMs, fileName)
+                stageNote = "Backing track loaded ($fileName). It will play while you sing."
+                refresh()
+            } else {
+                stageNote = "Could not load that audio file."
+                uiState.value = uiState.value?.copy(stageNote = stageNote)
+            }
+        }
+    }
+
     fun toggleRecording() {
         viewModelScope.launch {
             val current = uiState.value ?: return@launch
@@ -214,16 +268,29 @@ class StudioViewModel(
                 }
                 refresh()
             } else {
-                audio.arm(ArmRequest(sessionId = sessionId, output = current.route))
+                audio.arm(
+                    ArmRequest(
+                        sessionId = sessionId,
+                        output = current.route,
+                        backingRelativePath = current.backing?.relativePath,
+                    ),
+                )
                 stageNote = when (audio.startTake()) {
                     is TakeControl.Started -> "Recording live. Sing into the mic and tap Stop when done."
                     is TakeControl.Refused ->
-                        "Plug in headphones first so the backing track does not bleed into the mic."
+                        "Switch to Headphones top-right so the backing track does not bleed into the mic."
                     TakeControl.TransportUnavailable ->
                         "Could not open the microphone on this device."
                 }
                 uiState.value = current.copy(stageNote = stageNote)
             }
+        }
+    }
+
+    fun deleteTake(clipId: String) {
+        viewModelScope.launch {
+            deleteRecordedClip(sessionId, clipId)
+            refresh()
         }
     }
 
@@ -233,7 +300,7 @@ class StudioViewModel(
         uiState.value = current.copy(stageNote = stageNote)
     }
 
-    fun togglePlayTake(relativePath: String) {
+    fun togglePlayClip(relativePath: String) {
         viewModelScope.launch {
             audio.playClip(sessionId, relativePath)
         }
@@ -250,16 +317,22 @@ class StudioViewModel(
             if (document.gear.output == GearRoute.UNKNOWN) {
                 updateGear(sessionId, GearRoute.WIRED)
             }
-            val backingClip = document.tracks
-                .firstOrNull { it.role == TrackRole.BACKING }
-                ?.clips
-                ?.firstOrNull()
-                ?.sourceRelativePath
+            val backingTrack = document.tracks.firstOrNull { it.role == TrackRole.BACKING }
+            val backingClip = backingTrack?.clips?.lastOrNull()
+            val backingUi = backingClip?.let { clip ->
+                val displayName = document.rights?.note?.takeIf { it.isNotBlank() }
+                    ?: clip.sourceRelativePath.substringAfterLast('/')
+                BackingTrackUi(
+                    name = displayName,
+                    durationText = formatDuration(clip.durationMs),
+                    relativePath = clip.sourceRelativePath,
+                )
+            }
             audio.arm(
                 ArmRequest(
                     sessionId = document.id,
                     output = route,
-                    backingRelativePath = backingClip,
+                    backingRelativePath = backingClip?.sourceRelativePath,
                 ),
             )
             val lines = document.lyrics.lines
@@ -289,6 +362,7 @@ class StudioViewModel(
                 title = document.title,
                 kind = document.kind,
                 preset = document.chain.preset.takeUnless { it == VocalPreset.CUSTOM } ?: VocalPreset.RAW,
+                backing = backingUi,
                 lines = lines,
                 rawLyrics = document.lyrics.rawText,
                 activeLine = clampedLine,
@@ -305,6 +379,7 @@ class StudioViewModel(
     companion object {
         fun factory(
             sessionId: String,
+            projectsDir: File,
             loadSession: LoadSession,
             renameSession: RenameSession,
             updateGear: UpdateGear,
@@ -312,11 +387,14 @@ class StudioViewModel(
             updateLyrics: UpdateLyrics,
             addVoicePart: AddVoicePart,
             commitRecordedTake: CommitRecordedTake,
+            deleteRecordedClip: DeleteRecordedClip,
+            importBackingTrack: ImportBackingTrack,
             audio: AudioEngine,
         ): ViewModelProvider.Factory = viewModelFactory {
             initializer {
                 StudioViewModel(
                     sessionId = sessionId,
+                    projectsDir = projectsDir,
                     loadSession = loadSession,
                     renameSession = renameSession,
                     updateGear = updateGear,
@@ -324,6 +402,8 @@ class StudioViewModel(
                     updateLyrics = updateLyrics,
                     addVoicePart = addVoicePart,
                     commitRecordedTake = commitRecordedTake,
+                    deleteRecordedClip = deleteRecordedClip,
+                    importBackingTrack = importBackingTrack,
                     audio = audio,
                 )
             }
@@ -349,6 +429,7 @@ private val listeningRoutes = listOf(
 @Composable
 fun StudioRoute(
     sessionId: String,
+    projectsDir: File,
     loadSession: LoadSession,
     renameSession: RenameSession,
     updateGear: UpdateGear,
@@ -356,6 +437,8 @@ fun StudioRoute(
     updateLyrics: UpdateLyrics,
     addVoicePart: AddVoicePart,
     commitRecordedTake: CommitRecordedTake,
+    deleteRecordedClip: DeleteRecordedClip,
+    importBackingTrack: ImportBackingTrack,
     audio: AudioEngine,
     onBack: () -> Unit,
     onPublish: () -> Unit,
@@ -364,6 +447,7 @@ fun StudioRoute(
     val viewModel: StudioViewModel = viewModel(
         factory = StudioViewModel.factory(
             sessionId = sessionId,
+            projectsDir = projectsDir,
             loadSession = loadSession,
             renameSession = renameSession,
             updateGear = updateGear,
@@ -371,6 +455,8 @@ fun StudioRoute(
             updateLyrics = updateLyrics,
             addVoicePart = addVoicePart,
             commitRecordedTake = commitRecordedTake,
+            deleteRecordedClip = deleteRecordedClip,
+            importBackingTrack = importBackingTrack,
             audio = audio,
         ),
     )
@@ -412,6 +498,29 @@ fun StudioRoute(
                 draftLyrics = imported
                 editingLyrics = false
                 viewModel.saveLyrics(imported, note = "Lyrics file loaded. Tap a line or hit Sing.")
+            }
+        }
+    }
+
+    val backingFileLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri != null) {
+            val displayName = runCatching {
+                context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+                    ?.use { cursor ->
+                        if (cursor.moveToFirst()) cursor.getString(0) else null
+                    }
+            }.getOrNull() ?: "backing.mp3"
+
+            viewModel.importBackingFile(displayName) { destination ->
+                runCatching {
+                    context.contentResolver.openInputStream(uri)?.use { input ->
+                        destination.outputStream().use { out ->
+                            input.copyTo(out)
+                        }
+                    } != null
+                }.getOrDefault(false)
             }
         }
     }
@@ -497,6 +606,52 @@ fun StudioRoute(
                         pickingRoute = false
                     },
                 )
+            }
+        }
+
+        if (state.kind != SessionKind.PRACTICE) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(18.dp),
+                color = SwaraColors.Card,
+                border = BorderStroke(1.dp, SwaraColors.Line),
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 18.dp, vertical = 14.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(text = "Backing track", style = MaterialTheme.typography.titleMedium)
+                        val backing = state.backing
+                        Text(
+                            text = if (backing != null) {
+                                "${backing.name} · ${backing.durationText}"
+                            } else {
+                                "Optional: upload an instrumental or karaoke track from your phone."
+                            },
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = SwaraColors.Muted,
+                        )
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        state.backing?.let { backing ->
+                            val isPlayingBacking = audioState.playingRelativePath == backing.relativePath
+                            TextButton(onClick = { viewModel.togglePlayClip(backing.relativePath) }) {
+                                Text(if (isPlayingBacking) "Stop" else "Preview")
+                            }
+                        }
+                        TextButton(
+                            onClick = {
+                                backingFileLauncher.launch(arrayOf("audio/*"))
+                            },
+                        ) {
+                            Text(if (state.backing == null) "Upload track" else "Change")
+                        }
+                    }
+                }
             }
         }
 
@@ -759,7 +914,7 @@ fun StudioRoute(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Column {
+                        Column(Modifier.weight(1f)) {
                             Text(text = take.label, style = MaterialTheme.typography.titleMedium)
                             Text(
                                 text = take.durationText,
@@ -767,8 +922,16 @@ fun StudioRoute(
                                 color = SwaraColors.Muted,
                             )
                         }
-                        Button(onClick = { viewModel.togglePlayTake(take.relativePath) }) {
-                            Text(if (isPlaying) "Stop" else "Play")
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            TextButton(onClick = { viewModel.deleteTake(take.id) }) {
+                                Text("Delete", color = SwaraColors.Clay)
+                            }
+                            Button(onClick = { viewModel.togglePlayClip(take.relativePath) }) {
+                                Text(if (isPlaying) "Stop" else "Play")
+                            }
                         }
                     }
                 }
@@ -776,7 +939,7 @@ fun StudioRoute(
         }
 
         OutlinedButton(onClick = onPublish, modifier = Modifier.fillMaxWidth()) {
-            Text("Share format")
+            Text("Mix & Save song")
         }
     }
 }

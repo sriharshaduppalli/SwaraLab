@@ -45,6 +45,7 @@ class SessionReducer(
             is SessionCommand.SetLatency -> setLatency(document, command)
             is SessionCommand.ImportBacking -> importBacking(document, command)
             is SessionCommand.CommitTake -> commitTake(document, command)
+            is SessionCommand.DeleteClip -> deleteClip(document, command)
             is SessionCommand.SetTrackMix -> setTrackMix(document, command)
             is SessionCommand.AddTrack -> addTrack(document, command)
             is SessionCommand.SetVocalChain -> SessionEdit.Applied(document.copy(chain = command.chain))
@@ -130,6 +131,13 @@ class SessionReducer(
                 tracks = document.tracks.replaceAt(index, track.copy(clips = track.clips + clip)),
             ),
         )
+    }
+
+    private fun deleteClip(document: SessionDocument, command: SessionCommand.DeleteClip): SessionEdit {
+        val updatedTracks = document.tracks.map { track ->
+            track.copy(clips = track.clips.filterNot { it.id == command.clipId })
+        }
+        return SessionEdit.Applied(document.copy(tracks = updatedTracks))
     }
 
     private fun setTrackMix(document: SessionDocument, command: SessionCommand.SetTrackMix): SessionEdit {

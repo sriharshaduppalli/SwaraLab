@@ -7,9 +7,6 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import com.swaralab.ui.SwaraColors
-import com.swaralab.ui.SwaraMark
-import com.swaralab.ui.SwaraMarkIcon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
@@ -26,6 +23,9 @@ import com.swaralab.feature.account.AccountRoute
 import com.swaralab.feature.library.LibraryRoute
 import com.swaralab.feature.publish.PublishRoute
 import com.swaralab.feature.studio.StudioRoute
+import com.swaralab.ui.SwaraColors
+import com.swaralab.ui.SwaraMark
+import com.swaralab.ui.SwaraMarkIcon
 
 object Routes {
     const val HOME = "home"
@@ -114,6 +114,7 @@ fun SwaraLabNav(graph: SwaraLabGraph) {
             composable(Routes.LIBRARY) {
                 LibraryRoute(
                     listSessions = graph.listSessions,
+                    deleteSession = graph.deleteSession,
                     onOpen = { id -> nav.navigate(Routes.studio(id)) },
                 )
             }
@@ -132,6 +133,7 @@ fun SwaraLabNav(graph: SwaraLabGraph) {
                 val sessionId = entry.arguments?.getString("sessionId").orEmpty()
                 StudioRoute(
                     sessionId = sessionId,
+                    projectsDir = graph.projectsDir,
                     loadSession = graph.loadSession,
                     renameSession = graph.renameSession,
                     updateGear = graph.updateGear,
@@ -139,6 +141,8 @@ fun SwaraLabNav(graph: SwaraLabGraph) {
                     updateLyrics = graph.updateLyrics,
                     addVoicePart = graph.addVoicePart,
                     commitRecordedTake = graph.commitRecordedTake,
+                    deleteRecordedClip = graph.deleteRecordedClip,
+                    importBackingTrack = graph.importBackingTrack,
                     audio = graph.audio,
                     onBack = { nav.popBackStack() },
                     onPublish = { nav.navigate(Routes.publish(sessionId)) },
@@ -151,9 +155,11 @@ fun SwaraLabNav(graph: SwaraLabGraph) {
                 val sessionId = entry.arguments?.getString("sessionId").orEmpty()
                 PublishRoute(
                     sessionId = sessionId,
+                    projectsDir = graph.projectsDir,
                     loadSession = graph.loadSession,
                     updatePublish = graph.updatePublish,
                     render = graph.render,
+                    audio = graph.audio,
                     onBack = { nav.popBackStack() },
                 )
             }

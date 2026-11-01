@@ -35,6 +35,10 @@ sealed interface SessionCommand {
         val label: String = "Take",
     ) : SessionCommand
 
+    data class DeleteClip(
+        val clipId: String,
+    ) : SessionCommand
+
     data class SetTrackMix(
         val trackId: String,
         val gainDb: Float,

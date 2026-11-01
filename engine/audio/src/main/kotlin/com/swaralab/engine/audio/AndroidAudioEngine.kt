@@ -57,6 +57,9 @@ class AndroidAudioEngine(
     @Volatile
     private var mediaPlayer: MediaPlayer? = null
 
+    @Volatile
+    private var armedBackingRelativePath: String? = null
+
     private data class ActiveRecording(
         val sessionId: String,
         val takeId: String,
@@ -69,6 +72,7 @@ class AndroidAudioEngine(
     )
 
     override suspend fun arm(request: ArmRequest): MonitorDecision {
+        armedBackingRelativePath = request.backingRelativePath
         // When a backing track is playing, speaker recording is blocked to prevent bleed.
         // For solo / a cappella takes with no backing track, allow recording on any route.
         val decision = if (request.backingRelativePath != null) {
@@ -154,6 +158,20 @@ class AndroidAudioEngine(
             return@withContext TakeControl.TransportUnavailable
         }
 
+        val backingRelative = armedBackingRelativePath
+        if (backingRelative != null) {
+            val backingFile = File(File(projectsRoot, sessionId), backingRelative)
+            if (backingFile.isFile) {
+                runCatching {
+                    mediaPlayer = MediaPlayer().apply {
+                        setDataSource(backingFile.absolutePath)
+                        prepare()
+                        start()
+                    }
+                }
+            }
+        }
+
         states.update {
             it.copy(
                 status = EngineStatus.RECORDING,
@@ -209,6 +227,7 @@ class AndroidAudioEngine(
     }
 
     override suspend fun stopTake(): FinishedTake? = withContext(Dispatchers.IO) {
+        stopPlayback()
         val job = recordingJob
         val active = activeTake
         recordingJob = null
