@@ -2,7 +2,6 @@ package com.swaralab.domain.audio
 
 import kotlin.math.abs
 import kotlin.math.ln
-import kotlin.math.pow
 import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
@@ -36,9 +35,8 @@ object VocalSignalAnalyzer {
 
         var sumSquares = 0.0
         var peak = 0
-        // Simple 1-pole filters at ~250 Hz and ~2500 Hz to separate Bass, Vocal Mid, and Treble/Air
-        val alphaLow = (2.0 * Math.PI * 250.0 / (2.0 * Math.PI * 250.0 + sampleRate)).toFloat()
-        val alphaMid = (2.0 * Math.PI * 2500.0 / (2.0 * Math.PI * 2500.0 + sampleRate)).toFloat()
+        val alphaLow = (2.0 * Math.PI * 260.0 / (2.0 * Math.PI * 260.0 + sampleRate)).toFloat()
+        val alphaMid = (2.0 * Math.PI * 2400.0 / (2.0 * Math.PI * 2400.0 + sampleRate)).toFloat()
         var lowState = 0f
         var midLPState = 0f
         var bassEnergy = 0.0
@@ -67,18 +65,18 @@ object VocalSignalAnalyzer {
 
         val rms = sqrt(sumSquares / length).toFloat()
         val rmsDb = if (rms > 1e-5f) (20.0 * ln(rms.toDouble()) / ln(10.0)).toFloat().coerceIn(-60f, 0f) else -60f
-        val normPeak = (peak / 32768f).coerceIn(0f, 1f)
+        val visualAmp = sqrt((peak / 32768f).coerceIn(0f, 1f).toDouble()).toFloat().coerceIn(0f, 1f)
 
         val bassRms = sqrt(bassEnergy / length).toFloat()
         val midRms = sqrt(midEnergy / length).toFloat()
         val trebleRms = sqrt(trebleEnergy / length).toFloat()
 
-        // Scale into readable 0..1 visual meter levels
-        val bassLevel = (bassRms * 5.5f).coerceIn(0f, 1f)
-        val midLevel = (midRms * 7.0f).coerceIn(0f, 1f)
-        val trebleLevel = (trebleRms * 12.0f).coerceIn(0f, 1f)
+        // Perceptual square-root scaling so phone-mic singing levels display clearly on 0..100% bars
+        val bassLevel = sqrt((bassRms * 12f).coerceIn(0f, 1f).toDouble()).toFloat()
+        val midLevel = sqrt((midRms * 16f).coerceIn(0f, 1f).toDouble()).toFloat()
+        val trebleLevel = sqrt((trebleRms * 28f).coerceIn(0f, 1f).toDouble()).toFloat()
 
-        val detectedHz = if (rms >= 0.012f) {
+        val detectedHz = if (rms >= 0.0018f) {
             detectPitchHz(normalized, length, sampleRate)
         } else {
             0f
@@ -90,7 +88,6 @@ object VocalSignalAnalyzer {
             Triple("—", "—", 0)
         }
 
-        // Normalized pitch position 0..1 between 80 Hz (E2) and 880 Hz (A5) in log-frequency space
         val normalizedPitch = if (detectedHz in MIN_VOCAL_HZ..MAX_VOCAL_HZ) {
             val minLog = ln(80.0)
             val maxLog = ln(880.0)
@@ -99,7 +96,7 @@ object VocalSignalAnalyzer {
             0f
         }
 
-        val nextWave = (previous.waveformHistory + normPeak).takeLast(HISTORY_SIZE)
+        val nextWave = (previous.waveformHistory + visualAmp).takeLast(HISTORY_SIZE)
         val nextPitch = (previous.pitchHistory + normalizedPitch).takeLast(HISTORY_SIZE)
 
         return VocalMetrics(
@@ -117,7 +114,6 @@ object VocalSignalAnalyzer {
     }
 
     private fun detectPitchHz(samples: FloatArray, length: Int, sampleRate: Int): Float {
-        // Downsample by 2 for fast autocorrelation across 75..1000 Hz at 48 kHz
         val decimation = if (sampleRate >= 32_000) 2 else 1
         val effRate = sampleRate / decimation
         val n = length / decimation
@@ -135,7 +131,7 @@ object VocalSignalAnalyzer {
             x[i] -= mean
             energy0 += x[i] * x[i]
         }
-        if (energy0 <= 1e-6f) return 0f
+        if (energy0 <= 1e-8f) return 0f
 
         val minLag = (effRate / MAX_VOCAL_HZ).toInt().coerceAtLeast(4)
         val maxLag = (effRate / MIN_VOCAL_HZ).toInt().coerceAtMost(n - 2)
@@ -153,14 +149,14 @@ object VocalSignalAnalyzer {
             }
             val normCorr = sum / energy0
             if (!passedFirstDip) {
-                if (normCorr < 0.2f) passedFirstDip = true
+                if (normCorr < 0.25f) passedFirstDip = true
             } else if (normCorr > bestCorr) {
                 bestCorr = normCorr
                 bestLag = lag
             }
         }
 
-        if (bestLag <= 0 || bestCorr < 0.32f) return 0f
+        if (bestLag <= 0 || bestCorr < 0.28f) return 0f
         return effRate.toFloat() / bestLag.toFloat()
     }
 

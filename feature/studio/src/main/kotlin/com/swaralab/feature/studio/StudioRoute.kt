@@ -92,6 +92,11 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.RandomAccessFile
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import kotlin.math.PI
+import kotlin.math.sin
 
 data class VoicePartUi(
     val id: String,
@@ -264,6 +269,37 @@ class StudioViewModel(
                 uiState.value = uiState.value?.copy(stageNote = stageNote)
             }
         }
+    }
+
+    fun loadSampleBacking() {
+        viewModelScope.launch {
+            val fileName = "Swara_Drone_C_Sa_Pa.wav"
+            val relativePath = SessionLayout.backingFile(fileName)
+            val destination = File(File(projectsDir, sessionId), relativePath)
+            val durationMs = 16_000L
+            val ok = withContext(Dispatchers.IO) {
+                runCatching {
+                    destination.parentFile?.mkdirs()
+                    writeSampleDroneWav(destination, sampleRate = 48_000, durationSeconds = 16)
+                    true
+                }.getOrDefault(false)
+            }
+            if (ok) {
+                importBackingTrack(sessionId, relativePath, durationMs, "Tanpura Drone · C (Sa-Pa)")
+                stageNote = "Sample Tanpura backing loaded. Tap Preview or hit Sing."
+                refresh()
+            }
+        }
+    }
+
+    fun loadSampleLyrics() {
+        val sampleLrc = """
+            [00:00.00] Sa Re Ga Ma Pa Dha Ni Sa — hold each note steady
+            [00:04.00] Breathe in deep and let the melody rise
+            [00:08.00] Sing from the chest with warm studio tone
+            [00:12.00] Hold the final note and let the hall ring out
+        """.trimIndent()
+        saveLyrics(sampleLrc, note = "Sample synced lyrics loaded. Tap Sing to try them out.")
     }
 
     fun toggleRecording() {
@@ -681,9 +717,13 @@ fun StudioRoute(
                         )
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                        state.backing?.let { backing ->
-                            val isPlayingBacking = audioState.playingRelativePath == backing.relativePath
-                            TextButton(onClick = { viewModel.togglePlayClip(backing.relativePath) }) {
+                        if (state.backing == null) {
+                            TextButton(onClick = viewModel::loadSampleBacking) {
+                                Text("Sample drone")
+                            }
+                        } else {
+                            val isPlayingBacking = audioState.playingRelativePath == state.backing.relativePath
+                            TextButton(onClick = { viewModel.togglePlayClip(state.backing.relativePath) }) {
                                 Text(if (isPlayingBacking) "Stop" else "Preview")
                             }
                         }
@@ -825,6 +865,9 @@ fun StudioRoute(
                         ) {
                             Text("Write")
                         }
+                        TextButton(onClick = viewModel::loadSampleLyrics) {
+                            Text("Try sample lyrics")
+                        }
                     }
                 } else {
                     Row(
@@ -852,7 +895,10 @@ fun StudioRoute(
                             }
                         }
                     }
-                    state.lines.forEachIndexed { index, line ->
+                    val windowStart = (state.activeLine - 1).coerceAtLeast(0)
+                    val windowEnd = (windowStart + 2).coerceAtMost(state.lines.lastIndex)
+                    for (index in windowStart..windowEnd) {
+                        val line = state.lines[index]
                         val active = index == state.activeLine
                         Surface(
                             onClick = { viewModel.selectLine(index) },
@@ -863,7 +909,7 @@ fun StudioRoute(
                                 text = line.text,
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                                    .padding(horizontal = 12.dp, vertical = 6.dp),
                                 style = if (active) {
                                     MaterialTheme.typography.titleLarge
                                 } else {
@@ -871,6 +917,72 @@ fun StudioRoute(
                                 },
                                 color = if (active) SwaraColors.Teal else SwaraColors.Muted,
                             )
+                        }
+                    }
+                }
+            }
+        }
+
+        LiveVocalMonitorCard(
+            metrics = audioState.metrics,
+            isRecording = isRecording,
+            elapsedText = formatDuration(audioState.elapsedMs),
+            stageNote = state.stageNote,
+            modeLabel = when {
+                isRecording -> "LIVE MIC"
+                audioState.playingRelativePath != null -> "PLAYBACK"
+                else -> "READY"
+            },
+            onSingClick = {
+                if (isRecording) {
+                    viewModel.toggleRecording()
+                } else {
+                    val granted = context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
+                        PackageManager.PERMISSION_GRANTED
+                    if (granted) {
+                        viewModel.toggleRecording()
+                    } else {
+                        micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                    }
+                }
+            },
+        )
+
+        if (state.takes.isNotEmpty()) {
+            Text(text = "Recorded takes", style = MaterialTheme.typography.titleLarge)
+            state.takes.forEach { take ->
+                val isPlaying = audioState.playingRelativePath == take.relativePath
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp),
+                    color = if (isPlaying) SwaraColors.TealWash else SwaraColors.Card,
+                    border = BorderStroke(1.dp, if (isPlaying) SwaraColors.Teal else SwaraColors.Line),
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(text = take.label, style = MaterialTheme.typography.titleMedium)
+                            Text(
+                                text = take.durationText,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = SwaraColors.Muted,
+                            )
+                        }
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            TextButton(onClick = { viewModel.deleteTake(take.id) }) {
+                                Text("Delete", color = SwaraColors.Clay)
+                            }
+                            Button(onClick = { viewModel.togglePlayClip(take.relativePath) }) {
+                                Text(if (isPlaying) "Stop" else "Play")
+                            }
                         }
                     }
                 }
@@ -932,127 +1044,6 @@ fun StudioRoute(
             }
         }
 
-        Spacer(Modifier.height(4.dp))
-        LiveVocalMonitorCard(
-            metrics = audioState.metrics,
-            isActive = isRecording || audioState.playingRelativePath != null,
-            modeLabel = when {
-                isRecording -> "LIVE MIC"
-                audioState.playingRelativePath != null -> "PLAYBACK"
-                else -> "READY"
-            },
-        )
-        Surface(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(22.dp),
-            color = if (isRecording) SwaraColors.TealWash else SwaraColors.Card,
-            border = BorderStroke(1.dp, if (isRecording) SwaraColors.Teal else SwaraColors.Line),
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(20.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                if (isRecording) {
-                    Text(
-                        text = "Recording live · ${formatDuration(audioState.elapsedMs)}",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = SwaraColors.Clay,
-                    )
-                    LinearProgressIndicator(
-                        progress = { audioState.peak.coerceIn(0.04f, 1f) },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(8.dp)
-                            .clip(RoundedCornerShape(4.dp)),
-                        color = SwaraColors.Teal,
-                        trackColor = SwaraColors.Line,
-                    )
-                }
-                Surface(
-                    onClick = {
-                        if (isRecording) {
-                            viewModel.toggleRecording()
-                        } else {
-                            val granted = context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
-                                PackageManager.PERMISSION_GRANTED
-                            if (granted) {
-                                viewModel.toggleRecording()
-                            } else {
-                                micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                            }
-                        }
-                    },
-                    modifier = Modifier
-                        .size(88.dp)
-                        .clip(CircleShape),
-                    color = if (isRecording) SwaraColors.Clay else SwaraColors.Teal,
-                    shape = CircleShape,
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Text(
-                            text = if (isRecording) "Stop" else "Sing",
-                            color = Color.White,
-                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
-                        )
-                    }
-                }
-                Text(
-                    text = state.stageNote
-                        ?: if (isRecording) {
-                            "Sing along with your lyrics above. Tap Stop to save the take."
-                        } else {
-                            "Tap Sing to start recording your voice live."
-                        },
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = SwaraColors.Muted,
-                )
-            }
-        }
-
-        if (state.takes.isNotEmpty()) {
-            Text(text = "Recorded takes", style = MaterialTheme.typography.titleLarge)
-            state.takes.forEach { take ->
-                val isPlaying = audioState.playingRelativePath == take.relativePath
-                Surface(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(16.dp),
-                    color = if (isPlaying) SwaraColors.TealWash else SwaraColors.Card,
-                    border = BorderStroke(1.dp, if (isPlaying) SwaraColors.Teal else SwaraColors.Line),
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 12.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Column(Modifier.weight(1f)) {
-                            Text(text = take.label, style = MaterialTheme.typography.titleMedium)
-                            Text(
-                                text = take.durationText,
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = SwaraColors.Muted,
-                            )
-                        }
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(4.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            TextButton(onClick = { viewModel.deleteTake(take.id) }) {
-                                Text("Delete", color = SwaraColors.Clay)
-                            }
-                            Button(onClick = { viewModel.togglePlayClip(take.relativePath) }) {
-                                Text(if (isPlaying) "Stop" else "Play")
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
         OutlinedButton(onClick = onPublish, modifier = Modifier.fillMaxWidth()) {
             Text("Mix & Save song")
         }
@@ -1062,9 +1053,13 @@ fun StudioRoute(
 @Composable
 private fun LiveVocalMonitorCard(
     metrics: VocalMetrics,
-    isActive: Boolean,
+    isRecording: Boolean,
+    elapsedText: String,
+    stageNote: String?,
     modeLabel: String,
+    onSingClick: () -> Unit,
 ) {
+    val isActive = isRecording || modeLabel == "PLAYBACK"
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(22.dp),
@@ -1082,10 +1077,11 @@ private fun LiveVocalMonitorCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Column {
+                Column(Modifier.weight(1f)) {
                     Text(
-                        text = "Live Pitch & Sound Graph",
+                        text = if (isRecording) "Recording Live · $elapsedText" else "Live Pitch & Sound Graph",
                         style = MaterialTheme.typography.titleLarge,
+                        color = if (isRecording) SwaraColors.Clay else SwaraColors.Ink,
                     )
                     Text(
                         text = if (metrics.pitchHz > 0f) {
@@ -1122,7 +1118,7 @@ private fun LiveVocalMonitorCard(
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(116.dp),
+                    .height(104.dp),
                 shape = RoundedCornerShape(14.dp),
                 color = SwaraColors.Paper,
                 border = BorderStroke(1.dp, SwaraColors.Line),
@@ -1130,7 +1126,6 @@ private fun LiveVocalMonitorCard(
                 Canvas(modifier = Modifier.fillMaxSize().padding(horizontal = 10.dp, vertical = 10.dp)) {
                     val width = size.width
                     val height = size.height
-                    // Horizontal pitch register guide lines (High / Mid / Low)
                     listOf(0.22f, 0.5f, 0.78f).forEach { frac ->
                         val y = height * frac
                         drawLine(
@@ -1146,7 +1141,6 @@ private fun LiveVocalMonitorCard(
                     val slots = 42
                     val stepX = if (slots > 1) width / (slots - 1).toFloat() else width
 
-                    // Draw live waveform amplitude bars in teal
                     wave.forEachIndexed { idx, amp ->
                         val x = idx * stepX
                         val barHalf = (amp.coerceIn(0.03f, 1f) * height * 0.44f)
@@ -1159,7 +1153,6 @@ private fun LiveVocalMonitorCard(
                         )
                     }
 
-                    // Draw live pitch contour line in gold
                     val path = Path()
                     var penDown = false
                     pitches.forEachIndexed { idx, normPitch ->
@@ -1206,6 +1199,40 @@ private fun LiveVocalMonitorCard(
                     color = SwaraColors.Ink,
                 )
             }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                Surface(
+                    onClick = onSingClick,
+                    modifier = Modifier
+                        .size(72.dp)
+                        .clip(CircleShape),
+                    color = if (isRecording) SwaraColors.Clay else SwaraColors.Teal,
+                    shape = CircleShape,
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Text(
+                            text = if (isRecording) "Stop" else "Sing",
+                            color = Color.White,
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+                        )
+                    }
+                }
+                Text(
+                    text = stageNote
+                        ?: if (isRecording) {
+                            "Sing along with your lyrics above. Tap Stop to save the take."
+                        } else {
+                            "Tap Sing to start recording your voice live."
+                        },
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = SwaraColors.Muted,
+                )
+            }
         }
     }
 }
@@ -1250,6 +1277,50 @@ private fun formatDuration(durationMs: Long): String {
     val minutes = totalSeconds / 60L
     val seconds = totalSeconds % 60L
     return "%d:%02d".format(minutes, seconds)
+}
+
+private fun writeSampleDroneWav(file: File, sampleRate: Int, durationSeconds: Int) {
+    val totalSamples = sampleRate * durationSeconds
+    val totalAudioBytes = totalSamples * 2L
+    RandomAccessFile(file, "rw").use { raf ->
+        raf.setLength(0L)
+        val header = ByteBuffer.allocate(44).order(ByteOrder.LITTLE_ENDIAN).apply {
+            put("RIFF".toByteArray(Charsets.US_ASCII))
+            putInt((36L + totalAudioBytes).toInt())
+            put("WAVE".toByteArray(Charsets.US_ASCII))
+            put("fmt ".toByteArray(Charsets.US_ASCII))
+            putInt(16)
+            putShort(1)
+            putShort(1)
+            putInt(sampleRate)
+            putInt(sampleRate * 2)
+            putShort(2)
+            putShort(16)
+            put("data".toByteArray(Charsets.US_ASCII))
+            putInt(totalAudioBytes.toInt())
+        }
+        raf.write(header.array())
+        // Warm C3 (130.81 Hz) + G3 (196.00 Hz) + C4 (261.63 Hz) tanpura drone
+        val chunk = ByteBuffer.allocate(4096).order(ByteOrder.LITTLE_ENDIAN)
+        for (i in 0 until totalSamples) {
+            if (chunk.remaining() < 2) {
+                raf.write(chunk.array(), 0, chunk.position())
+                chunk.clear()
+            }
+            val t = i.toDouble() / sampleRate.toDouble()
+            val swell = 0.75 + 0.25 * sin(2.0 * PI * 0.25 * t)
+            val wave = (
+                0.50 * sin(2.0 * PI * 130.81 * t) +
+                    0.32 * sin(2.0 * PI * 196.00 * t) +
+                    0.18 * sin(2.0 * PI * 261.63 * t)
+                ) * swell
+            val pcm = (wave * 9500.0).toInt().coerceIn(-32767, 32767).toShort()
+            chunk.putShort(pcm)
+        }
+        if (chunk.position() > 0) {
+            raf.write(chunk.array(), 0, chunk.position())
+        }
+    }
 }
 
 private fun SessionKind.label(): String = when (this) {
