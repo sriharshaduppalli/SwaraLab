@@ -201,6 +201,7 @@ class AndroidAudioEngine(
                     Build.HARDWARE.contains("ranchu", ignoreCase = true)
                 val scaleFreqs = doubleArrayOf(261.63, 293.66, 329.63, 349.23, 392.00, 440.00, 493.88, 523.25)
                 var sampleCursor = 0L
+                var lastUiUpdateMs = 0L
                 try {
                     while (isActive) {
                         val read = recorder.read(shorts, 0, shorts.size)
@@ -241,20 +242,24 @@ class AndroidAudioEngine(
                             if (normalizedPeak > active.maxPeak) {
                                 active.maxPeak = normalizedPeak
                             }
-                            val elapsed = (System.currentTimeMillis() - active.startedAtMs).coerceAtLeast(0L)
-                            val updatedMetrics = VocalSignalAnalyzer.analyzeFrame(
-                                samples = shorts,
-                                length = read,
-                                sampleRate = sampleRate,
-                                previous = states.value.metrics,
-                            )
-                            states.update { state ->
-                                state.copy(
-                                    status = EngineStatus.RECORDING,
-                                    peak = normalizedPeak,
-                                    elapsedMs = elapsed,
-                                    metrics = updatedMetrics,
+                            val nowMs = System.currentTimeMillis()
+                            if (nowMs - lastUiUpdateMs >= 95L) {
+                                lastUiUpdateMs = nowMs
+                                val elapsed = (nowMs - active.startedAtMs).coerceAtLeast(0L)
+                                val updatedMetrics = VocalSignalAnalyzer.analyzeFrame(
+                                    samples = shorts,
+                                    length = read,
+                                    sampleRate = sampleRate,
+                                    previous = states.value.metrics,
                                 )
+                                states.update { state ->
+                                    state.copy(
+                                        status = EngineStatus.RECORDING,
+                                        peak = normalizedPeak,
+                                        elapsedMs = elapsed,
+                                        metrics = updatedMetrics,
+                                    )
+                                }
                             }
                         }
                     }
@@ -359,7 +364,7 @@ class AndroidAudioEngine(
                     )
                     states.update { it.copy(metrics = updatedMetrics) }
                 }
-                delay(45L)
+                delay(95L)
             }
         }
     }

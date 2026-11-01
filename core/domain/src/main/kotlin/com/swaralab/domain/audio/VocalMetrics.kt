@@ -14,6 +14,7 @@ data class VocalMetrics(
     val bassLevel: Float = 0f,
     val midLevel: Float = 0f,
     val trebleLevel: Float = 0f,
+    val silentFrames: Int = 0,
     val waveformHistory: List<Float> = emptyList(),
     val pitchHistory: List<Float> = emptyList(),
 )
@@ -24,6 +25,7 @@ object VocalSignalAnalyzer {
     private const val HISTORY_SIZE = 42
     private const val MIN_VOCAL_HZ = 75f
     private const val MAX_VOCAL_HZ = 1000f
+    private const val NOTE_HOLD_FRAMES = 6
 
     fun analyzeFrame(
         samples: ShortArray,
@@ -64,34 +66,66 @@ object VocalSignalAnalyzer {
         }
 
         val rms = sqrt(sumSquares / length).toFloat()
-        val rmsDb = if (rms > 1e-5f) (20.0 * ln(rms.toDouble()) / ln(10.0)).toFloat().coerceIn(-60f, 0f) else -60f
+        val rawRmsDb = if (rms > 1e-5f) (20.0 * ln(rms.toDouble()) / ln(10.0)).toFloat().coerceIn(-60f, 0f) else -60f
+        val smoothedRmsDb = if (previous.rmsDb <= -59f) rawRmsDb else (previous.rmsDb * 0.65f + rawRmsDb * 0.35f)
         val visualAmp = sqrt((peak / 32768f).coerceIn(0f, 1f).toDouble()).toFloat().coerceIn(0f, 1f)
 
         val bassRms = sqrt(bassEnergy / length).toFloat()
         val midRms = sqrt(midEnergy / length).toFloat()
         val trebleRms = sqrt(trebleEnergy / length).toFloat()
 
-        // Perceptual square-root scaling so phone-mic singing levels display clearly on 0..100% bars
-        val bassLevel = sqrt((bassRms * 12f).coerceIn(0f, 1f).toDouble()).toFloat()
-        val midLevel = sqrt((midRms * 16f).coerceIn(0f, 1f).toDouble()).toFloat()
-        val trebleLevel = sqrt((trebleRms * 28f).coerceIn(0f, 1f).toDouble()).toFloat()
+        val rawBass = sqrt((bassRms * 12f).coerceIn(0f, 1f).toDouble()).toFloat()
+        val rawMid = sqrt((midRms * 16f).coerceIn(0f, 1f).toDouble()).toFloat()
+        val rawTreble = sqrt((trebleRms * 28f).coerceIn(0f, 1f).toDouble()).toFloat()
 
-        val detectedHz = if (rms >= 0.0018f) {
+        val hasPreviousHistory = previous.waveformHistory.isNotEmpty()
+        val bassLevel = if (hasPreviousHistory) (previous.bassLevel * 0.68f + rawBass * 0.32f) else rawBass
+        val midLevel = if (hasPreviousHistory) (previous.midLevel * 0.68f + rawMid * 0.32f) else rawMid
+        val trebleLevel = if (hasPreviousHistory) (previous.trebleLevel * 0.68f + rawTreble * 0.32f) else rawTreble
+
+        val rawDetectedHz = if (rms >= 0.0022f) {
             detectPitchHz(normalized, length, sampleRate)
         } else {
             0f
         }
 
-        val (note, swara, cents) = if (detectedHz in MIN_VOCAL_HZ..MAX_VOCAL_HZ) {
-            pitchToNoteAndSwara(detectedHz)
+        val isValidPitch = rawDetectedHz in MIN_VOCAL_HZ..MAX_VOCAL_HZ
+        val effectiveHz: Float
+        val note: String
+        val swara: String
+        val cents: Int
+        val nextSilentFrames: Int
+
+        if (isValidPitch) {
+            effectiveHz = if (previous.pitchHz > 0f && abs(rawDetectedHz - previous.pitchHz) < 45f) {
+                previous.pitchHz * 0.55f + rawDetectedHz * 0.45f
+            } else {
+                rawDetectedHz
+            }
+            val mapped = pitchToNoteAndSwara(effectiveHz)
+            note = mapped.first
+            swara = mapped.second
+            cents = mapped.third
+            nextSilentFrames = 0
+        } else if (previous.pitchHz > 0f && previous.silentFrames < NOTE_HOLD_FRAMES) {
+            // Hold the last detected note briefly across consonants/breaths so UI never flickers
+            effectiveHz = previous.pitchHz
+            note = previous.noteName
+            swara = previous.swaraName
+            cents = previous.centsOffset
+            nextSilentFrames = previous.silentFrames + 1
         } else {
-            Triple("—", "—", 0)
+            effectiveHz = 0f
+            note = "—"
+            swara = "—"
+            cents = 0
+            nextSilentFrames = previous.silentFrames + 1
         }
 
-        val normalizedPitch = if (detectedHz in MIN_VOCAL_HZ..MAX_VOCAL_HZ) {
+        val normalizedPitch = if (effectiveHz in MIN_VOCAL_HZ..MAX_VOCAL_HZ) {
             val minLog = ln(80.0)
             val maxLog = ln(880.0)
-            ((ln(detectedHz.toDouble()) - minLog) / (maxLog - minLog)).toFloat().coerceIn(0.05f, 0.98f)
+            ((ln(effectiveHz.toDouble()) - minLog) / (maxLog - minLog)).toFloat().coerceIn(0.05f, 0.98f)
         } else {
             0f
         }
@@ -100,14 +134,15 @@ object VocalSignalAnalyzer {
         val nextPitch = (previous.pitchHistory + normalizedPitch).takeLast(HISTORY_SIZE)
 
         return VocalMetrics(
-            pitchHz = detectedHz,
+            pitchHz = effectiveHz,
             noteName = note,
             swaraName = swara,
             centsOffset = cents,
-            rmsDb = rmsDb,
+            rmsDb = smoothedRmsDb,
             bassLevel = bassLevel,
             midLevel = midLevel,
             trebleLevel = trebleLevel,
+            silentFrames = nextSilentFrames,
             waveformHistory = nextWave,
             pitchHistory = nextPitch,
         )

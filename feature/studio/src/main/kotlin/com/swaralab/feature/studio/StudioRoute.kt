@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -53,6 +54,8 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.swaralab.domain.audio.VocalMetrics
 import androidx.lifecycle.Lifecycle
@@ -72,6 +75,7 @@ import com.swaralab.domain.model.TrackRole
 import com.swaralab.domain.model.VocalPreset
 import com.swaralab.domain.port.ArmRequest
 import com.swaralab.domain.port.AudioEngine
+import com.swaralab.domain.port.AudioEngineState
 import com.swaralab.domain.port.EngineStatus
 import com.swaralab.domain.port.TakeControl
 import com.swaralab.domain.usecase.AddVoicePart
@@ -89,6 +93,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -522,7 +528,9 @@ fun StudioRoute(
         ),
     )
     val ui by viewModel.ui.collectAsState()
-    val audioState by viewModel.audio.state.collectAsState()
+    val playingRelativePath by remember(viewModel.audio) {
+        viewModel.audio.state.map { it.playingRelativePath }.distinctUntilChanged()
+    }.collectAsState(initial = null)
     val state = ui ?: return
     val context = LocalContext.current
 
@@ -538,12 +546,15 @@ fun StudioRoute(
         return item?.coerceToText(context)?.toString()?.takeIf { it.isNotBlank() }
     }
 
-    val isRecording = audioState.status == EngineStatus.RECORDING
-
-    LaunchedEffect(audioState.elapsedMs, isRecording) {
-        if (isRecording) {
-            viewModel.syncTimedLyric(audioState.elapsedMs)
-        }
+    LaunchedEffect(viewModel) {
+        viewModel.audio.state
+            .map { (it.status == EngineStatus.RECORDING) to (it.elapsedMs / 250L) }
+            .distinctUntilChanged()
+            .collect { (recording, quarterSec) ->
+                if (recording) {
+                    viewModel.syncTimedLyric(quarterSec * 250L)
+                }
+            }
     }
 
     DisposableEffect(Unit) {
@@ -722,7 +733,7 @@ fun StudioRoute(
                                 Text("Sample drone")
                             }
                         } else {
-                            val isPlayingBacking = audioState.playingRelativePath == state.backing.relativePath
+                            val isPlayingBacking = playingRelativePath == state.backing.relativePath
                             TextButton(onClick = { viewModel.togglePlayClip(state.backing.relativePath) }) {
                                 Text(if (isPlayingBacking) "Stop" else "Preview")
                             }
@@ -895,8 +906,8 @@ fun StudioRoute(
                             }
                         }
                     }
-                    val windowStart = (state.activeLine - 1).coerceAtLeast(0)
-                    val windowEnd = (windowStart + 2).coerceAtMost(state.lines.lastIndex)
+                    val windowEnd = minOf(state.lines.lastIndex, maxOf(2, state.activeLine + 1))
+                    val windowStart = (windowEnd - 2).coerceAtLeast(0)
                     for (index in windowStart..windowEnd) {
                         val line = state.lines[index]
                         val active = index == state.activeLine
@@ -910,11 +921,11 @@ fun StudioRoute(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .padding(horizontal = 12.dp, vertical = 6.dp),
-                                style = if (active) {
-                                    MaterialTheme.typography.titleLarge
-                                } else {
-                                    MaterialTheme.typography.bodyLarge
-                                },
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                style = MaterialTheme.typography.bodyLarge.copy(
+                                    fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal,
+                                ),
                                 color = if (active) SwaraColors.Teal else SwaraColors.Muted,
                             )
                         }
@@ -924,17 +935,10 @@ fun StudioRoute(
         }
 
         LiveVocalMonitorCard(
-            metrics = audioState.metrics,
-            isRecording = isRecording,
-            elapsedText = formatDuration(audioState.elapsedMs),
+            audioStateFlow = viewModel.audio.state,
             stageNote = state.stageNote,
-            modeLabel = when {
-                isRecording -> "LIVE MIC"
-                audioState.playingRelativePath != null -> "PLAYBACK"
-                else -> "READY"
-            },
-            onSingClick = {
-                if (isRecording) {
+            onSingClick = { currentlyRecording ->
+                if (currentlyRecording) {
                     viewModel.toggleRecording()
                 } else {
                     val granted = context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
@@ -951,7 +955,7 @@ fun StudioRoute(
         if (state.takes.isNotEmpty()) {
             Text(text = "Recorded takes", style = MaterialTheme.typography.titleLarge)
             state.takes.forEach { take ->
-                val isPlaying = audioState.playingRelativePath == take.relativePath
+                val isPlaying = playingRelativePath == take.relativePath
                 Surface(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(16.dp),
@@ -1052,13 +1056,19 @@ fun StudioRoute(
 
 @Composable
 private fun LiveVocalMonitorCard(
-    metrics: VocalMetrics,
-    isRecording: Boolean,
-    elapsedText: String,
+    audioStateFlow: StateFlow<AudioEngineState>,
     stageNote: String?,
-    modeLabel: String,
-    onSingClick: () -> Unit,
+    onSingClick: (Boolean) -> Unit,
 ) {
+    val audioState by audioStateFlow.collectAsState()
+    val metrics = audioState.metrics
+    val isRecording = audioState.status == EngineStatus.RECORDING
+    val elapsedText = formatDuration(audioState.elapsedMs)
+    val modeLabel = when {
+        isRecording -> "LIVE MIC"
+        audioState.playingRelativePath != null -> "PLAYBACK"
+        else -> "READY"
+    }
     val isActive = isRecording || modeLabel == "PLAYBACK"
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -1077,9 +1087,11 @@ private fun LiveVocalMonitorCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Column(Modifier.weight(1f)) {
+                Column(Modifier.weight(1f).padding(end = 8.dp)) {
                     Text(
                         text = if (isRecording) "Recording Live · $elapsedText" else "Live Pitch & Sound Graph",
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                         style = MaterialTheme.typography.titleLarge,
                         color = if (isRecording) SwaraColors.Clay else SwaraColors.Ink,
                     )
@@ -1092,13 +1104,16 @@ private fun LiveVocalMonitorCard(
                             }
                             "${metrics.pitchHz.toInt()} Hz · $tuning · ${metrics.rmsDb.toInt()} dB"
                         } else {
-                            "Sing or play a take to see your pitch, Swara, and tone balance"
+                            "Sing or play a take to see your live pitch"
                         },
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                         style = MaterialTheme.typography.bodyMedium,
                         color = SwaraColors.Muted,
                     )
                 }
                 Surface(
+                    modifier = Modifier.width(108.dp),
                     shape = RoundedCornerShape(12.dp),
                     color = if (isActive) SwaraColors.TealWash else SwaraColors.Paper,
                 ) {
@@ -1108,7 +1123,11 @@ private fun LiveVocalMonitorCard(
                         } else {
                             modeLabel
                         },
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 8.dp, vertical = 6.dp),
+                        maxLines = 1,
+                        textAlign = TextAlign.Center,
                         style = MaterialTheme.typography.titleMedium,
                         color = if (isActive) SwaraColors.Teal else SwaraColors.Muted,
                     )
@@ -1206,7 +1225,7 @@ private fun LiveVocalMonitorCard(
                 horizontalArrangement = Arrangement.spacedBy(14.dp),
             ) {
                 Surface(
-                    onClick = onSingClick,
+                    onClick = { onSingClick(isRecording) },
                     modifier = Modifier
                         .size(72.dp)
                         .clip(CircleShape),
@@ -1229,6 +1248,9 @@ private fun LiveVocalMonitorCard(
                             "Tap Sing to start recording your voice live."
                         },
                     modifier = Modifier.weight(1f),
+                    minLines = 2,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
                     style = MaterialTheme.typography.bodyMedium,
                     color = SwaraColors.Muted,
                 )
@@ -1250,22 +1272,30 @@ private fun EqBandRow(
     ) {
         Text(
             text = label,
-            modifier = Modifier.weight(0.45f),
+            modifier = Modifier.weight(0.46f),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
             style = MaterialTheme.typography.bodyMedium,
             color = SwaraColors.Muted,
         )
-        LinearProgressIndicator(
-            progress = { level.coerceIn(0.03f, 1f) },
+        Canvas(
             modifier = Modifier
-                .weight(0.42f)
+                .weight(0.40f)
                 .height(8.dp)
                 .clip(RoundedCornerShape(4.dp)),
-            color = color,
-            trackColor = SwaraColors.Line,
-        )
+        ) {
+            drawRect(color = SwaraColors.Line)
+            val fillWidth = size.width * level.coerceIn(0.03f, 1f)
+            drawRect(
+                color = color,
+                size = androidx.compose.ui.geometry.Size(fillWidth, size.height),
+            )
+        }
         Text(
             text = "${(level * 100).toInt().coerceIn(0, 100)}%",
-            modifier = Modifier.weight(0.13f),
+            modifier = Modifier.width(46.dp),
+            maxLines = 1,
+            textAlign = TextAlign.End,
             style = MaterialTheme.typography.bodyMedium,
             color = SwaraColors.Ink,
         )
