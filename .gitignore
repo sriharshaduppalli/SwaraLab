@@ -27,3 +27,11 @@ release-bundle.ps1
 play-store/
 internal/
 .cursor/
+.env
+.env.*
+google-services.json
+*service-account*.json
+*.pem
+*.p12
+*.key
+*.log
