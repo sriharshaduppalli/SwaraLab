@@ -55,8 +55,11 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.swaralab.domain.audio.VocalMetrics
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
@@ -297,9 +300,23 @@ class StudioViewModel(
 
     fun deleteTake(clipId: String) {
         viewModelScope.launch {
+            val current = uiState.value
+            val take = current?.takes?.firstOrNull { it.id == clipId }
+            if (take != null && audio.state.value.playingRelativePath == take.relativePath) {
+                audio.stopPlayback()
+            }
             deleteRecordedClip(sessionId, clipId)
+            if (take != null) {
+                withContext(Dispatchers.IO) {
+                    runCatching { File(File(projectsDir, sessionId), take.relativePath).delete() }
+                }
+            }
             refresh()
         }
+    }
+
+    fun refreshFromLifecycle() {
+        refresh()
     }
 
     fun onPermissionDenied() {
@@ -496,6 +513,19 @@ fun StudioRoute(
     DisposableEffect(Unit) {
         onDispose {
             viewModel.stopAudioOnExit()
+        }
+    }
+
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner, viewModel) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                viewModel.refreshFromLifecycle()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
         }
     }
 
@@ -847,12 +877,32 @@ fun StudioRoute(
             }
         }
 
-        Text(text = "Voice style", style = MaterialTheme.typography.titleLarge)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(text = "Voice style", style = MaterialTheme.typography.titleLarge)
+            TextButton(onClick = onPublish) {
+                Text("FX sliders")
+            }
+        }
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            studioPresets.forEach { preset ->
+            val presetsToShow = if (state.preset == VocalPreset.CUSTOM) {
+                studioPresets + VocalPreset.CUSTOM
+            } else {
+                studioPresets
+            }
+            presetsToShow.forEach { preset ->
                 FilterChip(
                     selected = state.preset == preset,
-                    onClick = { viewModel.selectPreset(preset) },
+                    onClick = {
+                        if (preset == VocalPreset.CUSTOM) {
+                            onPublish()
+                        } else {
+                            viewModel.selectPreset(preset)
+                        }
+                    },
                     label = { Text(preset.label()) },
                 )
             }

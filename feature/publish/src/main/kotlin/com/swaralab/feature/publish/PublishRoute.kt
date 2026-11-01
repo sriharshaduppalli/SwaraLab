@@ -1,5 +1,11 @@
 package com.swaralab.feature.publish
 
+import android.content.ContentValues
+import android.content.Context
+import android.content.Intent
+import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
@@ -37,6 +43,7 @@ import androidx.lifecycle.viewmodel.viewModelFactory
 import com.swaralab.domain.model.PublishTarget
 import com.swaralab.domain.model.TrackRole
 import com.swaralab.domain.model.VocalChain
+import com.swaralab.domain.model.VocalPreset
 import com.swaralab.domain.port.AudioEngine
 import com.swaralab.domain.port.ExportRequest
 import com.swaralab.domain.port.ExportResult
@@ -98,6 +105,8 @@ class PublishViewModel(
     }
 
     fun select(target: PublishTarget) {
+        val current = uiState.value ?: return
+        uiState.value = current.copy(target = target, status = null)
         viewModelScope.launch {
             updatePublish(sessionId, target)
             status = null
@@ -108,25 +117,33 @@ class PublishViewModel(
     fun setTrackGain(trackId: String, gainDb: Float) {
         val current = uiState.value ?: return
         val row = current.tracks.firstOrNull { it.id == trackId } ?: return
+        val updatedTracks = current.tracks.map {
+            if (it.id == trackId) it.copy(gainDb = gainDb) else it
+        }
+        uiState.value = current.copy(tracks = updatedTracks)
         viewModelScope.launch {
             updateTrackMix(sessionId, trackId, gainDb, row.mute)
-            refresh()
         }
     }
 
     fun toggleTrackMute(trackId: String) {
         val current = uiState.value ?: return
         val row = current.tracks.firstOrNull { it.id == trackId } ?: return
+        val nextMute = !row.mute
+        val updatedTracks = current.tracks.map {
+            if (it.id == trackId) it.copy(mute = nextMute) else it
+        }
+        uiState.value = current.copy(tracks = updatedTracks)
         viewModelScope.launch {
-            updateTrackMix(sessionId, trackId, row.gainDb, !row.mute)
-            refresh()
+            updateTrackMix(sessionId, trackId, row.gainDb, nextMute)
         }
     }
 
     fun setSyncOffset(offsetMs: Float) {
+        val current = uiState.value ?: return
+        uiState.value = current.copy(syncOffsetMs = offsetMs)
         viewModelScope.launch {
             updateVocalSyncOffset(sessionId, offsetMs.toDouble())
-            refresh()
         }
     }
 
@@ -137,6 +154,16 @@ class PublishViewModel(
         denoise: Float = uiState.value?.chain?.denoise ?: 0f,
         backingDuckDb: Float = uiState.value?.chain?.backingDuckDb ?: 0f,
     ) {
+        val current = uiState.value ?: return
+        val updatedChain = current.chain.copy(
+            preset = VocalPreset.CUSTOM,
+            reverb = reverb,
+            delay = delay,
+            compression = compression,
+            denoise = denoise,
+            backingDuckDb = backingDuckDb,
+        )
+        uiState.value = current.copy(chain = updatedChain)
         viewModelScope.launch {
             updateVocalChain(
                 id = sessionId,
@@ -146,7 +173,6 @@ class PublishViewModel(
                 denoise = denoise,
                 backingDuckDb = backingDuckDb,
             )
-            refresh()
         }
     }
 
@@ -160,7 +186,7 @@ class PublishViewModel(
             when (val result = render.export(document, ExportRequest(document.publish.target))) {
                 is ExportResult.Written -> {
                     exportedRelativePath = result.relativePath
-                    status = "Master mix ready (${result.durationMs / 1000}s). Tap Play master or Save to phone."
+                    status = "Master mix ready (${result.durationMs / 1000}s). Tap Play, Share, or Save."
                 }
                 is ExportResult.Waiting -> {
                     status = result.message
@@ -189,6 +215,60 @@ class PublishViewModel(
                 "Could not save the file."
             }
             refresh()
+        }
+    }
+
+    fun shareExportToApps(context: Context) {
+        val current = uiState.value ?: return
+        val path = exportedRelativePath ?: return
+        val source = File(File(projectsDir, sessionId), path)
+        if (!source.isFile) return
+        val fileName = current.exportedFileName ?: "swaralab-mix.wav"
+        viewModelScope.launch {
+            val uri = withContext(Dispatchers.IO) {
+                runCatching {
+                    val resolver = context.contentResolver
+                    val values = ContentValues().apply {
+                        put(MediaStore.Audio.Media.DISPLAY_NAME, fileName)
+                        put(MediaStore.Audio.Media.TITLE, current.title)
+                        put(MediaStore.Audio.Media.MIME_TYPE, "audio/wav")
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                            put(MediaStore.Audio.Media.RELATIVE_PATH, Environment.DIRECTORY_MUSIC + "/SwaraLab")
+                            put(MediaStore.Audio.Media.IS_PENDING, 1)
+                        }
+                    }
+                    val collection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        MediaStore.Audio.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+                    } else {
+                        MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
+                    }
+                    val inserted = resolver.insert(collection, values) ?: return@runCatching null
+                    resolver.openOutputStream(inserted)?.use { out ->
+                        source.inputStream().use { input -> input.copyTo(out) }
+                    }
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        val ready = ContentValues().apply {
+                            put(MediaStore.Audio.Media.IS_PENDING, 0)
+                        }
+                        resolver.update(inserted, ready, null, null)
+                    }
+                    inserted
+                }.getOrNull()
+            }
+            if (uri != null) {
+                val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                    type = "audio/wav"
+                    putExtra(Intent.EXTRA_STREAM, uri)
+                    putExtra(Intent.EXTRA_TITLE, current.title)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                context.startActivity(Intent.createChooser(shareIntent, "Share ${current.title}"))
+                status = "Saved to Music/SwaraLab and opened share sheet."
+                refresh()
+            } else {
+                status = "Use Save to phone to pick a folder on this device."
+                refresh()
+            }
         }
     }
 
@@ -498,15 +578,21 @@ fun PublishRoute(
                             onClick = viewModel::togglePlayExport,
                             modifier = Modifier.weight(1f),
                         ) {
-                            Text(if (isPlaying) "Stop preview" else "Play master")
+                            Text(if (isPlaying) "Stop" else "Play")
                         }
                         Button(
+                            onClick = { viewModel.shareExportToApps(context) },
+                            modifier = Modifier.weight(1f),
+                        ) {
+                            Text("Share")
+                        }
+                        OutlinedButton(
                             onClick = {
                                 saveFileLauncher.launch(state.exportedFileName ?: "swaralab-mix.wav")
                             },
                             modifier = Modifier.weight(1f),
                         ) {
-                            Text("Save to phone")
+                            Text("Save")
                         }
                     }
                 }
