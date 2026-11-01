@@ -11,10 +11,8 @@ import com.swaralab.domain.port.RenderEngine
  */
 class UnconnectedRenderEngine : RenderEngine {
     override suspend fun export(document: SessionDocument, request: ExportRequest): ExportResult {
-        val loudness = document.publish.loudnessLufs.toInt()
-        val peak = document.publish.truePeakDbtp.toInt()
         return ExportResult.Waiting(
-            "Set for ${request.target.name.lowercase()} at $loudness LUFS and $peak dBTP. The mix writes the file when the render engine is connected.",
+            "Sharing is not ready in this version. The session stays on this phone.",
         )
     }
 }

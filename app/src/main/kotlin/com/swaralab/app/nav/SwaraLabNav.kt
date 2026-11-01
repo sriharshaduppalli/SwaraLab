@@ -4,8 +4,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import com.swaralab.ui.SwaraColors
+import com.swaralab.ui.SwaraMark
+import com.swaralab.ui.SwaraMarkIcon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
@@ -18,6 +22,7 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.swaralab.app.graph.SwaraLabGraph
 import com.swaralab.app.ui.HomeRoute
+import com.swaralab.feature.account.AccountRoute
 import com.swaralab.feature.library.LibraryRoute
 import com.swaralab.feature.publish.PublishRoute
 import com.swaralab.feature.studio.StudioRoute
@@ -25,6 +30,7 @@ import com.swaralab.feature.studio.StudioRoute
 object Routes {
     const val HOME = "home"
     const val LIBRARY = "library"
+    const val ACCOUNT = "account"
     const val STUDIO = "studio/{sessionId}"
     const val PUBLISH = "publish/{sessionId}"
 
@@ -37,13 +43,20 @@ fun SwaraLabNav(graph: SwaraLabGraph) {
     val nav = rememberNavController()
     val entry by nav.currentBackStackEntryAsState()
     val route = entry?.destination?.route
-    val showTabs = route == Routes.HOME || route == Routes.LIBRARY
+    val showTabs = route == Routes.HOME || route == Routes.LIBRARY || route == Routes.ACCOUNT
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         bottomBar = {
             if (showTabs) {
-                NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
+                NavigationBar(containerColor = MaterialTheme.colorScheme.background) {
+                    val colors = NavigationBarItemDefaults.colors(
+                        selectedIconColor = SwaraColors.Teal,
+                        selectedTextColor = SwaraColors.Teal,
+                        indicatorColor = SwaraColors.TealWash,
+                        unselectedIconColor = SwaraColors.Muted,
+                        unselectedTextColor = SwaraColors.Muted,
+                    )
                     NavigationBarItem(
                         selected = route == Routes.HOME,
                         onClick = {
@@ -53,8 +66,9 @@ fun SwaraLabNav(graph: SwaraLabGraph) {
                                 restoreState = true
                             }
                         },
-                        icon = { Text("●") },
-                        label = { Text("Create") },
+                        icon = { SwaraMarkIcon(SwaraMark.SING, route == Routes.HOME) },
+                        label = { Text("Sing") },
+                        colors = colors,
                     )
                     NavigationBarItem(
                         selected = route == Routes.LIBRARY,
@@ -65,8 +79,22 @@ fun SwaraLabNav(graph: SwaraLabGraph) {
                                 restoreState = true
                             }
                         },
-                        icon = { Text("♪") },
-                        label = { Text("Library") },
+                        icon = { SwaraMarkIcon(SwaraMark.SONGS, route == Routes.LIBRARY) },
+                        label = { Text("Songs") },
+                        colors = colors,
+                    )
+                    NavigationBarItem(
+                        selected = route == Routes.ACCOUNT,
+                        onClick = {
+                            nav.navigate(Routes.ACCOUNT) {
+                                popUpTo(nav.graph.findStartDestination().id) { saveState = true }
+                                launchSingleTop = true
+                                restoreState = true
+                            }
+                        },
+                        icon = { SwaraMarkIcon(SwaraMark.PROFILE, route == Routes.ACCOUNT) },
+                        label = { Text("Profile") },
+                        colors = colors,
                     )
                 }
             }
@@ -89,6 +117,14 @@ fun SwaraLabNav(graph: SwaraLabGraph) {
                     onOpen = { id -> nav.navigate(Routes.studio(id)) },
                 )
             }
+            composable(Routes.ACCOUNT) {
+                AccountRoute(
+                    registerAccount = graph.registerAccount,
+                    signIn = graph.signIn,
+                    signOut = graph.signOut,
+                    currentAccount = graph.currentAccount,
+                )
+            }
             composable(
                 route = Routes.STUDIO,
                 arguments = listOf(navArgument("sessionId") { type = NavType.StringType }),
@@ -97,7 +133,11 @@ fun SwaraLabNav(graph: SwaraLabGraph) {
                 StudioRoute(
                     sessionId = sessionId,
                     loadSession = graph.loadSession,
+                    renameSession = graph.renameSession,
                     updateGear = graph.updateGear,
+                    updateVocalPreset = graph.updateVocalPreset,
+                    updateLyrics = graph.updateLyrics,
+                    addVoicePart = graph.addVoicePart,
                     audio = graph.audio,
                     onBack = { nav.popBackStack() },
                     onPublish = { nav.navigate(Routes.publish(sessionId)) },

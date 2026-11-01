@@ -21,9 +21,13 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.swaralab.domain.model.SessionKind
-import com.swaralab.domain.model.defaultTitle
 import com.swaralab.domain.usecase.CreateSession
+import java.time.LocalTime
+import java.time.format.DateTimeFormatter
+import java.time.format.FormatStyle
 import com.swaralab.ui.ChoiceCard
+import com.swaralab.ui.SwaraColors
+import com.swaralab.ui.SwaraWordmark
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -41,7 +45,7 @@ class HomeViewModel(
         busy = true
         viewModelScope.launch {
             try {
-                val document = createSession(kind, defaultTitle(kind))
+                val document = createSession(kind, sessionTitle(kind))
                 openedIds.emit(document.id)
             } finally {
                 busy = false
@@ -54,6 +58,16 @@ class HomeViewModel(
             initializer { HomeViewModel(createSession) }
         }
     }
+}
+
+private fun sessionTitle(kind: SessionKind): String {
+    val clock = LocalTime.now().format(DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT))
+    val name = when (kind) {
+        SessionKind.PRACTICE -> "Practice"
+        SessionKind.SONG -> "Song"
+        SessionKind.VIDEO -> "Video"
+    }
+    return "$name · $clock"
 }
 
 @Composable
@@ -74,27 +88,27 @@ fun HomeRoute(
             .padding(horizontal = 20.dp, vertical = 28.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Text(text = "SwaraLab", style = MaterialTheme.typography.headlineLarge)
+        SwaraWordmark()
         Text(
-            text = "Record a vocal, keep the session, and prepare a file worth sharing.",
+            text = "Step in, put the words in front of you, and shape your voice.",
             style = MaterialTheme.typography.bodyLarge,
-            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f),
+            color = SwaraColors.Muted,
         )
         Spacer(Modifier.height(8.dp))
         ChoiceCard(
-            title = "Practice",
-            body = "Sing a line, listen back, and do it again.",
-            onClick = { viewModel.start(SessionKind.PRACTICE) },
-        )
-        ChoiceCard(
-            title = "Song",
-            body = "Start an original, or a track you already have the right to use.",
+            title = "Solo or Duet Song",
+            body = "Lyrics on screen, Studio or Hall voice, and a second part when you want a duet.",
             onClick = { viewModel.start(SessionKind.SONG) },
         )
         ChoiceCard(
-            title = "Video",
-            body = "Frame a vertical performance for Reels, Shorts, or WhatsApp.",
+            title = "Vertical Video",
+            body = "Sing for Reels, Shorts, or WhatsApp with the lyrics kept inside the frame.",
             onClick = { viewModel.start(SessionKind.VIDEO) },
+        )
+        ChoiceCard(
+            title = "Vocal Warm-up",
+            body = "Work on a line a cappella and listen back.",
+            onClick = { viewModel.start(SessionKind.PRACTICE) },
         )
     }
 }

@@ -12,10 +12,10 @@ import com.swaralab.ui.SwaraLabTheme
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val ink = Color.parseColor("#12110F")
+        val paper = Color.parseColor("#F7F4EF")
         enableEdgeToEdge(
-            statusBarStyle = SystemBarStyle.dark(ink),
-            navigationBarStyle = SystemBarStyle.dark(ink),
+            statusBarStyle = SystemBarStyle.light(paper, paper),
+            navigationBarStyle = SystemBarStyle.light(paper, paper),
         )
         val graph = (application as SwaraLabApplication).graph
         setContent {

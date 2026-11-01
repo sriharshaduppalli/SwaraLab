@@ -26,6 +26,7 @@ import androidx.lifecycle.viewmodel.viewModelFactory
 import com.swaralab.domain.model.SessionKind
 import com.swaralab.domain.usecase.ListSessions
 import com.swaralab.ui.ChoiceCard
+import com.swaralab.ui.SwaraColors
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -71,7 +72,7 @@ class LibraryViewModel(
 }
 
 private fun SessionKind.label(): String = when (this) {
-    SessionKind.PRACTICE -> "Practice"
+    SessionKind.PRACTICE -> "Warm-up"
     SessionKind.SONG -> "Song"
     SessionKind.VIDEO -> "Video"
 }
@@ -100,16 +101,17 @@ fun LibraryRoute(
             .padding(horizontal = 20.dp, vertical = 28.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Text(text = "Library", style = MaterialTheme.typography.headlineLarge)
+        Text(text = "Songs", style = MaterialTheme.typography.headlineLarge)
         Text(
-            text = "Songs you start stay on this phone.",
+            text = "Open a song to edit its lyrics, voice style, or duet parts.",
             style = MaterialTheme.typography.bodyLarge,
-            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f),
+            color = SwaraColors.Muted,
         )
         if (rows.isEmpty()) {
             Text(
-                text = "A practice, a song, or a video will show up here with its session folder.",
-                style = MaterialTheme.typography.bodyMedium,
+                text = "No songs yet. Start one from Sing.",
+                style = MaterialTheme.typography.bodyLarge,
+                color = SwaraColors.Muted,
                 modifier = Modifier.padding(top = 12.dp),
             )
         } else {

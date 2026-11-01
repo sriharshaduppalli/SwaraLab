@@ -1,18 +1,16 @@
 package com.swaralab.feature.publish
 
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import com.swaralab.ui.ChoiceCard
+import com.swaralab.ui.SwaraColors
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -26,7 +24,6 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.swaralab.domain.model.FrameFormat
 import com.swaralab.domain.model.PublishTarget
-import com.swaralab.domain.model.SafeFrames
 import com.swaralab.domain.port.ExportResult
 import com.swaralab.domain.port.ExportRequest
 import com.swaralab.domain.port.RenderEngine
@@ -82,12 +79,11 @@ class PublishViewModel(
         viewModelScope.launch {
             val document = loadSession(sessionId) ?: return@launch
             val publish = document.publish
-            val insets = SafeFrames.forTarget(publish.target)
             uiState.value = PublishUi(
                 target = publish.target,
-                level = "${publish.loudnessLufs.toInt()} LUFS, true peak ${publish.truePeakDbtp.toInt()} dBTP.",
+                level = "Loudness is set for a phone feed.",
                 frame = publish.frame.label(),
-                safe = "On a ${SafeFrames.MASTER_WIDTH}×${SafeFrames.MASTER_HEIGHT} frame, keep lyrics ${insets.top} px from the top, ${insets.bottom} px from the bottom, and ${insets.right} px from the right.",
+                safe = shareCopy(publish.target),
                 status = status,
             )
         }
@@ -127,37 +123,26 @@ fun PublishRoute(
             .padding(horizontal = 20.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        TextButton(onClick = onBack) { Text("Session") }
+        TextButton(onClick = onBack) { Text("Back") }
         Text(text = "Share", style = MaterialTheme.typography.headlineLarge)
         Text(
-            text = "One master, leveled for a phone feed.",
+            text = "Pick one. The finished file comes in a later version.",
             style = MaterialTheme.typography.bodyLarge,
-            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f),
+            color = SwaraColors.Muted,
         )
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            modifier = Modifier.horizontalScroll(rememberScrollState()),
-        ) {
-            PublishTarget.entries.forEach { target ->
-                FilterChip(
-                    selected = state.target == target,
-                    onClick = { viewModel.select(target) },
-                    label = { Text(target.label()) },
-                )
-            }
-        }
-        Text(text = state.frame, style = MaterialTheme.typography.titleMedium)
-        Text(text = state.level, style = MaterialTheme.typography.bodyLarge)
-        Text(text = state.safe, style = MaterialTheme.typography.bodyMedium)
-        Button(onClick = viewModel::prepare) { Text("Prepare export") }
-        state.status?.let { message ->
-            Text(text = message, style = MaterialTheme.typography.bodyMedium)
+        PublishTarget.entries.forEach { target ->
+            ChoiceCard(
+                title = target.label(),
+                body = shareCopy(target),
+                selected = state.target == target,
+                onClick = { viewModel.select(target) },
+            )
         }
     }
 }
 
 private fun PublishTarget.label(): String = when (this) {
-    PublishTarget.MASTER -> "Master"
+    PublishTarget.MASTER -> "Full video"
     PublishTarget.REELS -> "Reels"
     PublishTarget.SHORTS -> "Shorts"
     PublishTarget.WHATSAPP -> "WhatsApp"
@@ -165,8 +150,17 @@ private fun PublishTarget.label(): String = when (this) {
     PublishTarget.LANDSCAPE -> "Wide"
 }
 
+private fun shareCopy(target: PublishTarget): String = when (target) {
+    PublishTarget.REELS -> "A vertical video, with the words kept clear of the Reels buttons."
+    PublishTarget.SHORTS -> "A vertical video, with the words kept clear of the Shorts buttons."
+    PublishTarget.WHATSAPP -> "A vertical video that fits a WhatsApp status."
+    PublishTarget.SQUARE -> "A square picture for a post."
+    PublishTarget.LANDSCAPE -> "A wide picture."
+    PublishTarget.MASTER -> "The full vertical video, before it is cropped for an app."
+}
+
 private fun FrameFormat.label(): String = when (this) {
-    FrameFormat.VERTICAL -> "Vertical 9:16"
-    FrameFormat.SQUARE -> "Square 1:1"
-    FrameFormat.LANDSCAPE -> "Wide 16:9"
+    FrameFormat.VERTICAL -> "Vertical"
+    FrameFormat.SQUARE -> "Square"
+    FrameFormat.LANDSCAPE -> "Wide"
 }
