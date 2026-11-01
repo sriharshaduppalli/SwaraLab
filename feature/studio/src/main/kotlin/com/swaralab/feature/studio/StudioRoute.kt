@@ -72,6 +72,7 @@ import com.swaralab.domain.audio.VocalMetrics
 import com.swaralab.domain.layout.SessionLayout
 import com.swaralab.domain.model.GearRoute
 import com.swaralab.domain.model.LyricLine
+import com.swaralab.domain.model.PublishTarget
 import com.swaralab.domain.model.SessionKind
 import com.swaralab.domain.model.TrackRole
 import com.swaralab.domain.model.VocalPreset
@@ -88,6 +89,7 @@ import com.swaralab.domain.usecase.LoadSession
 import com.swaralab.domain.usecase.RenameSession
 import com.swaralab.domain.usecase.UpdateGear
 import com.swaralab.domain.usecase.UpdateLyrics
+import com.swaralab.domain.usecase.UpdatePublishSettings
 import com.swaralab.domain.usecase.UpdateVocalPreset
 import com.swaralab.ui.ChoiceCard
 import com.swaralab.ui.SwaraColors
@@ -106,6 +108,7 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import kotlin.math.PI
 import kotlin.math.abs
+import kotlin.math.ln
 import kotlin.math.roundToInt
 import kotlin.math.sin
 
@@ -131,6 +134,7 @@ data class StudioUi(
     val title: String,
     val kind: SessionKind,
     val preset: VocalPreset,
+    val publishTarget: PublishTarget,
     val backing: BackingTrackUi?,
     val lines: List<LyricLine>,
     val rawLyrics: String,
@@ -155,6 +159,7 @@ class StudioViewModel(
     private val commitRecordedTake: CommitRecordedTake,
     private val deleteRecordedClip: DeleteRecordedClip,
     private val importBackingTrack: ImportBackingTrack,
+    private val updatePublish: UpdatePublishSettings,
     val audio: AudioEngine,
 ) : ViewModel() {
     private val uiState = MutableStateFlow<StudioUi?>(null)
@@ -242,6 +247,13 @@ class StudioViewModel(
         viewModelScope.launch {
             updateGear(sessionId, route)
             stageNote = null
+            refresh()
+        }
+    }
+
+    fun selectVideoTarget(target: PublishTarget) {
+        viewModelScope.launch {
+            updatePublish(sessionId, target)
             refresh()
         }
     }
@@ -434,6 +446,7 @@ class StudioViewModel(
                 title = document.title,
                 kind = document.kind,
                 preset = document.chain.preset,
+                publishTarget = document.publish.target,
                 backing = backingUi,
                 lines = lines,
                 rawLyrics = document.lyrics.rawText,
@@ -461,6 +474,7 @@ class StudioViewModel(
             commitRecordedTake: CommitRecordedTake,
             deleteRecordedClip: DeleteRecordedClip,
             importBackingTrack: ImportBackingTrack,
+            updatePublish: UpdatePublishSettings,
             audio: AudioEngine,
         ): ViewModelProvider.Factory = viewModelFactory {
             initializer {
@@ -476,6 +490,7 @@ class StudioViewModel(
                     commitRecordedTake = commitRecordedTake,
                     deleteRecordedClip = deleteRecordedClip,
                     importBackingTrack = importBackingTrack,
+                    updatePublish = updatePublish,
                     audio = audio,
                 )
             }
@@ -511,6 +526,7 @@ fun StudioRoute(
     commitRecordedTake: CommitRecordedTake,
     deleteRecordedClip: DeleteRecordedClip,
     importBackingTrack: ImportBackingTrack,
+    updatePublish: UpdatePublishSettings,
     audio: AudioEngine,
     onBack: () -> Unit,
     onPublish: () -> Unit,
@@ -529,6 +545,7 @@ fun StudioRoute(
             commitRecordedTake = commitRecordedTake,
             deleteRecordedClip = deleteRecordedClip,
             importBackingTrack = importBackingTrack,
+            updatePublish = updatePublish,
             audio = audio,
         ),
     )
@@ -705,7 +722,15 @@ fun StudioRoute(
             }
         }
 
-        if (state.kind != SessionKind.PRACTICE) {
+        if (state.kind == SessionKind.PRACTICE) {
+            WarmupScaleCoachCard(
+                audioStateFlow = viewModel.audio.state,
+                backing = state.backing,
+                playingRelativePath = playingRelativePath,
+                onEnableDrone = viewModel::loadSampleBacking,
+                onToggleDrone = { path -> viewModel.togglePlayClip(path) },
+            )
+        } else {
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(18.dp),
@@ -753,6 +778,18 @@ fun StudioRoute(
                     }
                 }
             }
+        }
+
+        if (state.kind == SessionKind.VIDEO) {
+            VerticalVideoStageCard(
+                title = state.title,
+                target = state.publishTarget,
+                activeLyric = state.lines.getOrNull(state.activeLine)?.text
+                    ?: "Add or paste lyrics below to preview them on your 9:16 video stage",
+                nextLyric = state.lines.getOrNull(state.activeLine + 1)?.text.orEmpty(),
+                audioStateFlow = viewModel.audio.state,
+                onSelectTarget = viewModel::selectVideoTarget,
+            )
         }
 
         Surface(
@@ -1375,6 +1412,260 @@ private fun EqBandRow(
             style = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
             color = SwaraColors.Ink,
         )
+    }
+}
+
+private data class ScaleTarget(
+    val swara: String,
+    val note: String,
+    val hz: Float,
+)
+
+private val cMajorSwaraScale = listOf(
+    ScaleTarget("Sa", "C4", 261.63f),
+    ScaleTarget("Re", "D4", 293.66f),
+    ScaleTarget("Ga", "E4", 329.63f),
+    ScaleTarget("Ma", "F4", 349.23f),
+    ScaleTarget("Pa", "G4", 392.00f),
+    ScaleTarget("Dha", "A4", 440.00f),
+    ScaleTarget("Ni", "B4", 493.88f),
+    ScaleTarget("Sa'", "C5", 523.25f),
+)
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun WarmupScaleCoachCard(
+    audioStateFlow: StateFlow<AudioEngineState>,
+    backing: BackingTrackUi?,
+    playingRelativePath: String?,
+    onEnableDrone: () -> Unit,
+    onToggleDrone: (String) -> Unit,
+) {
+    var selectedIdx by remember { mutableStateOf(0) }
+    var calmPitchHz by remember { mutableStateOf(0f) }
+    val target = cMajorSwaraScale[selectedIdx]
+
+    LaunchedEffect(audioStateFlow) {
+        while (true) {
+            calmPitchHz = audioStateFlow.value.metrics.pitchHz
+            delay(380L)
+        }
+    }
+
+    val centsDiff = if (calmPitchHz > 60f) {
+        (1200.0 * (ln(calmPitchHz.toDouble() / target.hz.toDouble()) / ln(2.0))).roundToInt()
+    } else {
+        null
+    }
+    val isHit = centsDiff != null && abs(centsDiff) <= 45
+
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(22.dp),
+        color = SwaraColors.Card,
+        border = BorderStroke(1.dp, if (isHit) SwaraColors.Teal else SwaraColors.Line),
+    ) {
+        Column(
+            modifier = Modifier.padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(text = "Swara & Scale Coach", style = MaterialTheme.typography.titleLarge)
+                    Text(
+                        text = "Target: ${target.swara} (${target.note} · ${target.hz.roundToInt()} Hz)",
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = SwaraColors.Gold,
+                    )
+                }
+                if (backing == null) {
+                    OutlinedButton(onClick = onEnableDrone) {
+                        Text("Load Tanpura")
+                    }
+                } else {
+                    val isPlayingDrone = playingRelativePath == backing.relativePath
+                    OutlinedButton(onClick = { onToggleDrone(backing.relativePath) }) {
+                        Text(if (isPlayingDrone) "Stop Tanpura" else "Play Tanpura")
+                    }
+                }
+            }
+
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                cMajorSwaraScale.forEachIndexed { idx, item ->
+                    FilterChip(
+                        selected = selectedIdx == idx,
+                        onClick = { selectedIdx = idx },
+                        label = { Text("${item.swara} (${item.note})") },
+                    )
+                }
+            }
+
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp),
+                color = if (isHit) SwaraColors.TealWash else SwaraColors.Paper,
+            ) {
+                val feedback = when {
+                    centsDiff == null -> "Tap Sing below and hold ${target.swara} (${target.note})"
+                    abs(centsDiff) <= 45 -> "Locked on ${target.swara} (${target.note})! Hold steady."
+                    centsDiff < 0 -> "Sing slightly higher ↑ to reach ${target.swara} (${target.note})"
+                    else -> "Sing slightly lower ↓ to reach ${target.swara} (${target.note})"
+                }
+                Text(
+                    text = feedback,
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = if (isHit) SwaraColors.Teal else SwaraColors.Ink,
+                )
+            }
+        }
+    }
+}
+
+private val videoFrameTargets = listOf(
+    PublishTarget.REELS,
+    PublishTarget.SHORTS,
+    PublishTarget.WHATSAPP,
+)
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun VerticalVideoStageCard(
+    title: String,
+    target: PublishTarget,
+    activeLyric: String,
+    nextLyric: String,
+    audioStateFlow: StateFlow<AudioEngineState>,
+    onSelectTarget: (PublishTarget) -> Unit,
+) {
+    val audioState = audioStateFlow.collectAsState()
+    val effectiveTarget = if (target in videoFrameTargets) target else PublishTarget.REELS
+
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(22.dp),
+        color = SwaraColors.Card,
+        border = BorderStroke(1.dp, SwaraColors.Line),
+    ) {
+        Column(
+            modifier = Modifier.padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(text = "9:16 Vertical Video Stage", style = MaterialTheme.typography.titleLarge)
+                    Text(
+                        text = "Live safe-frame preview with synced lyrics overlay",
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = SwaraColors.Muted,
+                    )
+                }
+            }
+
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                videoFrameTargets.forEach { item ->
+                    FilterChip(
+                        selected = effectiveTarget == item,
+                        onClick = { onSelectTarget(item) },
+                        label = {
+                            Text(
+                                when (item) {
+                                    PublishTarget.REELS -> "Reels 9:16"
+                                    PublishTarget.SHORTS -> "Shorts 9:16"
+                                    else -> "WhatsApp 9:16"
+                                },
+                            )
+                        },
+                    )
+                }
+            }
+
+            // 9:16 vertical stage preview box
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(230.dp),
+                shape = RoundedCornerShape(18.dp),
+                color = SwaraColors.Ink,
+            ) {
+                Box(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+                    Canvas(modifier = Modifier.fillMaxSize()) {
+                        val m = audioState.value.metrics
+                        val amp = (m.midLevel * 0.6f + m.bassLevel * 0.4f).coerceIn(0.08f, 1f)
+                        val center = Offset(size.width / 2f, size.height * 0.44f)
+                        drawCircle(
+                            color = SwaraColors.Teal.copy(alpha = 0.25f),
+                            radius = size.minDimension * (0.22f + amp * 0.22f),
+                            center = center,
+                        )
+                        drawCircle(
+                            color = SwaraColors.Gold.copy(alpha = 0.35f),
+                            radius = size.minDimension * (0.14f + amp * 0.14f),
+                            center = center,
+                            style = Stroke(width = 2.dp.toPx()),
+                        )
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth().align(Alignment.TopStart),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = title,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            style = MaterialTheme.typography.titleMedium,
+                            color = Color.White,
+                        )
+                        Text(
+                            text = effectiveTarget.name,
+                            style = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
+                            color = SwaraColors.Gold,
+                        )
+                    }
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth(0.84f)
+                            .align(Alignment.BottomStart),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        Text(
+                            text = activeLyric,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+                            color = Color.White,
+                        )
+                        if (nextLyric.isNotBlank()) {
+                            Text(
+                                text = nextLyric,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = Color.White.copy(alpha = 0.68f),
+                            )
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

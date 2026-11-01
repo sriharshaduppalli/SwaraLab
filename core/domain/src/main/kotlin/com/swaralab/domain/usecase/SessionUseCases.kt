@@ -26,7 +26,32 @@ class CreateSession(
     private val sessions: SessionRepository,
 ) {
     suspend operator fun invoke(kind: SessionKind, title: String): SessionDocument {
-        val document = reducer.create(kind, title)
+        var document = reducer.create(kind, title)
+        if (kind == SessionKind.PRACTICE) {
+            val warmupLines = listOf(
+                LyricLine(id = "warmup-1", text = "Sa (C4 · 262 Hz) — Steady lower tonic", startMs = 0L),
+                LyricLine(id = "warmup-2", text = "Re (D4 · 294 Hz) — Step up smoothly", startMs = 2_000L),
+                LyricLine(id = "warmup-3", text = "Ga (E4 · 330 Hz) — Open major third", startMs = 4_000L),
+                LyricLine(id = "warmup-4", text = "Ma (F4 · 349 Hz) — Gentle fourth", startMs = 6_000L),
+                LyricLine(id = "warmup-5", text = "Pa (G4 · 392 Hz) — Strong fifth resonance", startMs = 8_000L),
+                LyricLine(id = "warmup-6", text = "Dha (A4 · 440 Hz) — Clear sixth", startMs = 10_000L),
+                LyricLine(id = "warmup-7", text = "Ni (B4 · 494 Hz) — Leading seventh", startMs = 12_000L),
+                LyricLine(id = "warmup-8", text = "Sa' (C5 · 523 Hz) — Upper octave tonic", startMs = 14_000L),
+            )
+            val sheet = LyricSheet(
+                rawText = warmupLines.joinToString("\n") { it.text },
+                lines = warmupLines,
+                alignment = LyricAlignment.LINE,
+            )
+            val edit = reducer.apply(document, SessionCommand.SetLyrics(sheet))
+            if (edit is SessionEdit.Applied) document = edit.document
+        } else if (kind == SessionKind.VIDEO) {
+            val edit = reducer.apply(
+                document,
+                SessionCommand.SetPublish(document.publish.withTarget(PublishTarget.REELS)),
+            )
+            if (edit is SessionEdit.Applied) document = edit.document
+        }
         sessions.save(document)
         return document
     }
@@ -239,7 +264,13 @@ class ImportBackingTrack(
         durationMs: Long,
         label: String,
     ): SessionEdit {
-        val document = sessions.load(sessionId) ?: return SessionEdit.Rejected(RejectReason.UNKNOWN_SESSION)
+        var document = sessions.load(sessionId) ?: return SessionEdit.Rejected(RejectReason.UNKNOWN_SESSION)
+        if (document.tracks.none { it.role == TrackRole.BACKING }) {
+            val added = reducer.apply(document, SessionCommand.AddTrack(TrackRole.BACKING, "Backing"))
+            if (added is SessionEdit.Applied) {
+                document = added.document
+            }
+        }
         val backingTrack = document.tracks.firstOrNull { it.role == TrackRole.BACKING }
             ?: return SessionEdit.Rejected(RejectReason.UNKNOWN_TRACK)
         val cleared = document.copy(

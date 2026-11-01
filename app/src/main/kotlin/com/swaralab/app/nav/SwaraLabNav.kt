@@ -143,6 +143,7 @@ fun SwaraLabNav(graph: SwaraLabGraph) {
                     commitRecordedTake = graph.commitRecordedTake,
                     deleteRecordedClip = graph.deleteRecordedClip,
                     importBackingTrack = graph.importBackingTrack,
+                    updatePublish = graph.updatePublish,
                     audio = graph.audio,
                     onBack = { nav.popBackStack() },
                     onPublish = { nav.navigate(Routes.publish(sessionId)) },

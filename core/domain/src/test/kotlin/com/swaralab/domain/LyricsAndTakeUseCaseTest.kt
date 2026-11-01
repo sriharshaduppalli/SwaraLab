@@ -1,6 +1,7 @@
 package com.swaralab.domain
 
 import com.swaralab.domain.model.LyricAlignment
+import com.swaralab.domain.model.PublishTarget
 import com.swaralab.domain.model.SessionKind
 import com.swaralab.domain.model.TrackRole
 import com.swaralab.domain.model.VocalPreset
@@ -9,6 +10,7 @@ import com.swaralab.domain.port.SessionRepository
 import com.swaralab.domain.port.SessionSummary
 import com.swaralab.domain.usecase.CommitRecordedTake
 import com.swaralab.domain.usecase.CreateSession
+import com.swaralab.domain.usecase.ImportBackingTrack
 import com.swaralab.domain.usecase.LoadSession
 import com.swaralab.domain.usecase.UpdateLyrics
 import com.swaralab.domain.usecase.UpdateTrackMix
@@ -89,6 +91,29 @@ class LyricsAndTakeUseCaseTest {
         assertEquals(0.6f, loaded.chain.reverb, 0.01f)
         assertEquals(0.25f, loaded.chain.delay, 0.01f)
         assertEquals(-45.0, loaded.latency.compensationMs, 0.01)
+    }
+
+    @Test
+    fun practiceAndVideoModesInitializeDistinctly() = runBlocking {
+        val (_, reducer) = testReducer()
+        val store = InMemorySessions()
+        val create = CreateSession(reducer, store)
+
+        val practice = create(SessionKind.PRACTICE, "Morning Riyaz")
+        assertEquals(8, practice.lyrics.lines.size)
+        assertTrue(practice.lyrics.lines.first().text.startsWith("Sa (C4"))
+
+        ImportBackingTrack(reducer, store)(
+            sessionId = practice.id,
+            relativePath = "media/backing/drone.wav",
+            durationMs = 16_000L,
+            label = "Tanpura Drone",
+        )
+        val practiceWithDrone = LoadSession(store)(practice.id)!!
+        assertEquals(1, practiceWithDrone.tracks.first { it.role == TrackRole.BACKING }.clips.size)
+
+        val video = create(SessionKind.VIDEO, "Reel Cover")
+        assertEquals(PublishTarget.REELS, video.publish.target)
     }
 }
 
