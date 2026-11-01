@@ -1,5 +1,6 @@
 package com.swaralab.domain.port
 
+import com.swaralab.domain.audio.VocalMetrics
 import com.swaralab.domain.model.GearRoute
 import com.swaralab.domain.model.PublishTarget
 import com.swaralab.domain.model.SessionDocument
@@ -40,6 +41,7 @@ data class AudioEngineState(
     val peak: Float = 0f,
     val elapsedMs: Long = 0L,
     val playingRelativePath: String? = null,
+    val metrics: VocalMetrics = VocalMetrics(),
 )
 
 data class ArmRequest(

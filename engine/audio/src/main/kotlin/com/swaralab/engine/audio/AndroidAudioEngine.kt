@@ -5,6 +5,8 @@ import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaPlayer
 import android.media.MediaRecorder
+import com.swaralab.domain.audio.VocalMetrics
+import com.swaralab.domain.audio.VocalSignalAnalyzer
 import com.swaralab.domain.identity.IdGenerator
 import com.swaralab.domain.identity.UuidIdGenerator
 import com.swaralab.domain.layout.SessionLayout
@@ -22,6 +24,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -38,7 +41,8 @@ import kotlin.math.max
 
 /**
  * Live Android microphone capture and take playback.
- * Writes 16-bit mono PCM WAV into the session's `media/takes/{takeId}.wav` folder.
+ * Writes 16-bit mono PCM WAV into the session's `media/takes/{takeId}.wav` folder
+ * and streams real-time vocal pitch, note, Swara, and 3-band EQ metrics.
  */
 class AndroidAudioEngine(
     private val projectsRoot: File,
@@ -50,6 +54,9 @@ class AndroidAudioEngine(
 
     @Volatile
     private var recordingJob: Job? = null
+
+    @Volatile
+    private var playbackMeterJob: Job? = null
 
     @Volatile
     private var activeTake: ActiveRecording? = null
@@ -73,8 +80,6 @@ class AndroidAudioEngine(
 
     override suspend fun arm(request: ArmRequest): MonitorDecision {
         armedBackingRelativePath = request.backingRelativePath
-        // When a backing track is playing, speaker recording is blocked to prevent bleed.
-        // For solo / a cappella takes with no backing track, allow recording on any route.
         val decision = if (request.backingRelativePath != null) {
             MonitorPolicy.evaluate(request.output, MonitorPurpose.RECORD)
         } else {
@@ -116,7 +121,7 @@ class AndroidAudioEngine(
         if (minBuffer <= 0) {
             return@withContext TakeControl.TransportUnavailable
         }
-        val bufferSize = max(minBuffer * 2, 4096)
+        val bufferSize = max(minBuffer * 2, 8192)
 
         val recorder = try {
             AudioRecord(
@@ -178,6 +183,7 @@ class AndroidAudioEngine(
                 peak = 0f,
                 elapsedMs = 0L,
                 playingRelativePath = null,
+                metrics = VocalMetrics(),
             )
         }
 
@@ -185,7 +191,7 @@ class AndroidAudioEngine(
             RandomAccessFile(wavFile, "rw").use { raf ->
                 raf.setLength(0L)
                 writeWavHeader(raf, sampleRate, 0L)
-                val shorts = ShortArray(1024)
+                val shorts = ShortArray(2048)
                 val byteBuffer = ByteBuffer.allocate(shorts.size * 2).order(ByteOrder.LITTLE_ENDIAN)
                 try {
                     while (isActive) {
@@ -206,11 +212,18 @@ class AndroidAudioEngine(
                                 active.maxPeak = normalizedPeak
                             }
                             val elapsed = (System.currentTimeMillis() - active.startedAtMs).coerceAtLeast(0L)
+                            val updatedMetrics = VocalSignalAnalyzer.analyzeFrame(
+                                samples = shorts,
+                                length = read,
+                                sampleRate = sampleRate,
+                                previous = states.value.metrics,
+                            )
                             states.update { state ->
                                 state.copy(
                                     status = EngineStatus.RECORDING,
                                     peak = normalizedPeak,
                                     elapsedMs = elapsed,
+                                    metrics = updatedMetrics,
                                 )
                             }
                         }
@@ -271,12 +284,59 @@ class AndroidAudioEngine(
                 start()
             }
             mediaPlayer = player
-            states.update { it.copy(playingRelativePath = relativePath) }
+            states.update {
+                it.copy(
+                    playingRelativePath = relativePath,
+                    metrics = VocalMetrics(),
+                )
+            }
+            if (file.extension.equals("wav", ignoreCase = true) && file.length() > 44L) {
+                startWavPlaybackMeter(file, player)
+            }
         }
         Unit
     }
 
+    private fun startWavPlaybackMeter(wavFile: File, player: MediaPlayer) {
+        playbackMeterJob?.cancel()
+        playbackMeterJob = scope.launch {
+            val bytes = runCatching { wavFile.readBytes() }.getOrNull() ?: return@launch
+            if (bytes.size <= 44) return@launch
+            val sampleRate = 48_000
+            val totalSamples = (bytes.size - 44) / 2
+            val allShorts = ShortArray(totalSamples)
+            ByteBuffer.wrap(bytes, 44, totalSamples * 2)
+                .order(ByteOrder.LITTLE_ENDIAN)
+                .asShortBuffer()
+                .get(allShorts)
+
+            val frameSize = 2048
+            val frameBuffer = ShortArray(frameSize)
+            while (isActive && mediaPlayer === player) {
+                val posMs = runCatching {
+                    if (player.isPlaying) player.currentPosition else -1
+                }.getOrDefault(-1)
+                if (posMs < 0) break
+                val startSample = ((posMs.toLong() * sampleRate) / 1000L).toInt().coerceIn(0, max(0, totalSamples - 1))
+                val count = (totalSamples - startSample).coerceIn(0, frameSize)
+                if (count > 64) {
+                    System.arraycopy(allShorts, startSample, frameBuffer, 0, count)
+                    val updatedMetrics = VocalSignalAnalyzer.analyzeFrame(
+                        samples = frameBuffer,
+                        length = count,
+                        sampleRate = sampleRate,
+                        previous = states.value.metrics,
+                    )
+                    states.update { it.copy(metrics = updatedMetrics) }
+                }
+                delay(45L)
+            }
+        }
+    }
+
     override fun stopPlayback() {
+        playbackMeterJob?.cancel()
+        playbackMeterJob = null
         val player = mediaPlayer
         mediaPlayer = null
         if (player != null) {

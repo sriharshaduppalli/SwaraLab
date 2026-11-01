@@ -7,6 +7,7 @@ import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -43,10 +44,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.swaralab.domain.audio.VocalMetrics
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
@@ -827,6 +833,15 @@ fun StudioRoute(
         }
 
         Spacer(Modifier.height(4.dp))
+        LiveVocalMonitorCard(
+            metrics = audioState.metrics,
+            isActive = isRecording || audioState.playingRelativePath != null,
+            modeLabel = when {
+                isRecording -> "LIVE MIC"
+                audioState.playingRelativePath != null -> "PLAYBACK"
+                else -> "READY"
+            },
+        )
         Surface(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(22.dp),
@@ -941,6 +956,192 @@ fun StudioRoute(
         OutlinedButton(onClick = onPublish, modifier = Modifier.fillMaxWidth()) {
             Text("Mix & Save song")
         }
+    }
+}
+
+@Composable
+private fun LiveVocalMonitorCard(
+    metrics: VocalMetrics,
+    isActive: Boolean,
+    modeLabel: String,
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(22.dp),
+        color = SwaraColors.Card,
+        border = BorderStroke(1.dp, if (isActive) SwaraColors.Teal else SwaraColors.Line),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column {
+                    Text(
+                        text = "Live Pitch & Sound Graph",
+                        style = MaterialTheme.typography.titleLarge,
+                    )
+                    Text(
+                        text = if (metrics.pitchHz > 0f) {
+                            val tuning = when {
+                                kotlin.math.abs(metrics.centsOffset) <= 10 -> "In tune"
+                                metrics.centsOffset < 0 -> "Flat (${metrics.centsOffset}c)"
+                                else -> "Sharp (+${metrics.centsOffset}c)"
+                            }
+                            "${metrics.pitchHz.toInt()} Hz · $tuning · ${metrics.rmsDb.toInt()} dB"
+                        } else {
+                            "Sing or play a take to see your pitch, Swara, and tone balance"
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = SwaraColors.Muted,
+                    )
+                }
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = if (isActive) SwaraColors.TealWash else SwaraColors.Paper,
+                ) {
+                    Text(
+                        text = if (metrics.noteName != "—") {
+                            "${metrics.noteName} · ${metrics.swaraName}"
+                        } else {
+                            modeLabel
+                        },
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                        style = MaterialTheme.typography.titleMedium,
+                        color = if (isActive) SwaraColors.Teal else SwaraColors.Muted,
+                    )
+                }
+            }
+
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(116.dp),
+                shape = RoundedCornerShape(14.dp),
+                color = SwaraColors.Paper,
+                border = BorderStroke(1.dp, SwaraColors.Line),
+            ) {
+                Canvas(modifier = Modifier.fillMaxSize().padding(horizontal = 10.dp, vertical = 10.dp)) {
+                    val width = size.width
+                    val height = size.height
+                    // Horizontal pitch register guide lines (High / Mid / Low)
+                    listOf(0.22f, 0.5f, 0.78f).forEach { frac ->
+                        val y = height * frac
+                        drawLine(
+                            color = SwaraColors.Line,
+                            start = Offset(0f, y),
+                            end = Offset(width, y),
+                            strokeWidth = 1.dp.toPx(),
+                        )
+                    }
+
+                    val wave = metrics.waveformHistory
+                    val pitches = metrics.pitchHistory
+                    val slots = 42
+                    val stepX = if (slots > 1) width / (slots - 1).toFloat() else width
+
+                    // Draw live waveform amplitude bars in teal
+                    wave.forEachIndexed { idx, amp ->
+                        val x = idx * stepX
+                        val barHalf = (amp.coerceIn(0.03f, 1f) * height * 0.44f)
+                        drawLine(
+                            color = SwaraColors.Teal.copy(alpha = 0.35f),
+                            start = Offset(x, (height / 2f) - barHalf),
+                            end = Offset(x, (height / 2f) + barHalf),
+                            strokeWidth = 3.dp.toPx(),
+                            cap = StrokeCap.Round,
+                        )
+                    }
+
+                    // Draw live pitch contour line in gold
+                    val path = Path()
+                    var penDown = false
+                    pitches.forEachIndexed { idx, normPitch ->
+                        val x = idx * stepX
+                        if (normPitch > 0.01f) {
+                            val y = height * (1f - normPitch.coerceIn(0.05f, 0.95f))
+                            if (!penDown) {
+                                path.moveTo(x, y)
+                                penDown = true
+                            } else {
+                                path.lineTo(x, y)
+                            }
+                            drawCircle(
+                                color = SwaraColors.Gold,
+                                radius = 2.8.dp.toPx(),
+                                center = Offset(x, y),
+                            )
+                        } else {
+                            penDown = false
+                        }
+                    }
+                    drawPath(
+                        path = path,
+                        color = SwaraColors.Gold,
+                        style = Stroke(width = 2.5.dp.toPx(), cap = StrokeCap.Round),
+                    )
+                }
+            }
+
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                EqBandRow(
+                    label = "Bass (Warmth)",
+                    level = metrics.bassLevel,
+                    color = SwaraColors.Teal,
+                )
+                EqBandRow(
+                    label = "Vocal Mid (Clarity)",
+                    level = metrics.midLevel,
+                    color = SwaraColors.Gold,
+                )
+                EqBandRow(
+                    label = "Treble (Air & Presence)",
+                    level = metrics.trebleLevel,
+                    color = SwaraColors.Ink,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun EqBandRow(
+    label: String,
+    level: Float,
+    color: Color,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Text(
+            text = label,
+            modifier = Modifier.weight(0.45f),
+            style = MaterialTheme.typography.bodyMedium,
+            color = SwaraColors.Muted,
+        )
+        LinearProgressIndicator(
+            progress = { level.coerceIn(0.03f, 1f) },
+            modifier = Modifier
+                .weight(0.42f)
+                .height(8.dp)
+                .clip(RoundedCornerShape(4.dp)),
+            color = color,
+            trackColor = SwaraColors.Line,
+        )
+        Text(
+            text = "${(level * 100).toInt().coerceIn(0, 100)}%",
+            modifier = Modifier.weight(0.13f),
+            style = MaterialTheme.typography.bodyMedium,
+            color = SwaraColors.Ink,
+        )
     }
 }
 
