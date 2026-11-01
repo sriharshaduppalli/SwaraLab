@@ -38,6 +38,8 @@ data class AudioEngineState(
     val decision: MonitorDecision? = null,
     val transportConnected: Boolean = false,
     val peak: Float = 0f,
+    val elapsedMs: Long = 0L,
+    val playingRelativePath: String? = null,
 )
 
 data class ArmRequest(
@@ -73,6 +75,10 @@ interface AudioEngine {
     suspend fun startTake(): TakeControl
 
     suspend fun stopTake(): FinishedTake?
+
+    suspend fun playClip(sessionId: String, relativePath: String) {}
+
+    fun stopPlayback() {}
 
     fun disarm()
 }

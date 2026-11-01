@@ -17,6 +17,7 @@ import com.swaralab.domain.model.VocalChain
 import com.swaralab.domain.model.VocalPreset
 import com.swaralab.domain.model.recordingSnapshot
 import com.swaralab.domain.model.withTarget
+import com.swaralab.domain.port.FinishedTake
 import com.swaralab.domain.port.SessionRepository
 import com.swaralab.domain.port.SessionSummary
 
@@ -80,14 +81,17 @@ class UpdateLyrics(
 ) {
     suspend operator fun invoke(id: String, text: String): SessionEdit {
         val document = sessions.load(id) ?: return SessionEdit.Rejected(RejectReason.UNKNOWN_SESSION)
-        val lines = text.lines()
-            .map { it.trim() }
-            .filter { it.isNotEmpty() }
-            .map { line -> LyricLine(id = ids.newId(), text = line) }
+        val parsed = parseLyricLines(text, ids)
+        val hasTimedLines = parsed.any { it.startMs != null }
+        val normalizedRaw = parsed.joinToString("\n") { it.text }
         val sheet = LyricSheet(
-            rawText = text.trimEnd(),
-            lines = lines,
-            alignment = if (lines.isEmpty()) LyricAlignment.NONE else LyricAlignment.MANUAL,
+            rawText = normalizedRaw,
+            lines = parsed,
+            alignment = when {
+                parsed.isEmpty() -> LyricAlignment.NONE
+                hasTimedLines -> LyricAlignment.LINE
+                else -> LyricAlignment.MANUAL
+            },
         )
         return applyAndSave(reducer, sessions, document, SessionCommand.SetLyrics(sheet))
     }
@@ -103,6 +107,35 @@ class AddVoicePart(
     }
 }
 
+class CommitRecordedTake(
+    private val reducer: SessionReducer,
+    private val sessions: SessionRepository,
+) {
+    suspend operator fun invoke(
+        sessionId: String,
+        trackId: String?,
+        take: FinishedTake,
+    ): SessionEdit {
+        val document = sessions.load(sessionId) ?: return SessionEdit.Rejected(RejectReason.UNKNOWN_SESSION)
+        val voiceTracks = document.tracks.filter { it.role != TrackRole.BACKING }
+        val targetTrack = voiceTracks.firstOrNull { it.id == trackId }
+            ?: voiceTracks.firstOrNull()
+            ?: return SessionEdit.Rejected(RejectReason.UNKNOWN_TRACK)
+        val takeNumber = targetTrack.clips.size + 1
+        return applyAndSave(
+            reducer,
+            sessions,
+            document,
+            SessionCommand.CommitTake(
+                trackId = targetTrack.id,
+                relativePath = take.relativePath,
+                durationMs = take.durationMs.coerceAtLeast(1L),
+                label = "${targetTrack.name} · Take $takeNumber",
+            ),
+        )
+    }
+}
+
 class UpdatePublishSettings(
     private val reducer: SessionReducer,
     private val sessions: SessionRepository,
@@ -112,6 +145,37 @@ class UpdatePublishSettings(
         val settings = document.publish.withTarget(target)
         return applyAndSave(reducer, sessions, document, SessionCommand.SetPublish(settings))
     }
+}
+
+private val lrcTimestampRegex = Regex("""^\[(\d{1,2}):(\d{2})(?:[.:](\d{1,3}))?](.*)$""")
+private val lrcMetaRegex = Regex("""^\[[a-zA-Z]+:.*]$""")
+
+internal fun parseLyricLines(raw: String, ids: IdGenerator): List<LyricLine> {
+    val lines = mutableListOf<LyricLine>()
+    for (rawLine in raw.replace("\uFEFF", "").lines()) {
+        val trimmed = rawLine.trim()
+        if (trimmed.isEmpty() || lrcMetaRegex.matches(trimmed)) continue
+        val match = lrcTimestampRegex.matchEntire(trimmed)
+        if (match != null) {
+            val minutes = match.groupValues[1].toLongOrNull() ?: 0L
+            val seconds = match.groupValues[2].toLongOrNull() ?: 0L
+            val fractionRaw = match.groupValues[3]
+            val millis = when (fractionRaw.length) {
+                0 -> 0L
+                1 -> (fractionRaw.toLongOrNull() ?: 0L) * 100L
+                2 -> (fractionRaw.toLongOrNull() ?: 0L) * 10L
+                else -> fractionRaw.take(3).toLongOrNull() ?: 0L
+            }
+            val body = match.groupValues[4].trim()
+            if (body.isNotEmpty()) {
+                val startMs = (minutes * 60_000L) + (seconds * 1_000L) + millis
+                lines += LyricLine(id = ids.newId(), text = body, startMs = startMs)
+            }
+        } else {
+            lines += LyricLine(id = ids.newId(), text = trimmed)
+        }
+    }
+    return lines
 }
 
 private suspend fun applyAndSave(

@@ -9,6 +9,7 @@ import com.swaralab.domain.port.RenderEngine
 import com.swaralab.domain.port.SessionRepository
 import com.swaralab.domain.time.SystemClock
 import com.swaralab.domain.usecase.AddVoicePart
+import com.swaralab.domain.usecase.CommitRecordedTake
 import com.swaralab.domain.usecase.CreateSession
 import com.swaralab.domain.usecase.CurrentAccount
 import com.swaralab.domain.usecase.ListSessions
@@ -21,7 +22,7 @@ import com.swaralab.domain.usecase.UpdateGear
 import com.swaralab.domain.usecase.UpdateLyrics
 import com.swaralab.domain.usecase.UpdatePublishSettings
 import com.swaralab.domain.usecase.UpdateVocalPreset
-import com.swaralab.engine.audio.UnconnectedAudioEngine
+import com.swaralab.engine.audio.AndroidAudioEngine
 import com.swaralab.engine.render.UnconnectedRenderEngine
 import com.swaralab.session.FileAccountRepository
 import com.swaralab.session.FileSessionRepository
@@ -35,9 +36,10 @@ class SwaraLabGraph(filesDir: File) {
     private val clock = SystemClock()
     private val ids = UuidIdGenerator()
     private val reducer = SessionReducer(ids, clock)
-    val sessions: SessionRepository = FileSessionRepository(File(filesDir, "swaralab/projects"), SessionCodec())
+    private val projectsDir = File(filesDir, "swaralab/projects")
+    val sessions: SessionRepository = FileSessionRepository(projectsDir, SessionCodec())
     val accounts: AccountRepository = FileAccountRepository(File(filesDir, "swaralab/accounts.json"))
-    val audio: AudioEngine = UnconnectedAudioEngine()
+    val audio: AudioEngine = AndroidAudioEngine(projectsDir, ids)
     val render: RenderEngine = UnconnectedRenderEngine()
     val createSession = CreateSession(reducer, sessions)
     val listSessions = ListSessions(sessions)
@@ -47,6 +49,7 @@ class SwaraLabGraph(filesDir: File) {
     val updateVocalPreset = UpdateVocalPreset(reducer, sessions)
     val updateLyrics = UpdateLyrics(reducer, sessions, ids)
     val addVoicePart = AddVoicePart(reducer, sessions)
+    val commitRecordedTake = CommitRecordedTake(reducer, sessions)
     val updatePublish = UpdatePublishSettings(reducer, sessions)
     val registerAccount = RegisterAccount(accounts, ids)
     val signIn = SignIn(accounts)

@@ -138,6 +138,7 @@ fun SwaraLabNav(graph: SwaraLabGraph) {
                     updateVocalPreset = graph.updateVocalPreset,
                     updateLyrics = graph.updateLyrics,
                     addVoicePart = graph.addVoicePart,
+                    commitRecordedTake = graph.commitRecordedTake,
                     audio = graph.audio,
                     onBack = { nav.popBackStack() },
                     onPublish = { nav.navigate(Routes.publish(sessionId)) },
