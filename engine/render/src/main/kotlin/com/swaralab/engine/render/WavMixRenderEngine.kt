@@ -1,14 +1,19 @@
 package com.swaralab.engine.render
 
+import android.media.MediaCodec
+import android.media.MediaExtractor
+import android.media.MediaFormat
 import com.swaralab.domain.layout.SessionLayout
 import com.swaralab.domain.model.SessionDocument
 import com.swaralab.domain.model.TrackRole
+import com.swaralab.domain.model.VocalChain
 import com.swaralab.domain.model.VocalPreset
 import com.swaralab.domain.port.ExportRequest
 import com.swaralab.domain.port.ExportResult
 import com.swaralab.domain.port.RenderEngine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.RandomAccessFile
 import java.nio.ByteBuffer
@@ -16,11 +21,13 @@ import java.nio.ByteOrder
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.pow
 
 /**
- * Mixes all recorded vocal takes in the session, applies the selected vocal preset
- * (Studio, Hall, Bright, or Natural), normalizes peak level, and writes the mixed WAV
- * into `exports/{target}.wav`.
+ * Mixes all unmuted vocal parts with the imported backing track (MP3/M4A/WAV/OGG),
+ * applies vocal sync offset (`latency.compensationMs`), per-track volume (`gainDb`),
+ * continuous vocal chain DSP (`denoise`, `compression`, `reverb`, `delay`),
+ * automatic backing ducking (`backingDuckDb`), and peak normalization.
  */
 class WavMixRenderEngine(
     private val projectsRoot: File,
@@ -28,38 +35,96 @@ class WavMixRenderEngine(
     override suspend fun export(document: SessionDocument, request: ExportRequest): ExportResult =
         withContext(Dispatchers.IO) {
             val sessionFolder = File(projectsRoot, document.id)
-            val voiceClips = document.tracks
-                .filter { it.role != TrackRole.BACKING && !it.mute }
-                .flatMap { it.clips }
+            val targetSampleRate = 48_000
 
-            val wavFiles = voiceClips
-                .map { File(sessionFolder, it.sourceRelativePath) }
-                .filter { it.isFile && it.length() > 44L }
-
-            if (wavFiles.isEmpty()) {
-                return@withContext ExportResult.Waiting(
-                    "Record at least one vocal take on the Sing stage before exporting.",
-                )
-            }
-
-            val sampleRate = 48_000
-            val decodedTracks = wavFiles.mapNotNull { readPcm16Mono(it) }.filter { it.isNotEmpty() }
-            if (decodedTracks.isEmpty()) {
-                return@withContext ExportResult.Waiting(
-                    "No valid vocal audio found in this song yet.",
-                )
-            }
-
-            val maxSamples = decodedTracks.maxOf { it.size }
-            val mixed = FloatArray(maxSamples)
-            for (samples in decodedTracks) {
-                for (i in samples.indices) {
-                    mixed[i] += samples[i] / 32768f
+            // 1. Decode all unmuted vocal tracks and apply per-track gainDb
+            val vocalBuffers = mutableListOf<FloatArray>()
+            for (track in document.tracks) {
+                if (track.role == TrackRole.BACKING || track.mute) continue
+                val trackGain = dbToLinear(track.gainDb)
+                for (clip in track.clips) {
+                    val file = File(sessionFolder, clip.sourceRelativePath)
+                    if (!file.isFile || file.length() <= 44L) continue
+                    val pcm = readPcm16MonoWav(file) ?: continue
+                    if (pcm.isEmpty()) continue
+                    val floats = FloatArray(pcm.size) { idx ->
+                        (pcm[idx] / 32768f) * trackGain
+                    }
+                    vocalBuffers += floats
                 }
             }
 
-            applyVocalPreset(mixed, sampleRate, document.chain.preset)
-            normalizePeak(mixed, targetPeak = 0.89f)
+            if (vocalBuffers.isEmpty()) {
+                return@withContext ExportResult.Waiting(
+                    "Record at least one vocal take on the Sing stage before mixing.",
+                )
+            }
+
+            // Sum all vocal parts together and apply vocal sync offset (compensationMs)
+            val rawVocalMax = vocalBuffers.maxOf { it.size }
+            val shiftSamples = ((document.latency.compensationMs / 1000.0) * targetSampleRate).toInt()
+            val shiftedVocalSize = (rawVocalMax + max(0, shiftSamples)).coerceAtLeast(1)
+            val vocalMix = FloatArray(shiftedVocalSize)
+
+            for (buf in vocalBuffers) {
+                for (i in buf.indices) {
+                    val destIdx = i + shiftSamples
+                    if (destIdx in vocalMix.indices) {
+                        vocalMix[destIdx] += buf[i]
+                    }
+                }
+            }
+
+            // 2. Apply VocalChain DSP (Denoise, Compression, Presence, Reverb, Echo/Delay)
+            applyVocalChain(vocalMix, targetSampleRate, document.chain)
+
+            // 3. Decode backing track if present and unmuted
+            val backingTrack = document.tracks.firstOrNull { it.role == TrackRole.BACKING && !it.mute }
+            val backingClip = backingTrack?.clips?.lastOrNull()
+            val backingSamples: FloatArray? = if (backingTrack != null && backingClip != null) {
+                val backingFile = File(sessionFolder, backingClip.sourceRelativePath)
+                if (backingFile.isFile) {
+                    val gain = dbToLinear(backingTrack.gainDb)
+                    decodeAudioFileToMono48k(backingFile, targetSampleRate)?.also { arr ->
+                        for (i in arr.indices) {
+                            arr[i] *= gain
+                        }
+                    }
+                } else {
+                    null
+                }
+            } else {
+                null
+            }
+
+            // 4. Combine backing + vocals (with smooth backing ducking when voice is active)
+            val totalSamples = if (backingSamples != null) {
+                // Keep full vocal length plus up to 3 seconds of backing tail after vocals finish
+                val maxTail = min(backingSamples.size, vocalMix.size + targetSampleRate * 3)
+                max(vocalMix.size, maxTail)
+            } else {
+                vocalMix.size
+            }
+
+            val master = FloatArray(totalSamples)
+            val duckLinear = dbToLinear(-abs(document.chain.backingDuckDb))
+            var env = 0f
+
+            for (i in 0 until totalSamples) {
+                val v = if (i < vocalMix.size) vocalMix[i] else 0f
+                val vMag = abs(v)
+                env = if (vMag > env) env + 0.01f * (vMag - env) else env * 0.9992f
+                val b = if (backingSamples != null && i < backingSamples.size) {
+                    val duckAmount = (env * 8f).coerceIn(0f, 1f)
+                    val currentDuck = 1f - duckAmount * (1f - duckLinear)
+                    backingSamples[i] * currentDuck
+                } else {
+                    0f
+                }
+                master[i] = v + b
+            }
+
+            normalizePeak(master, targetPeak = 0.89f)
 
             val safeTitle = document.title
                 .lowercase()
@@ -71,14 +136,18 @@ class WavMixRenderEngine(
             val outFile = File(sessionFolder, relativePath)
             outFile.parentFile?.mkdirs()
 
-            writePcm16MonoWav(outFile, sampleRate, mixed)
-            val durationMs = ((mixed.size * 1000L) / sampleRate).coerceAtLeast(1L)
+            writePcm16MonoWav(outFile, targetSampleRate, master)
+            val durationMs = ((master.size * 1000L) / targetSampleRate).coerceAtLeast(1L)
             ExportResult.Written(relativePath = relativePath, durationMs = durationMs)
         }
 
-    private fun readPcm16Mono(file: File): ShortArray? = runCatching {
+    private fun dbToLinear(db: Float): Float = 10.0.pow(db / 20.0).toFloat()
+
+    private fun readPcm16MonoWav(file: File): ShortArray? = runCatching {
         val bytes = file.readBytes()
         if (bytes.size <= 44) return null
+        val riff = String(bytes, 0, 4, Charsets.US_ASCII)
+        if (riff != "RIFF") return null
         val payloadBytes = bytes.size - 44
         val count = payloadBytes / 2
         val shorts = ShortArray(count)
@@ -89,39 +158,193 @@ class WavMixRenderEngine(
         shorts
     }.getOrNull()
 
-    private fun applyVocalPreset(samples: FloatArray, sampleRate: Int, preset: VocalPreset) {
-        when (preset) {
-            VocalPreset.RAW, VocalPreset.CUSTOM -> Unit
-            VocalPreset.CLOSE -> {
-                // Warm gentle soft-knee compression + subtle booth reflection
-                val delaySamples = (sampleRate * 0.035).toInt().coerceAtLeast(1)
-                for (i in samples.indices) {
-                    val x = samples[i] * 1.15f
-                    val compressed = x / (1f + 0.25f * abs(x))
-                    val echo = if (i >= delaySamples) samples[i - delaySamples] * 0.12f else 0f
-                    samples[i] = compressed + echo
+    private fun decodeAudioFileToMono48k(file: File, targetRate: Int): FloatArray? {
+        // Fast path if the backing file is already a PCM WAV
+        readPcm16MonoWav(file)?.let { shorts ->
+            return FloatArray(shorts.size) { i -> shorts[i] / 32768f }
+        }
+        return runCatching {
+            val extractor = MediaExtractor()
+            extractor.setDataSource(file.absolutePath)
+            var audioTrackIndex = -1
+            var format: MediaFormat? = null
+            for (i in 0 until extractor.trackCount) {
+                val trackFormat = extractor.getTrackFormat(i)
+                val mime = trackFormat.getString(MediaFormat.KEY_MIME).orEmpty()
+                if (mime.startsWith("audio/")) {
+                    audioTrackIndex = i
+                    format = trackFormat
+                    break
                 }
             }
-            VocalPreset.STAGE -> {
-                // Hall multi-tap reverb tail
-                val tap1 = (sampleRate * 0.065).toInt().coerceAtLeast(1)
-                val tap2 = (sampleRate * 0.130).toInt().coerceAtLeast(1)
-                for (i in samples.indices) {
-                    val r1 = if (i >= tap1) samples[i - tap1] * 0.28f else 0f
-                    val r2 = if (i >= tap2) samples[i - tap2] * 0.18f else 0f
-                    samples[i] = samples[i] + r1 + r2
+            if (audioTrackIndex < 0 || format == null) {
+                extractor.release()
+                return null
+            }
+            extractor.selectTrack(audioTrackIndex)
+            val mime = format.getString(MediaFormat.KEY_MIME) ?: return null
+            var sourceRate = if (format.containsKey(MediaFormat.KEY_SAMPLE_RATE)) {
+                format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+            } else {
+                targetRate
+            }
+            var channels = if (format.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) {
+                format.getInteger(MediaFormat.KEY_CHANNEL_COUNT).coerceAtLeast(1)
+            } else {
+                1
+            }
+
+            val codec = MediaCodec.createDecoderByType(mime)
+            codec.configure(format, null, null, 0)
+            codec.start()
+
+            val pcmOut = ByteArrayOutputStream()
+            val bufferInfo = MediaCodec.BufferInfo()
+            var inputDone = false
+            var outputDone = false
+            // Cap decoding at 6 minutes max to protect memory
+            val maxDecodedBytes = sourceRate * channels * 2 * 360
+
+            while (!outputDone && pcmOut.size() < maxDecodedBytes) {
+                if (!inputDone) {
+                    val inIndex = codec.dequeueInputBuffer(10_000L)
+                    if (inIndex >= 0) {
+                        val inBuf = codec.getInputBuffer(inIndex)
+                        if (inBuf != null) {
+                            val sampleSize = extractor.readSampleData(inBuf, 0)
+                            if (sampleSize < 0) {
+                                codec.queueInputBuffer(inIndex, 0, 0, 0L, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                                inputDone = true
+                            } else {
+                                val pts = extractor.sampleTime
+                                codec.queueInputBuffer(inIndex, 0, sampleSize, pts, 0)
+                                extractor.advance()
+                            }
+                        }
+                    }
+                }
+
+                val outIndex = codec.dequeueOutputBuffer(bufferInfo, 10_000L)
+                when {
+                    outIndex >= 0 -> {
+                        val outBuf = codec.getOutputBuffer(outIndex)
+                        if (outBuf != null && bufferInfo.size > 0) {
+                            outBuf.position(bufferInfo.offset)
+                            outBuf.limit(bufferInfo.offset + bufferInfo.size)
+                            val chunk = ByteArray(bufferInfo.size)
+                            outBuf.get(chunk)
+                            pcmOut.write(chunk)
+                        }
+                        codec.releaseOutputBuffer(outIndex, false)
+                        if ((bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
+                            outputDone = true
+                        }
+                    }
+                    outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                        val outFormat = codec.outputFormat
+                        if (outFormat.containsKey(MediaFormat.KEY_SAMPLE_RATE)) {
+                            sourceRate = outFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+                        }
+                        if (outFormat.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) {
+                            channels = outFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT).coerceAtLeast(1)
+                        }
+                    }
                 }
             }
-            VocalPreset.RADIO -> {
-                // Bright presence boost + tighter leveling
-                var prev = 0f
-                for (i in samples.indices) {
-                    val current = samples[i]
-                    val high = current - prev
-                    prev = current
-                    val boosted = (current + high * 0.35f) * 1.25f
-                    samples[i] = boosted / (1f + 0.35f * abs(boosted))
+
+            codec.stop()
+            codec.release()
+            extractor.release()
+
+            val rawBytes = pcmOut.toByteArray()
+            val totalShorts = rawBytes.size / 2
+            val frames = totalShorts / channels
+            if (frames <= 0) return null
+
+            val shortBuf = ByteBuffer.wrap(rawBytes, 0, frames * channels * 2)
+                .order(ByteOrder.LITTLE_ENDIAN)
+                .asShortBuffer()
+            val monoSource = FloatArray(frames)
+            for (f in 0 until frames) {
+                var sum = 0f
+                for (c in 0 until channels) {
+                    sum += shortBuf.get(f * channels + c) / 32768f
                 }
+                monoSource[f] = sum / channels
+            }
+
+            if (sourceRate == targetRate || sourceRate <= 0) {
+                monoSource
+            } else {
+                val outFrames = ((frames.toLong() * targetRate) / sourceRate).toInt().coerceAtLeast(1)
+                val resampled = FloatArray(outFrames)
+                val ratio = sourceRate.toDouble() / targetRate.toDouble()
+                for (i in 0 until outFrames) {
+                    val srcPos = i * ratio
+                    val idx0 = srcPos.toInt().coerceIn(0, frames - 1)
+                    val idx1 = (idx0 + 1).coerceIn(0, frames - 1)
+                    val frac = (srcPos - idx0).toFloat()
+                    resampled[i] = monoSource[idx0] * (1f - frac) + monoSource[idx1] * frac
+                }
+                resampled
+            }
+        }.getOrNull()
+    }
+
+    private fun applyVocalChain(samples: FloatArray, sampleRate: Int, chain: VocalChain) {
+        if (!chain.enabled) return
+        val denoiseAmount = chain.denoise.coerceIn(0f, 1f)
+        val compAmount = chain.compression.coerceIn(0f, 1f)
+        val reverbAmount = chain.reverb.coerceIn(0f, 1f)
+        val delayAmount = chain.delay.coerceIn(0f, 1f)
+        val brightBoost = if (chain.preset == VocalPreset.RADIO) 0.35f else 0f
+
+        // 1. Soft noise gate + compression + presence boost
+        val gateThreshold = denoiseAmount * 0.025f
+        var prev = 0f
+        for (i in samples.indices) {
+            var x = samples[i]
+            if (gateThreshold > 0f && abs(x) < gateThreshold) {
+                val ratio = (abs(x) / gateThreshold).coerceIn(0f, 1f)
+                x *= ratio * ratio
+            }
+            if (brightBoost > 0f) {
+                val high = x - prev
+                prev = x
+                x += high * brightBoost
+            } else {
+                prev = x
+            }
+            if (compAmount > 0f) {
+                val drive = 1f + compAmount * 0.65f
+                val driven = x * drive
+                x = driven / (1f + compAmount * 0.55f * abs(driven))
+            }
+            samples[i] = x
+        }
+
+        // 2. Echo / Delay (180 ms slap/echo)
+        if (delayAmount > 0.01f) {
+            val delaySamples = (sampleRate * 0.180).toInt().coerceAtLeast(1)
+            val wet = delayAmount * 0.45f
+            for (i in delaySamples until samples.size) {
+                samples[i] = samples[i] + samples[i - delaySamples] * wet
+            }
+        }
+
+        // 3. Multi-tap Hall/Studio Reverb
+        if (reverbAmount > 0.01f) {
+            val tap1 = (sampleRate * 0.045).toInt().coerceAtLeast(1)
+            val tap2 = (sampleRate * 0.095).toInt().coerceAtLeast(1)
+            val tap3 = (sampleRate * 0.155).toInt().coerceAtLeast(1)
+            val w1 = reverbAmount * 0.32f
+            val w2 = reverbAmount * 0.22f
+            val w3 = reverbAmount * 0.14f
+            for (i in samples.indices) {
+                val r1 = if (i >= tap1) samples[i - tap1] * w1 else 0f
+                val r2 = if (i >= tap2) samples[i - tap2] * w2 else 0f
+                val r3 = if (i >= tap3) samples[i - tap3] * w3 else 0f
+                samples[i] = samples[i] + r1 + r2 + r3
             }
         }
     }

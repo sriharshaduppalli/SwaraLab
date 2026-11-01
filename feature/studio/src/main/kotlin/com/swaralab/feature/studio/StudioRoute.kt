@@ -369,7 +369,7 @@ class StudioViewModel(
             uiState.value = StudioUi(
                 title = document.title,
                 kind = document.kind,
-                preset = document.chain.preset.takeUnless { it == VocalPreset.CUSTOM } ?: VocalPreset.RAW,
+                preset = document.chain.preset,
                 backing = backingUi,
                 lines = lines,
                 rawLyrics = document.lyrics.rawText,
@@ -1230,7 +1230,7 @@ private fun VocalPreset.description(): String = when (this) {
     VocalPreset.CLOSE -> "Warm and close, like a booth."
     VocalPreset.STAGE -> "A fuller room around long notes."
     VocalPreset.RADIO -> "Clear and forward on a phone speaker."
-    VocalPreset.CUSTOM -> "Custom voice settings."
+    VocalPreset.CUSTOM -> "Custom reverb, echo, warmth, and ducking sliders active."
 }
 
 private fun listeningCopy(output: GearRoute): String = when (output) {

@@ -82,6 +82,81 @@ class UpdateVocalPreset(
     }
 }
 
+class UpdateVocalChain(
+    private val reducer: SessionReducer,
+    private val sessions: SessionRepository,
+) {
+    suspend operator fun invoke(
+        id: String,
+        reverb: Float,
+        delay: Float,
+        compression: Float,
+        denoise: Float,
+        backingDuckDb: Float,
+    ): SessionEdit {
+        val document = sessions.load(id) ?: return SessionEdit.Rejected(RejectReason.UNKNOWN_SESSION)
+        val updated = document.chain.copy(
+            preset = VocalPreset.CUSTOM,
+            reverb = reverb.coerceIn(0f, 1f),
+            delay = delay.coerceIn(0f, 1f),
+            compression = compression.coerceIn(0f, 1f),
+            denoise = denoise.coerceIn(0f, 1f),
+            backingDuckDb = backingDuckDb.coerceIn(0f, 12f),
+        )
+        return applyAndSave(reducer, sessions, document, SessionCommand.SetVocalChain(updated))
+    }
+}
+
+class UpdateTrackMix(
+    private val reducer: SessionReducer,
+    private val sessions: SessionRepository,
+) {
+    suspend operator fun invoke(
+        sessionId: String,
+        trackId: String,
+        gainDb: Float,
+        mute: Boolean,
+    ): SessionEdit {
+        val document = sessions.load(sessionId) ?: return SessionEdit.Rejected(RejectReason.UNKNOWN_SESSION)
+        val track = document.tracks.firstOrNull { it.id == trackId }
+            ?: return SessionEdit.Rejected(RejectReason.UNKNOWN_TRACK)
+        return applyAndSave(
+            reducer,
+            sessions,
+            document,
+            SessionCommand.SetTrackMix(
+                trackId = trackId,
+                gainDb = gainDb.coerceIn(-24f, 12f),
+                monitorGainDb = track.monitorGainDb,
+                mute = mute,
+                solo = track.solo,
+            ),
+        )
+    }
+}
+
+class UpdateVocalSyncOffset(
+    private val reducer: SessionReducer,
+    private val sessions: SessionRepository,
+) {
+    suspend operator fun invoke(
+        sessionId: String,
+        compensationMs: Double,
+    ): SessionEdit {
+        val document = sessions.load(sessionId) ?: return SessionEdit.Rejected(RejectReason.UNKNOWN_SESSION)
+        val measured = document.latency.measuredRoundTripMs ?: 0.0
+        return applyAndSave(
+            reducer,
+            sessions,
+            document,
+            SessionCommand.SetLatency(
+                measuredRoundTripMs = measured.coerceAtLeast(0.0),
+                compensationMs = compensationMs.coerceIn(-300.0, 300.0),
+            ),
+        )
+    }
+}
+
 class UpdateLyrics(
     private val reducer: SessionReducer,
     private val sessions: SessionRepository,

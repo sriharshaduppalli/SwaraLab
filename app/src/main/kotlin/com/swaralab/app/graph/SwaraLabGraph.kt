@@ -24,7 +24,10 @@ import com.swaralab.domain.usecase.SignOut
 import com.swaralab.domain.usecase.UpdateGear
 import com.swaralab.domain.usecase.UpdateLyrics
 import com.swaralab.domain.usecase.UpdatePublishSettings
+import com.swaralab.domain.usecase.UpdateTrackMix
+import com.swaralab.domain.usecase.UpdateVocalChain
 import com.swaralab.domain.usecase.UpdateVocalPreset
+import com.swaralab.domain.usecase.UpdateVocalSyncOffset
 import com.swaralab.engine.audio.AndroidAudioEngine
 import com.swaralab.engine.render.WavMixRenderEngine
 import com.swaralab.session.FileAccountRepository
@@ -51,6 +54,9 @@ class SwaraLabGraph(filesDir: File) {
     val renameSession = RenameSession(reducer, sessions)
     val updateGear = UpdateGear(reducer, sessions)
     val updateVocalPreset = UpdateVocalPreset(reducer, sessions)
+    val updateVocalChain = UpdateVocalChain(reducer, sessions)
+    val updateTrackMix = UpdateTrackMix(reducer, sessions)
+    val updateVocalSyncOffset = UpdateVocalSyncOffset(reducer, sessions)
     val updateLyrics = UpdateLyrics(reducer, sessions, ids)
     val addVoicePart = AddVoicePart(reducer, sessions)
     val commitRecordedTake = CommitRecordedTake(reducer, sessions)
