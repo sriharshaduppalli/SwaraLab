@@ -16,11 +16,48 @@ val versionProperties = Properties()
 if (versionPropertiesFile.exists()) {
     versionProperties.load(versionPropertiesFile.inputStream())
 }
-val appVersionCode = versionProperties.getProperty("versionCode", "1").toInt()
-val appVersionName = versionProperties.getProperty("versionName", "0.1.0")
+
+val isBundleReleaseRequested = gradle.startParameter.taskNames.any { taskName ->
+    taskName.contains("bundleRelease", ignoreCase = true)
+}
+
+val currentCode = versionProperties.getProperty("versionCode", "1").toInt()
+val currentName = versionProperties.getProperty("versionName", "0.1.0")
+
+val (appVersionCode, appVersionName) = if (isBundleReleaseRequested) {
+    val nextCode = currentCode + 1
+    val segments = currentName.split(".").toMutableList()
+    val lastIndex = segments.lastIndex
+    segments[lastIndex] = ((segments[lastIndex].toIntOrNull() ?: 0) + 1).toString()
+    val nextName = segments.joinToString(".")
+    versionPropertiesFile.writeText(
+        "# Last built release. Auto-incremented on every bundleRelease build.\n" +
+            "versionCode=$nextCode\n" +
+            "versionName=$nextName\n",
+    )
+    nextCode to nextName
+} else {
+    currentCode to currentName
+}
 
 base {
     archivesName.set("SwaraLab-$appVersionName-$appVersionCode")
+}
+
+tasks.matching { it.name == "bundleRelease" }.configureEach {
+    doLast {
+        val releaseOutputDir = layout.buildDirectory.dir("outputs/bundle/release").get().asFile
+        val builtAab = releaseOutputDir
+            .walkTopDown()
+            .filter { it.isFile && it.extension == "aab" }
+            .maxByOrNull { it.lastModified() }
+        if (builtAab != null) {
+            val releasesDir = rootProject.file("releases").apply { mkdirs() }
+            val archived = releasesDir.resolve("SwaraLab-$appVersionName-$appVersionCode.aab")
+            builtAab.copyTo(archived, overwrite = true)
+            println("Archived release bundle: ${archived.absolutePath}")
+        }
+    }
 }
 
 android {
