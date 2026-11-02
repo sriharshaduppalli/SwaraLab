@@ -39,6 +39,12 @@ object CameraMixMuxer {
         } else {
             0
         }
+        val videoDur = if (inFormat.containsKey(MediaFormat.KEY_DURATION)) {
+            inFormat.getLong(MediaFormat.KEY_DURATION)
+        } else {
+            0L
+        }
+        val endUs = VideoFraming.sharedEndUs(videoDur, mediaDurationUs(mixedAudioM4a))
 
         val decoder = MediaCodec.createDecoderByType(mime)
         decoder.configure(inFormat, null, null, 0)
@@ -93,12 +99,13 @@ object CameraMixMuxer {
                 val inIndex = decoder.dequeueInputBuffer(20_000L)
                 if (inIndex >= 0) {
                     val inBuf = decoder.getInputBuffer(inIndex)
+                    val sampleTime = extractor.sampleTime
                     val size = if (inBuf != null) extractor.readSampleData(inBuf, 0) else -1
-                    if (size < 0) {
+                    if (size < 0 || (endUs > 0L && sampleTime > endUs)) {
                         decoder.queueInputBuffer(inIndex, 0, 0, 0L, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
                         inputDone = true
                     } else {
-                        decoder.queueInputBuffer(inIndex, 0, size, extractor.sampleTime.coerceAtLeast(0L), 0)
+                        decoder.queueInputBuffer(inIndex, 0, size, sampleTime.coerceAtLeast(0L), 0)
                         extractor.advance()
                     }
                 }
@@ -107,7 +114,7 @@ object CameraMixMuxer {
             val decIndex = decoder.dequeueOutputBuffer(info, 20_000L)
             if (decIndex >= 0) {
                 val eos = (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0
-                if (info.size > 0) {
+                if (info.size > 0 && (endUs <= 0L || info.presentationTimeUs <= endUs)) {
                     val image = runCatching { decoder.getOutputImage(decIndex) }.getOrNull()
                     val framed = image?.let { frameToPortrait(it, rotation, outW, outH) }
                     image?.close()
@@ -118,7 +125,7 @@ object CameraMixMuxer {
                     }
                 }
                 decoder.releaseOutputBuffer(decIndex, false)
-                if (eos) {
+                if (eos || (endUs > 0L && info.presentationTimeUs > endUs)) {
                     feedEncoder(encoder, yuv, info.presentationTimeUs, true)
                     sawDecoderEos = true
                 }
@@ -151,7 +158,7 @@ object CameraMixMuxer {
         }
 
         if (muxerStarted && outAudio >= 0) {
-            copyAacSamples(muxer, outAudio, mixedAudioM4a)
+            copyAacSamples(muxer, outAudio, mixedAudioM4a, endUs)
         }
 
         encoder.stop()
@@ -283,9 +290,15 @@ object CameraMixMuxer {
             muxer.setOrientationHint(format.getInteger(MediaFormat.KEY_ROTATION))
         }
         muxer.start()
-        copy(videoExtractor, muxer, outVideo)
+        val videoDur = if (format.containsKey(MediaFormat.KEY_DURATION)) {
+            format.getLong(MediaFormat.KEY_DURATION)
+        } else {
+            0L
+        }
+        val endUs = VideoFraming.sharedEndUs(videoDur, mediaDurationUs(mixedAudioM4a))
+        copy(videoExtractor, muxer, outVideo, endUs)
         audioExtractor.selectTrack(0)
-        copy(audioExtractor, muxer, outAudio)
+        copy(audioExtractor, muxer, outAudio, endUs)
         muxer.stop()
         muxer.release()
         videoExtractor.release()
@@ -309,23 +322,40 @@ object CameraMixMuxer {
         return muxer.addTrack(format)
     }
 
-    private fun copyAacSamples(muxer: MediaMuxer, track: Int, aacFile: File) {
+    private fun copyAacSamples(muxer: MediaMuxer, track: Int, aacFile: File, untilUs: Long = Long.MAX_VALUE) {
         val extractor = MediaExtractor()
         extractor.setDataSource(aacFile.absolutePath)
         extractor.selectTrack(0)
-        copy(extractor, muxer, track)
+        copy(extractor, muxer, track, untilUs)
         extractor.release()
     }
 
-    private fun copy(extractor: MediaExtractor, muxer: MediaMuxer, track: Int) {
+    private fun mediaDurationUs(file: File): Long {
+        val extractor = MediaExtractor()
+        return runCatching {
+            extractor.setDataSource(file.absolutePath)
+            var best = 0L
+            for (i in 0 until extractor.trackCount) {
+                val format = extractor.getTrackFormat(i)
+                if (format.containsKey(MediaFormat.KEY_DURATION)) {
+                    best = maxOf(best, format.getLong(MediaFormat.KEY_DURATION))
+                }
+            }
+            best
+        }.getOrDefault(0L).also { extractor.release() }
+    }
+
+    private fun copy(extractor: MediaExtractor, muxer: MediaMuxer, track: Int, untilUs: Long = Long.MAX_VALUE) {
         val buffer = ByteBuffer.allocate(256 * 1024)
         val info = MediaCodec.BufferInfo()
         while (true) {
+            val pts = extractor.sampleTime
+            if (untilUs < Long.MAX_VALUE && pts > untilUs && pts >= 0L) break
             val size = extractor.readSampleData(buffer, 0)
             if (size < 0) break
             info.offset = 0
             info.size = size
-            info.presentationTimeUs = extractor.sampleTime
+            info.presentationTimeUs = pts
             info.flags = extractor.sampleFlags
             muxer.writeSampleData(track, buffer, info)
             extractor.advance()

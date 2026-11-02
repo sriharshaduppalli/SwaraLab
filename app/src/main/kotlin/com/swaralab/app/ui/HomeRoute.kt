@@ -1,14 +1,21 @@
 package com.swaralab.app.ui
 
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -36,6 +43,7 @@ import com.swaralab.ui.ChoiceCard
 import com.swaralab.ui.LocalAppCopy
 import com.swaralab.ui.SwaraColors
 import com.swaralab.ui.SwaraWordmark
+import com.swaralab.ui.studioAtmosphere
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -138,20 +146,44 @@ fun HomeRoute(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
+    Box(modifier.fillMaxSize().studioAtmosphere()) {
     Column(
-        modifier
+        Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp, vertical = 28.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        SwaraWordmark()
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(24.dp),
+            color = SwaraColors.Card,
+            tonalElevation = 2.dp,
+            shadowElevation = 2.dp,
+            border = BorderStroke(1.dp, SwaraColors.Line),
+        ) {
+            Column(Modifier.padding(horizontal = 20.dp, vertical = 18.dp)) {
+                Box(
+                    Modifier
+                        .padding(bottom = 10.dp)
+                        .width(36.dp)
+                        .height(4.dp)
+                        .background(SwaraColors.Teal, RoundedCornerShape(4.dp)),
+                )
+                SwaraWordmark()
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    text = copy.homeLine,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = SwaraColors.Muted,
+                )
+            }
+        }
         Text(
-            text = copy.homeLine,
-            style = MaterialTheme.typography.bodyLarge,
-            color = SwaraColors.Muted,
+            text = "Start a take",
+            style = MaterialTheme.typography.titleMedium,
+            color = SwaraColors.Teal,
         )
-        Spacer(Modifier.height(8.dp))
         lastSong?.let { (_, title) ->
             ChoiceCard(
                 title = copy.continueLast,
@@ -182,5 +214,6 @@ fun HomeRoute(
             accent = SwaraColors.Gold,
             accentWash = SwaraColors.GoldWash,
         )
+    }
     }
 }

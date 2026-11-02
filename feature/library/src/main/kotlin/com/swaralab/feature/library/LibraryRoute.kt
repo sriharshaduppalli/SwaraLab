@@ -53,7 +53,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
 import com.swaralab.ui.LocalAppCopy
+import com.swaralab.ui.PageHero
 import com.swaralab.ui.SwaraColors
+import com.swaralab.ui.studioAtmosphere
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -172,15 +174,15 @@ fun LibraryRoute(
     Column(
         modifier
             .fillMaxSize()
+            .studioAtmosphere()
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp, vertical = 28.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Text(text = copy.songs, style = MaterialTheme.typography.headlineLarge)
-        Text(
-            text = "Open a song to sing, edit its lyrics, or listen back to takes.",
-            style = MaterialTheme.typography.bodyLarge,
-            color = SwaraColors.Muted,
+        PageHero(
+            title = copy.songs,
+            body = "Open a song to sing, edit its lyrics, or listen back to takes.",
+            accent = SwaraColors.Gold,
         )
         status?.let { message ->
             Text(
@@ -233,6 +235,8 @@ fun LibraryRoute(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(18.dp),
                     color = SwaraColors.Card,
+                    tonalElevation = 1.dp,
+                    shadowElevation = 1.dp,
                     border = BorderStroke(1.dp, SwaraColors.Line),
                 ) {
                     Row(

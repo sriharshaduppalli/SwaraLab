@@ -41,8 +41,11 @@ import com.swaralab.domain.usecase.SignIn
 import com.swaralab.domain.usecase.SignOut
 import com.swaralab.ui.AppLanguage
 import com.swaralab.ui.LocalAppCopy
+import com.swaralab.ui.PageHero
 import com.swaralab.ui.SwaraColors
 import com.swaralab.ui.SwaraThemeId
+import com.swaralab.ui.ThemePickCard
+import com.swaralab.ui.studioAtmosphere
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -179,15 +182,15 @@ fun AccountRoute(
     Column(
         modifier
             .fillMaxSize()
+            .studioAtmosphere()
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp, vertical = 28.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Text(text = "Singer profile", style = MaterialTheme.typography.headlineLarge)
-        Text(
-            text = copy.rightsNote,
-            style = MaterialTheme.typography.bodyMedium,
-            color = SwaraColors.Muted,
+        PageHero(
+            title = "Singer profile",
+            body = copy.rightsNote,
+            accent = SwaraColors.Rose,
         )
         Text(
             text = copy.appLanguage,
@@ -209,23 +212,15 @@ fun AccountRoute(
             text = copy.appTheme,
             style = MaterialTheme.typography.titleMedium,
         )
-        FlowRow(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             SwaraThemeId.entries.forEach { theme ->
-                FilterChip(
+                ThemePickCard(
+                    theme = theme,
                     selected = theme == themeId,
                     onClick = { onTheme(theme) },
-                    label = { Text(theme.label) },
                 )
             }
         }
-        Text(
-            text = themeId.body,
-            style = MaterialTheme.typography.bodyMedium,
-            color = SwaraColors.Muted,
-        )
         if (signedIn != null) {
             Text(text = signedIn.displayName, style = MaterialTheme.typography.titleLarge)
             Text(

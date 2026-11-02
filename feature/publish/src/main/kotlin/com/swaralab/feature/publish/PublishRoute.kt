@@ -30,6 +30,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -60,7 +63,9 @@ import com.swaralab.domain.usecase.UpdateVocalChain
 import com.swaralab.domain.usecase.UpdateVocalSyncOffset
 import com.swaralab.ui.ChoiceCard
 import com.swaralab.ui.LocalAppCopy
+import com.swaralab.ui.PageHero
 import com.swaralab.ui.SwaraColors
+import com.swaralab.ui.studioAtmosphere
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -266,6 +271,37 @@ class PublishViewModel(
                     uiState.value = uiState.value?.copy(
                         status = "This is ${snap.target.label()} loudness ($lufs LUFS). Share will sound this loud.",
                     )
+                }
+            }
+        }
+    }
+
+    fun shareThisTake(context: Context) {
+        viewModelScope.launch {
+            val current = uiState.value ?: return@launch
+            if (current.busy) return@launch
+            val kind = when {
+                current.hasCameraVideo -> ExportKind.VIDEO
+                current.target == PublishTarget.WHATSAPP -> ExportKind.COMPACT
+                current.target == PublishTarget.MASTER -> ExportKind.MIX
+                else -> ExportKind.LYRIC_VIDEO
+            }
+            sliderSaveJob?.cancel()
+            flushSlidersToDisk()
+            audio.stopPlayback()
+            uiState.value = current.copy(busy = true, status = "Preparing this take to share...")
+            val document = loadSession(sessionId) ?: return@launch
+            when (val result = render.export(document, ExportRequest(document.publish.target, kind))) {
+                is ExportResult.Written -> {
+                    exportedRelativePath = result.relativePath
+                    exportedMime = mimeFor(result.relativePath)
+                    status = "This take is ready. Opening share..."
+                    refresh()
+                    shareExportToApps(context)
+                }
+                is ExportResult.Waiting -> {
+                    status = result.message
+                    refresh()
                 }
             }
         }
@@ -599,17 +635,17 @@ fun PublishRoute(
     Column(
         modifier
             .fillMaxSize()
+            .studioAtmosphere()
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         val copy = LocalAppCopy.current
         TextButton(onClick = onBack) { Text("Back to stage") }
-        Text(text = copy.mixSave, style = MaterialTheme.typography.headlineLarge)
-        Text(
-            text = "Balance your backing track and vocal parts, dial in reverb and echo, and export your finished master.",
-            style = MaterialTheme.typography.bodyLarge,
-            color = SwaraColors.Muted,
+        PageHero(
+            title = copy.mixSave,
+            body = "Balance the track and your voice, then hear it at share loudness before you export.",
+            accent = SwaraColors.Teal,
         )
 
         Surface(
@@ -704,7 +740,7 @@ fun PublishRoute(
                 modifier = Modifier.padding(18.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                Text(text = "Vocal Effects Sliders", style = MaterialTheme.typography.titleLarge)
+                Text(text = "Hear the mix", style = MaterialTheme.typography.titleLarge)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     FilterChip(
                         selected = state.previewDry,
@@ -723,6 +759,11 @@ fun PublishRoute(
                         Text("Hear as ${state.target.label()}")
                     }
                 }
+                var showMoreMix by remember { mutableStateOf(false) }
+                TextButton(onClick = { showMoreMix = !showMoreMix }) {
+                    Text(if (showMoreMix) "Hide mix controls" else "More mix controls")
+                }
+                if (showMoreMix) {
                 EffectSliderRow(
                     label = "Tone (warm ↔ air)",
                     valueText = if (state.chain.tone >= 0f) {
@@ -804,6 +845,7 @@ fun PublishRoute(
                     valueRange = 0f..9f,
                     onValueChange = { viewModel.updateChainSliders(backingDuckDb = it) },
                 )
+                }
             }
         }
 
@@ -817,6 +859,13 @@ fun PublishRoute(
                 modifier = Modifier.padding(18.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
+                Button(
+                    onClick = { viewModel.shareThisTake(context) },
+                    enabled = !state.busy,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("Share this take")
+                }
                 Button(
                     onClick = viewModel::prepare,
                     enabled = !state.busy,

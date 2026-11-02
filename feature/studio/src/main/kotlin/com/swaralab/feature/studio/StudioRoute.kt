@@ -35,6 +35,11 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExposedDropdownMenuAnchorType
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -118,6 +123,7 @@ import com.swaralab.ui.ChoiceCard
 import com.swaralab.ui.AppCopy
 import com.swaralab.ui.LocalAppCopy
 import com.swaralab.ui.SwaraColors
+import com.swaralab.ui.studioAtmosphere
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -967,7 +973,7 @@ private val listeningRoutes = listOf(
     GearRoute.SPEAKER,
 )
 
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun StudioRoute(
     sessionId: String,
@@ -1235,7 +1241,7 @@ fun StudioRoute(
         )
     }
 
-    Column(modifier.fillMaxSize()) {
+    Column(modifier.fillMaxSize().studioAtmosphere()) {
     Column(
         Modifier
             .weight(1f)
@@ -1494,65 +1500,105 @@ fun StudioRoute(
             border = BorderStroke(1.dp, SwaraColors.Line),
         ) {
             Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(text = copy.lyrics, style = MaterialTheme.typography.titleLarge)
-                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                        TextButton(
-                            onClick = {
-                                val pasted = readClipboardText()
-                                if (pasted != null) {
-                                    draftLyrics = pasted
-                                    editingLyrics = false
-                                    viewModel.saveLyrics(pasted, note = "Lyrics pasted from clipboard.")
-                                } else {
-                                    draftLyrics = state.rawLyrics
-                                    editingLyrics = true
-                                }
-                            },
-                        ) {
-                            Text(copy.paste)
-                        }
-                        TextButton(
-                            onClick = {
-                                lyricsFileLauncher.launch(
-                                    arrayOf("text/*", "application/octet-stream", "*/*"),
-                                )
-                            },
-                        ) {
-                            Text("Upload file")
-                        }
-                        TextButton(
-                            onClick = {
-                                draftLyrics = state.rawLyrics
-                                editingLyrics = !editingLyrics
-                            },
-                        ) {
-                            Text(if (editingLyrics) "Close" else if (state.lines.isEmpty()) "Write" else "Edit")
-                        }
-                    }
-                }
+                Text(text = copy.lyrics, style = MaterialTheme.typography.titleLarge)
                 FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalArrangement = Arrangement.spacedBy(0.dp),
                 ) {
-                    LyricLanguage.entries.forEach { language ->
-                        FilterChip(
-                            selected = state.lyricLanguage.equals(language.tag, ignoreCase = true),
-                            onClick = { viewModel.setMusical(lyricLanguage = language.tag) },
-                            label = { Text(language.englishName) },
+                    val compactPad = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
+                    TextButton(
+                        onClick = {
+                            val pasted = readClipboardText()
+                            if (pasted != null) {
+                                draftLyrics = pasted
+                                editingLyrics = false
+                                viewModel.saveLyrics(pasted, note = "Lyrics pasted from clipboard.")
+                            } else {
+                                draftLyrics = state.rawLyrics
+                                editingLyrics = true
+                            }
+                        },
+                        contentPadding = compactPad,
+                    ) {
+                        Text(copy.paste, maxLines = 1, softWrap = false)
+                    }
+                    TextButton(
+                        onClick = {
+                            lyricsFileLauncher.launch(
+                                arrayOf("text/*", "application/octet-stream", "*/*"),
+                            )
+                        },
+                        contentPadding = compactPad,
+                    ) {
+                        Text("File", maxLines = 1, softWrap = false)
+                    }
+                    TextButton(
+                        onClick = {
+                            draftLyrics = state.rawLyrics
+                            editingLyrics = !editingLyrics
+                        },
+                        contentPadding = compactPad,
+                    ) {
+                        Text(
+                            if (editingLyrics) "Close" else if (state.lines.isEmpty()) "Write" else "Edit",
+                            maxLines = 1,
+                            softWrap = false,
                         )
                     }
                 }
+                var languageMenuOpen by remember { mutableStateOf(false) }
+                val chosenLanguage = LyricLanguage.fromTag(state.lyricLanguage)
+                val resolvedLanguage = LyricLanguage.resolve(state.lyricLanguage, state.rawLyrics)
+                ExposedDropdownMenuBox(
+                    expanded = languageMenuOpen,
+                    onExpandedChange = { languageMenuOpen = it },
+                ) {
+                    OutlinedTextField(
+                        value = chosenLanguage.englishName,
+                        onValueChange = {},
+                        readOnly = true,
+                        singleLine = true,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .menuAnchor(
+                                type = ExposedDropdownMenuAnchorType.PrimaryNotEditable,
+                                enabled = true,
+                            ),
+                        label = { Text(copy.lyricLanguage, maxLines = 1, softWrap = false) },
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = languageMenuOpen) },
+                    )
+                    ExposedDropdownMenu(
+                        expanded = languageMenuOpen,
+                        onDismissRequest = { languageMenuOpen = false },
+                    ) {
+                        LyricLanguage.entries.forEach { language ->
+                            DropdownMenuItem(
+                                text = {
+                                    Text(language.englishName, maxLines = 1, softWrap = false)
+                                },
+                                onClick = {
+                                    viewModel.setMusical(lyricLanguage = language.tag)
+                                    languageMenuOpen = false
+                                },
+                            )
+                        }
+                    }
+                }
                 Text(
-                    text = copy.lyricLanguage + " · " +
-                        LyricLanguage.resolve(state.lyricLanguage, state.rawLyrics).englishName +
-                        if (state.heardLyric.isNullOrBlank()) "" else " · ${state.heardLyric}",
+                    text = buildString {
+                        if (chosenLanguage == LyricLanguage.AUTO) {
+                            append("Auto reads the script. Now ${resolvedLanguage.englishName}.")
+                        } else {
+                            append("Follows ${chosenLanguage.englishName} while you sing.")
+                        }
+                        if (!state.heardLyric.isNullOrBlank()) {
+                            append(" · ${state.heardLyric}")
+                        }
+                    },
                     style = MaterialTheme.typography.bodyMedium,
                     color = SwaraColors.Muted,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
                 )
                 if (editingLyrics) {
                     OutlinedTextField(
@@ -1560,7 +1606,11 @@ fun StudioRoute(
                         onValueChange = { draftLyrics = it },
                         modifier = Modifier.fillMaxWidth(),
                         minLines = 5,
-                        label = { Text("Paste lyrics, one line per row. Sing and they will scroll with you.") },
+                        label = { Text("Write lyrics", maxLines = 1, softWrap = false) },
+                        placeholder = { Text("One line per row") },
+                        supportingText = {
+                            Text("Sing and the highlight follows each line.")
+                        },
                     )
                     FlowRow(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -1698,40 +1748,29 @@ fun StudioRoute(
             audioStateFlow = viewModel.audio.state,
         )
 
-        if (state.takes.isNotEmpty()) {
-            Row(
+        val thisTake = state.takes.firstOrNull { it.preferred } ?: state.takes.firstOrNull()
+        if (thisTake != null) {
+            Surface(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
+                shape = RoundedCornerShape(22.dp),
+                color = SwaraColors.TealWash,
+                border = BorderStroke(1.5.dp, SwaraColors.Teal),
             ) {
-                Text(text = "Recorded takes", style = MaterialTheme.typography.titleLarge)
-                TextButton(onClick = viewModel::hearPreferredWithTrack) {
-                    Text(copy.hearWithTrack)
+                Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(text = "This take", style = MaterialTheme.typography.titleLarge, color = SwaraColors.Teal)
+                    Text(text = thisTake.label, style = MaterialTheme.typography.titleMedium, color = SwaraColors.Ink)
+                    Text(text = thisTake.durationText, style = MaterialTheme.typography.bodyMedium, color = SwaraColors.Muted)
+                    Button(onClick = viewModel::hearPreferredWithTrack, modifier = Modifier.fillMaxWidth()) {
+                        Text(copy.hearWithTrack)
+                    }
+                    Button(onClick = onPublish, modifier = Modifier.fillMaxWidth()) {
+                        Text("Share this take")
+                    }
                 }
-            }
-            state.takes.forEach { take ->
-                TakeEditCard(
-                    take = take,
-                    isPlaying = playingRelativePath == take.relativePath,
-                    onPlay = { viewModel.togglePlayTake(take) },
-                    onDelete = { pendingDeleteTake = take.id },
-                    onPrefer = { viewModel.preferTake(take.id) },
-                    onTrim = { start, duration -> viewModel.trimTake(take.id, start, duration) },
-                    onPunch = { start -> viewModel.punchFrom(take, start) },
-                )
             }
         }
 
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(text = "Mix for this take", style = MaterialTheme.typography.titleLarge)
-            TextButton(onClick = onPublish) {
-                Text("FX sliders")
-            }
-        }
+        Text(text = "Mix for this take", style = MaterialTheme.typography.titleLarge)
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             val presetsToShow = if (state.preset == VocalPreset.CUSTOM) {
                 studioPresets + VocalPreset.CUSTOM
@@ -1758,27 +1797,49 @@ fun StudioRoute(
             color = SwaraColors.Muted,
         )
 
-        Text(text = "Voices", style = MaterialTheme.typography.titleLarge)
-        FlowRow(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            state.parts.forEach { part ->
-                FilterChip(
-                    selected = state.selectedPartId == part.id,
-                    onClick = { viewModel.selectPart(part.id) },
-                    label = { Text(part.label) },
+        if (state.takes.isNotEmpty()) {
+            Text(text = "Recorded takes", style = MaterialTheme.typography.titleLarge)
+            state.takes.forEach { take ->
+                TakeEditCard(
+                    take = take,
+                    isPlaying = playingRelativePath == take.relativePath,
+                    onPlay = { viewModel.togglePlayTake(take) },
+                    onDelete = { pendingDeleteTake = take.id },
+                    onPrefer = { viewModel.preferTake(take.id) },
+                    onTrim = { start, duration -> viewModel.trimTake(take.id, start, duration) },
+                    onPunch = { start -> viewModel.punchFrom(take, start) },
                 )
             }
-            if (state.canAddPart) {
-                OutlinedButton(onClick = viewModel::addSecondVoice) {
-                    Text(if (state.parts.size == 1) "+ Duet part" else "+ Harmony")
+        }
+
+        var showVoices by remember { mutableStateOf(state.parts.size > 1) }
+        TextButton(onClick = { showVoices = !showVoices }) {
+            Text(if (showVoices) "Hide voices" else "More voices")
+        }
+        if (showVoices) {
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                state.parts.forEach { part ->
+                    FilterChip(
+                        selected = state.selectedPartId == part.id,
+                        onClick = { viewModel.selectPart(part.id) },
+                        label = { Text(part.label) },
+                    )
+                }
+                if (state.canAddPart) {
+                    OutlinedButton(onClick = viewModel::addSecondVoice) {
+                        Text(if (state.parts.size == 1) "+ Duet part" else "+ Harmony")
+                    }
                 }
             }
         }
 
-        OutlinedButton(onClick = onPublish, modifier = Modifier.fillMaxWidth()) {
-            Text(copy.mixSave)
+        if (thisTake == null) {
+            OutlinedButton(onClick = onPublish, modifier = Modifier.fillMaxWidth()) {
+                Text(copy.mixSave)
+            }
         }
     }
     RecordingControlBar(

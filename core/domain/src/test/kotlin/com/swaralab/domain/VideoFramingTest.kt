@@ -34,4 +34,11 @@ class VideoFramingTest {
         assertEquals(1080, box.width)
         assertEquals(1920, box.height)
     }
+
+    @Test
+    fun pictureAndSongEndTogether() {
+        assertEquals(8_000_000L, VideoFraming.sharedEndUs(12_000_000L, 8_000_000L))
+        assertEquals(5_000_000L, VideoFraming.sharedEndUs(5_000_000L, 9_000_000L))
+        assertEquals(4_000_000L, VideoFraming.sharedEndUs(0L, 4_000_000L))
+    }
 }

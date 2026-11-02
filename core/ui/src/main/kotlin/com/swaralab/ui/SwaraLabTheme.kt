@@ -4,7 +4,10 @@ import android.app.Activity
 import android.os.Build
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.IntrinsicSize
@@ -32,12 +35,16 @@ import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.composed
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
@@ -46,22 +53,27 @@ enum class SwaraThemeId(val tag: String, val label: String, val body: String) {
     RAGA(
         tag = "raga",
         label = "Raga Light",
-        body = "Warm paper, teal meters, and gold cues. Best in daylight.",
+        body = "Warm rag paper, peacock teal, and kundan gold. Best in daylight practice.",
     ),
     MIDNIGHT(
         tag = "midnight",
         label = "Midnight Stage",
-        body = "Dark concert lighting so pitch graphs and lyrics stay easy at night.",
+        body = "Concert black and cyan spots. Lyrics and pitch stay clear after dark.",
     ),
     VINYL(
         tag = "vinyl",
         label = "Vinyl Amber",
-        body = "Warm studio lamps. Softer on the eyes for long mix sessions.",
+        body = "Walnut booth and lamp amber. Soft for long mix nights.",
     ),
     SAFFRON(
         tag = "saffron",
         label = "Saffron Riyaz",
-        body = "Deep ink with saffron and gold, closer to a classical practice room.",
+        body = "Temple saffron and vermillion on deep ink. A classical practice room.",
+    ),
+    INDIGO(
+        tag = "indigo",
+        label = "Indigo Booth",
+        body = "Cool indigo and champagne. Easy on the eyes for late edits.",
     ),
     SYSTEM(
         tag = "system",
@@ -89,43 +101,58 @@ data class SwaraPalette(
     val line: Color,
     val muted: Color,
     val clay: Color,
+    val glow: Color,
     val isDark: Boolean,
 ) {
     fun colorScheme(): ColorScheme {
         val scheme = if (isDark) {
             darkColorScheme(
                 primary = teal,
-                onPrimary = Color(0xFF041214),
+                onPrimary = Color(0xFF061014),
+                primaryContainer = tealWash,
+                onPrimaryContainer = ink,
                 secondary = gold,
                 onSecondary = Color(0xFF1A1206),
+                secondaryContainer = goldWash,
+                onSecondaryContainer = gold,
                 tertiary = rose,
                 onTertiary = Color(0xFF1A0B12),
                 tertiaryContainer = roseWash,
+                onTertiaryContainer = rose,
                 background = paper,
                 onBackground = ink,
                 surface = card,
                 onSurface = ink,
                 surfaceVariant = tealWash,
                 onSurfaceVariant = muted,
+                surfaceTint = teal,
                 outline = line,
+                outlineVariant = line.copy(alpha = 0.7f),
                 error = clay,
             )
         } else {
             lightColorScheme(
                 primary = teal,
                 onPrimary = Color.White,
+                primaryContainer = tealWash,
+                onPrimaryContainer = teal,
                 secondary = gold,
                 onSecondary = ink,
+                secondaryContainer = goldWash,
+                onSecondaryContainer = gold,
                 tertiary = rose,
                 onTertiary = Color.White,
                 tertiaryContainer = roseWash,
+                onTertiaryContainer = rose,
                 background = paper,
                 onBackground = ink,
                 surface = card,
                 onSurface = ink,
                 surfaceVariant = tealWash,
                 onSurfaceVariant = muted,
+                surfaceTint = teal,
                 outline = line,
+                outlineVariant = line.copy(alpha = 0.8f),
                 error = clay,
             )
         }
@@ -134,68 +161,98 @@ data class SwaraPalette(
 
     companion object {
         val RagaLight = SwaraPalette(
-            ink = Color(0xFF16343A),
-            teal = Color(0xFF0C6E78),
-            tealWash = Color(0xFFE5F3F4),
-            gold = Color(0xFF8A6416),
-            goldWash = Color(0xFFF6ECD4),
-            rose = Color(0xFFB44A6A),
-            roseWash = Color(0xFFF8E6EC),
-            paper = Color(0xFFF7F4EF),
-            card = Color(0xFFFFFFFF),
-            line = Color(0xFFE4DDD4),
-            muted = Color(0xFF3F5358),
+            ink = Color(0xFF1A3034),
+            teal = Color(0xFF0A6E6A),
+            tealWash = Color(0xFFDCEFED),
+            gold = Color(0xFFB07A12),
+            goldWash = Color(0xFFF6E7C4),
+            rose = Color(0xFFB03D5C),
+            roseWash = Color(0xFFF8E0E7),
+            paper = Color(0xFFF4EDE3),
+            card = Color(0xFFFFF9F2),
+            line = Color(0xFFDCCFBE),
+            muted = Color(0xFF4A5C60),
             clay = Color(0xFFC44B3C),
+            glow = Color(0x3326A69A),
             isDark = false,
         )
 
         val MidnightStage = SwaraPalette(
-            ink = Color(0xFFE7F3F5),
-            teal = Color(0xFF3EC8C8),
-            tealWash = Color(0xFF16383C),
-            gold = Color(0xFFE0B44B),
-            goldWash = Color(0xFF3A3018),
-            rose = Color(0xFFE28CA8),
-            roseWash = Color(0xFF3A1E2A),
-            paper = Color(0xFF0B1216),
-            card = Color(0xFF152026),
-            line = Color(0xFF2A3A40),
-            muted = Color(0xFF8AA0A6),
+            ink = Color(0xFFE8F7F8),
+            teal = Color(0xFF46E0D4),
+            tealWash = Color(0xFF12383A),
+            gold = Color(0xFFF2C65A),
+            goldWash = Color(0xFF3A2E12),
+            rose = Color(0xFFFF8FB3),
+            roseWash = Color(0xFF3A1C2A),
+            paper = Color(0xFF070B10),
+            card = Color(0xFF121A22),
+            line = Color(0xFF2A3A46),
+            muted = Color(0xFF8AA4AC),
             clay = Color(0xFFE07A6C),
+            glow = Color(0x3346E0D4),
             isDark = true,
         )
 
         val VinylAmber = SwaraPalette(
-            ink = Color(0xFFF3E6D4),
-            teal = Color(0xFFE39B3C),
-            tealWash = Color(0xFF3A2A18),
-            gold = Color(0xFFF0C36A),
-            goldWash = Color(0xFF3F2E16),
-            rose = Color(0xFFE08A6A),
-            roseWash = Color(0xFF3A221C),
-            paper = Color(0xFF16110D),
-            card = Color(0xFF221A14),
-            line = Color(0xFF3A2E24),
+            ink = Color(0xFFF6E8D4),
+            teal = Color(0xFFD4893A),
+            tealWash = Color(0xFF3A2816),
+            gold = Color(0xFFF5D08A),
+            goldWash = Color(0xFF403018),
+            rose = Color(0xFFC96B4A),
+            roseWash = Color(0xFF3A2218),
+            paper = Color(0xFF16100B),
+            card = Color(0xFF241A13),
+            line = Color(0xFF3E2E22),
             muted = Color(0xFFB39A82),
             clay = Color(0xFFE07A6C),
+            glow = Color(0x33D4893A),
             isDark = true,
         )
 
         val SaffronRiyaz = SwaraPalette(
-            ink = Color(0xFFF6EDE0),
-            teal = Color(0xFFE07A1F),
-            tealWash = Color(0xFF3A2412),
-            gold = Color(0xFFF0C14B),
-            goldWash = Color(0xFF3F2C10),
-            rose = Color(0xFFE46B7A),
-            roseWash = Color(0xFF3A1C20),
-            paper = Color(0xFF140E0A),
-            card = Color(0xFF1F1610),
-            line = Color(0xFF3D2C1C),
+            ink = Color(0xFFF8EFE2),
+            teal = Color(0xFFF07828),
+            tealWash = Color(0xFF3C1C10),
+            gold = Color(0xFFFFD36A),
+            goldWash = Color(0xFF3F2A0E),
+            rose = Color(0xFFE85A4F),
+            roseWash = Color(0xFF3A1614),
+            paper = Color(0xFF160C08),
+            card = Color(0xFF24140E),
+            line = Color(0xFF4A2C1C),
             muted = Color(0xFFC4A882),
             clay = Color(0xFFE25A4A),
+            glow = Color(0x33F07828),
             isDark = true,
         )
+
+        val IndigoBooth = SwaraPalette(
+            ink = Color(0xFFE8EAF6),
+            teal = Color(0xFF8B9BFF),
+            tealWash = Color(0xFF1C2240),
+            gold = Color(0xFFE8D5A3),
+            goldWash = Color(0xFF3A3220),
+            rose = Color(0xFFC084FC),
+            roseWash = Color(0xFF2C1A40),
+            paper = Color(0xFF0C0E1A),
+            card = Color(0xFF16182A),
+            line = Color(0xFF2C3050),
+            muted = Color(0xFF9AA3C4),
+            clay = Color(0xFFE07A6C),
+            glow = Color(0x338B9BFF),
+            isDark = true,
+        )
+
+        fun preview(themeId: SwaraThemeId): SwaraPalette = when (themeId) {
+            SwaraThemeId.RAGA -> RagaLight
+            SwaraThemeId.MIDNIGHT -> MidnightStage
+            SwaraThemeId.VINYL -> VinylAmber
+            SwaraThemeId.SAFFRON -> SaffronRiyaz
+            SwaraThemeId.INDIGO -> IndigoBooth
+            SwaraThemeId.SYSTEM -> RagaLight
+        }
 
         fun fromDynamic(scheme: ColorScheme, dark: Boolean) = SwaraPalette(
             ink = scheme.onBackground,
@@ -210,6 +267,7 @@ data class SwaraPalette(
             line = scheme.outline,
             muted = scheme.onSurfaceVariant,
             clay = scheme.error,
+            glow = scheme.primary.copy(alpha = 0.2f),
             isDark = dark,
         )
     }
@@ -230,6 +288,7 @@ object SwaraColors {
     val Line get() = ActiveSwaraPalette.line
     val Muted get() = ActiveSwaraPalette.muted
     val Clay get() = ActiveSwaraPalette.clay
+    val Glow get() = ActiveSwaraPalette.glow
 }
 
 enum class SwaraMark {
@@ -251,6 +310,7 @@ fun SwaraLabTheme(
             SwaraThemeId.MIDNIGHT -> SwaraPalette.MidnightStage
             SwaraThemeId.VINYL -> SwaraPalette.VinylAmber
             SwaraThemeId.SAFFRON -> SwaraPalette.SaffronRiyaz
+            SwaraThemeId.INDIGO -> SwaraPalette.IndigoBooth
             SwaraThemeId.SYSTEM -> if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 val scheme = if (systemDark) {
                     dynamicDarkColorScheme(context)
@@ -279,13 +339,20 @@ fun SwaraLabTheme(
     val base = Typography()
     MaterialTheme(
         colorScheme = palette.colorScheme(),
+        shapes = androidx.compose.material3.Shapes(
+            extraSmall = RoundedCornerShape(8.dp),
+            small = RoundedCornerShape(12.dp),
+            medium = RoundedCornerShape(16.dp),
+            large = RoundedCornerShape(20.dp),
+            extraLarge = RoundedCornerShape(28.dp),
+        ),
         typography = Typography(
             headlineLarge = base.headlineLarge.copy(
                 fontWeight = FontWeight.SemiBold,
                 fontSize = 34.sp,
-                letterSpacing = (-0.5).sp,
+                letterSpacing = (-0.6).sp,
             ),
-            titleLarge = base.titleLarge.copy(fontWeight = FontWeight.SemiBold),
+            titleLarge = base.titleLarge.copy(fontWeight = FontWeight.SemiBold, letterSpacing = (-0.2).sp),
             bodyLarge = base.bodyLarge.copy(lineHeight = 24.sp),
         ),
         content = content,
@@ -385,6 +452,8 @@ fun ChoiceCard(
         modifier = modifier.fillMaxWidth(),
         shape = RoundedCornerShape(18.dp),
         color = if (selected) accentWash else SwaraColors.Card,
+        tonalElevation = if (selected) 2.dp else 1.dp,
+        shadowElevation = if (selected) 3.dp else 1.dp,
         border = BorderStroke(if (selected) 1.5.dp else 1.dp, if (selected) accent else SwaraColors.Line),
     ) {
         Row(Modifier.height(IntrinsicSize.Min)) {
@@ -411,6 +480,114 @@ fun ChoiceCard(
                 Spacer(Modifier.height(4.dp))
                 Text(text = body, style = MaterialTheme.typography.bodyMedium, color = SwaraColors.Muted)
             }
+        }
+    }
+}
+
+@Composable
+fun ThemePickCard(
+    theme: SwaraThemeId,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val preview = SwaraPalette.preview(theme)
+    Surface(
+        onClick = onClick,
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+        color = preview.card,
+        border = BorderStroke(if (selected) 2.dp else 1.dp, if (selected) preview.teal else preview.line),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Row(horizontalArrangement = Arrangement.spacedBy((-6).dp)) {
+                listOf(preview.paper, preview.teal, preview.gold, preview.rose).forEach { swatch ->
+                    Box(
+                        Modifier
+                            .size(22.dp)
+                            .border(1.dp, preview.line, CircleShape)
+                            .background(swatch, CircleShape),
+                    )
+                }
+            }
+            Column(Modifier.padding(start = 16.dp).weight(1f)) {
+                Text(
+                    text = theme.label,
+                    style = MaterialTheme.typography.titleLarge,
+                    color = preview.ink,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = theme.body,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = preview.muted,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
+}
+
+fun Modifier.studioAtmosphere(): Modifier = composed {
+    val paper = SwaraColors.Paper
+    val tealWash = SwaraColors.TealWash
+    val goldWash = SwaraColors.GoldWash
+    val glow = SwaraColors.Glow
+    val roseWash = SwaraColors.RoseWash
+    drawBehind {
+        drawRect(paper)
+        drawRect(
+            brush = Brush.verticalGradient(
+                0f to tealWash.copy(alpha = 0.88f),
+                0.28f to goldWash.copy(alpha = 0.42f),
+                0.58f to paper,
+                1f to paper,
+            ),
+        )
+        drawCircle(
+            color = glow,
+            radius = size.minDimension * 0.62f,
+            center = Offset(size.width * 0.94f, size.height * -0.02f),
+        )
+        drawCircle(
+            color = roseWash.copy(alpha = 0.35f),
+            radius = size.minDimension * 0.34f,
+            center = Offset(size.width * 0.08f, size.height * 0.18f),
+        )
+    }
+}
+
+@Composable
+fun PageHero(
+    title: String,
+    body: String,
+    modifier: Modifier = Modifier,
+    accent: Color = SwaraColors.Teal,
+) {
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(24.dp),
+        color = SwaraColors.Card,
+        tonalElevation = 2.dp,
+        shadowElevation = 2.dp,
+        border = BorderStroke(1.dp, SwaraColors.Line),
+    ) {
+        Column(Modifier.padding(horizontal = 20.dp, vertical = 18.dp)) {
+            Box(
+                Modifier
+                    .padding(bottom = 10.dp)
+                    .width(36.dp)
+                    .height(4.dp)
+                    .background(accent, RoundedCornerShape(4.dp)),
+            )
+            Text(text = title, style = MaterialTheme.typography.headlineLarge, color = SwaraColors.Ink)
+            Spacer(Modifier.height(6.dp))
+            Text(text = body, style = MaterialTheme.typography.bodyLarge, color = SwaraColors.Muted)
         }
     }
 }

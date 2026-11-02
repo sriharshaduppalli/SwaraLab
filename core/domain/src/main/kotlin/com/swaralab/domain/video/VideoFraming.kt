@@ -39,5 +39,15 @@ object VideoFraming {
         }
     }
 
+    fun sharedEndUs(videoUs: Long, audioUs: Long): Long {
+        val video = videoUs.coerceAtLeast(0L)
+        val audio = audioUs.coerceAtLeast(0L)
+        return when {
+            video <= 0L -> audio
+            audio <= 0L -> video
+            else -> minOf(video, audio)
+        }
+    }
+
     private fun even(value: Int): Int = value and 1.inv()
 }
