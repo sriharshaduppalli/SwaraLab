@@ -244,7 +244,7 @@ object VocalSignalAnalyzer {
         )
     }
 
-    private fun detectPitchHz(samples: FloatArray, length: Int, sampleRate: Int): Float {
+    internal fun detectPitchHz(samples: FloatArray, length: Int, sampleRate: Int): Float {
         val decimation = if (sampleRate >= 32_000) 2 else 1
         val effRate = sampleRate / decimation
         val n = length / decimation

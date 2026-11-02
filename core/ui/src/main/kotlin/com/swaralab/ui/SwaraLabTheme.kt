@@ -5,13 +5,18 @@ import android.os.Build
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
@@ -76,6 +81,9 @@ data class SwaraPalette(
     val teal: Color,
     val tealWash: Color,
     val gold: Color,
+    val goldWash: Color,
+    val rose: Color,
+    val roseWash: Color,
     val paper: Color,
     val card: Color,
     val line: Color,
@@ -90,6 +98,9 @@ data class SwaraPalette(
                 onPrimary = Color(0xFF041214),
                 secondary = gold,
                 onSecondary = Color(0xFF1A1206),
+                tertiary = rose,
+                onTertiary = Color(0xFF1A0B12),
+                tertiaryContainer = roseWash,
                 background = paper,
                 onBackground = ink,
                 surface = card,
@@ -105,6 +116,9 @@ data class SwaraPalette(
                 onPrimary = Color.White,
                 secondary = gold,
                 onSecondary = ink,
+                tertiary = rose,
+                onTertiary = Color.White,
+                tertiaryContainer = roseWash,
                 background = paper,
                 onBackground = ink,
                 surface = card,
@@ -124,6 +138,9 @@ data class SwaraPalette(
             teal = Color(0xFF0C6E78),
             tealWash = Color(0xFFE5F3F4),
             gold = Color(0xFF8A6416),
+            goldWash = Color(0xFFF6ECD4),
+            rose = Color(0xFFB44A6A),
+            roseWash = Color(0xFFF8E6EC),
             paper = Color(0xFFF7F4EF),
             card = Color(0xFFFFFFFF),
             line = Color(0xFFE4DDD4),
@@ -137,6 +154,9 @@ data class SwaraPalette(
             teal = Color(0xFF3EC8C8),
             tealWash = Color(0xFF16383C),
             gold = Color(0xFFE0B44B),
+            goldWash = Color(0xFF3A3018),
+            rose = Color(0xFFE28CA8),
+            roseWash = Color(0xFF3A1E2A),
             paper = Color(0xFF0B1216),
             card = Color(0xFF152026),
             line = Color(0xFF2A3A40),
@@ -150,6 +170,9 @@ data class SwaraPalette(
             teal = Color(0xFFE39B3C),
             tealWash = Color(0xFF3A2A18),
             gold = Color(0xFFF0C36A),
+            goldWash = Color(0xFF3F2E16),
+            rose = Color(0xFFE08A6A),
+            roseWash = Color(0xFF3A221C),
             paper = Color(0xFF16110D),
             card = Color(0xFF221A14),
             line = Color(0xFF3A2E24),
@@ -163,6 +186,9 @@ data class SwaraPalette(
             teal = Color(0xFFE07A1F),
             tealWash = Color(0xFF3A2412),
             gold = Color(0xFFF0C14B),
+            goldWash = Color(0xFF3F2C10),
+            rose = Color(0xFFE46B7A),
+            roseWash = Color(0xFF3A1C20),
             paper = Color(0xFF140E0A),
             card = Color(0xFF1F1610),
             line = Color(0xFF3D2C1C),
@@ -176,6 +202,9 @@ data class SwaraPalette(
             teal = scheme.primary,
             tealWash = scheme.primaryContainer,
             gold = scheme.secondary,
+            goldWash = scheme.secondaryContainer,
+            rose = scheme.tertiary,
+            roseWash = scheme.tertiaryContainer,
             paper = scheme.background,
             card = scheme.surface,
             line = scheme.outline,
@@ -193,6 +222,9 @@ object SwaraColors {
     val Teal get() = ActiveSwaraPalette.teal
     val TealWash get() = ActiveSwaraPalette.tealWash
     val Gold get() = ActiveSwaraPalette.gold
+    val GoldWash get() = ActiveSwaraPalette.goldWash
+    val Rose get() = ActiveSwaraPalette.rose
+    val RoseWash get() = ActiveSwaraPalette.roseWash
     val Paper get() = ActiveSwaraPalette.paper
     val Card get() = ActiveSwaraPalette.card
     val Line get() = ActiveSwaraPalette.line
@@ -268,6 +300,13 @@ fun SwaraWordmark(modifier: Modifier = Modifier) {
             color = SwaraColors.Teal,
             style = MaterialTheme.typography.headlineLarge,
         )
+        Surface(
+            modifier = Modifier
+                .padding(horizontal = 8.dp)
+                .size(8.dp),
+            shape = CircleShape,
+            color = SwaraColors.Rose,
+        ) {}
         Text(
             text = "Lab",
             color = SwaraColors.Gold,
@@ -277,8 +316,13 @@ fun SwaraWordmark(modifier: Modifier = Modifier) {
 }
 
 @Composable
-fun SwaraMarkIcon(mark: SwaraMark, selected: Boolean, modifier: Modifier = Modifier) {
-    val color = if (selected) SwaraColors.Teal else SwaraColors.Muted
+fun SwaraMarkIcon(
+    mark: SwaraMark,
+    selected: Boolean,
+    modifier: Modifier = Modifier,
+    selectedColor: Color = SwaraColors.Teal,
+) {
+    val color = if (selected) selectedColor else SwaraColors.Muted
     Canvas(modifier.size(24.dp)) {
         val stroke = 2.dp.toPx()
         when (mark) {
@@ -333,18 +377,40 @@ fun ChoiceCard(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     selected: Boolean = false,
+    accent: Color = SwaraColors.Teal,
+    accentWash: Color = SwaraColors.TealWash,
 ) {
     Surface(
         onClick = onClick,
         modifier = modifier.fillMaxWidth(),
         shape = RoundedCornerShape(18.dp),
-        color = if (selected) SwaraColors.TealWash else SwaraColors.Card,
-        border = BorderStroke(if (selected) 1.5.dp else 1.dp, if (selected) SwaraColors.Teal else SwaraColors.Line),
+        color = if (selected) accentWash else SwaraColors.Card,
+        border = BorderStroke(if (selected) 1.5.dp else 1.dp, if (selected) accent else SwaraColors.Line),
     ) {
-        Column(Modifier.padding(horizontal = 18.dp, vertical = 16.dp)) {
-            Text(text = title, style = MaterialTheme.typography.titleLarge, color = if (selected) SwaraColors.Teal else SwaraColors.Ink)
-            Spacer(Modifier.height(4.dp))
-            Text(text = body, style = MaterialTheme.typography.bodyMedium, color = SwaraColors.Muted)
+        Row(Modifier.height(IntrinsicSize.Min)) {
+            Box(
+                Modifier
+                    .width(5.dp)
+                    .fillMaxHeight()
+                    .padding(vertical = 10.dp),
+            ) {
+                Surface(
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .width(5.dp),
+                    color = accent,
+                    shape = RoundedCornerShape(topEnd = 6.dp, bottomEnd = 6.dp),
+                ) {}
+            }
+            Column(Modifier.padding(start = 13.dp, end = 18.dp, top = 16.dp, bottom = 16.dp)) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleLarge,
+                    color = if (selected) accent else SwaraColors.Ink,
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(text = body, style = MaterialTheme.typography.bodyMedium, color = SwaraColors.Muted)
+            }
         }
     }
 }

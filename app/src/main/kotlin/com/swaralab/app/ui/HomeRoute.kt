@@ -11,11 +11,15 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
@@ -81,6 +85,10 @@ class HomeViewModel(
         viewModelScope.launch { openedIds.emit(last.first) }
     }
 
+    fun refreshLastSong() {
+        viewModelScope.launch { refreshLast() }
+    }
+
     private suspend fun refreshLast() {
         val last = listSessions().firstOrNull()
         lastState.value = last?.let { it.id to it.title }
@@ -119,6 +127,16 @@ fun HomeRoute(
     LaunchedEffect(viewModel) {
         viewModel.opened.collect(onOpen)
     }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner, viewModel) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                viewModel.refreshLastSong()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     Column(
         modifier
@@ -139,22 +157,30 @@ fun HomeRoute(
                 title = copy.continueLast,
                 body = title,
                 onClick = viewModel::continueLast,
+                accent = SwaraColors.Gold,
+                accentWash = SwaraColors.GoldWash,
             )
         }
         ChoiceCard(
             title = copy.soloTitle,
             body = copy.soloBody,
             onClick = { viewModel.start(SessionKind.SONG) },
+            accent = SwaraColors.Teal,
+            accentWash = SwaraColors.TealWash,
         )
         ChoiceCard(
             title = copy.videoTitle,
             body = copy.videoBody,
             onClick = { viewModel.start(SessionKind.VIDEO) },
+            accent = SwaraColors.Rose,
+            accentWash = SwaraColors.RoseWash,
         )
         ChoiceCard(
             title = copy.warmupTitle,
             body = copy.warmupBody,
             onClick = { viewModel.start(SessionKind.PRACTICE) },
+            accent = SwaraColors.Gold,
+            accentWash = SwaraColors.GoldWash,
         )
     }
 }

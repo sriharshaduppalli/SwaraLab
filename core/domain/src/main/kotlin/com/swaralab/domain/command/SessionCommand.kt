@@ -34,6 +34,8 @@ sealed interface SessionCommand {
         val durationMs: Long,
         val timelineStartMs: Long = 0,
         val label: String = "Take",
+        val keepPreviousPreferred: Boolean = false,
+        val videoRelativePath: String? = null,
     ) : SessionCommand
 
     data class DeleteClip(

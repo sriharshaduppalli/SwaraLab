@@ -99,6 +99,7 @@ data class ClipState(
     val label: String = "",
     val preferred: Boolean = false,
     val sourceDurationMs: Long = 0L,
+    val videoRelativePath: String? = null,
 ) {
     val usableSourceDurationMs: Long
         get() = sourceDurationMs.takeIf { it > 0L } ?: (sourceInMs + durationMs).coerceAtLeast(durationMs)
@@ -181,32 +182,52 @@ data class VocalChain(
     val eqPresenceDb: Float = 0f,
     val eqAirDb: Float = 0f,
     val outputGainDb: Float = 0f,
+    val tone: Float = 0f,
+    val pitchCorrect: Float = 0f,
+    val fadeOut: Float = 0.4f,
+    val thicken: Float = 0f,
+    val effectAmount: Float = 1f,
 ) {
     companion object {
         fun preset(preset: VocalPreset): VocalChain = when (preset) {
-            VocalPreset.RAW -> VocalChain(preset = VocalPreset.RAW)
+            VocalPreset.RAW -> VocalChain(
+                preset = VocalPreset.RAW,
+                denoise = 0.7f,
+                breathReduction = 0.4f,
+                deEss = 0.28f,
+            )
             VocalPreset.CLOSE -> VocalChain(
                 preset = VocalPreset.CLOSE,
-                denoise = 0.45f,
-                deEss = 0.3f,
+                denoise = 0.82f,
+                breathReduction = 0.45f,
+                deEss = 0.4f,
                 compression = 0.35f,
                 reverb = 0.12f,
+                eqLowDb = -1.5f,
+                eqPresenceDb = 1.2f,
             )
             VocalPreset.STAGE -> VocalChain(
                 preset = VocalPreset.STAGE,
-                denoise = 0.3f,
+                denoise = 0.72f,
+                breathReduction = 0.35f,
+                deEss = 0.28f,
                 compression = 0.4f,
                 reverb = 0.45f,
                 delay = 0.15f,
+                eqAirDb = 1.0f,
             )
             VocalPreset.RADIO -> VocalChain(
                 preset = VocalPreset.RADIO,
-                denoise = 0.55f,
-                deEss = 0.45f,
+                denoise = 0.88f,
+                breathReduction = 0.5f,
+                deEss = 0.5f,
                 compression = 0.6f,
                 rider = 0.4f,
                 backingDuckDb = 3f,
                 reverb = 0.2f,
+                eqLowDb = -2.0f,
+                eqPresenceDb = 2.4f,
+                eqAirDb = 1.8f,
             )
             VocalPreset.CUSTOM -> VocalChain(preset = VocalPreset.CUSTOM)
         }
@@ -249,7 +270,12 @@ fun PublishSettings.withTarget(target: PublishTarget): PublishSettings {
     return copy(
         target = target,
         frame = frame,
-        loudnessLufs = -14f,
+        loudnessLufs = when (target) {
+            PublishTarget.REELS, PublishTarget.SHORTS -> -11f
+            PublishTarget.WHATSAPP -> -16f
+            PublishTarget.MASTER -> -14f
+            else -> -13f
+        },
         truePeakDbtp = -1f,
     )
 }

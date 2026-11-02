@@ -2,13 +2,17 @@ package com.swaralab.feature.library
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -63,6 +67,7 @@ data class LibraryRow(
     val id: String,
     val title: String,
     val detail: String,
+    val kind: SessionKind,
 )
 
 class LibraryViewModel(
@@ -87,6 +92,7 @@ class LibraryViewModel(
                     id = summary.id,
                     title = summary.title,
                     detail = "${summary.kind.label()} · $takes · $day",
+                    kind = summary.kind,
                 )
             }
         }
@@ -217,6 +223,11 @@ fun LibraryRoute(
             )
         } else {
             rows.forEach { row ->
+                val accent = when (row.kind) {
+                    SessionKind.SONG -> SwaraColors.Teal
+                    SessionKind.VIDEO -> SwaraColors.Rose
+                    SessionKind.PRACTICE -> SwaraColors.Gold
+                }
                 Surface(
                     onClick = { onOpen(row.id) },
                     modifier = Modifier.fillMaxWidth(),
@@ -227,25 +238,47 @@ fun LibraryRoute(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 18.dp, vertical = 14.dp),
+                            .height(IntrinsicSize.Min),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Column(Modifier.weight(1f)) {
-                            Text(
-                                text = row.title,
-                                style = MaterialTheme.typography.titleLarge,
-                                color = SwaraColors.Ink,
-                            )
-                            Spacer(Modifier.height(4.dp))
-                            Text(
-                                text = row.detail,
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = SwaraColors.Muted,
-                            )
+                        Box(
+                            Modifier
+                                .width(5.dp)
+                                .fillMaxHeight()
+                                .padding(vertical = 10.dp),
+                        ) {
+                            Surface(
+                                modifier = Modifier
+                                    .fillMaxHeight()
+                                    .width(5.dp),
+                                color = accent,
+                                shape = RoundedCornerShape(topEnd = 6.dp, bottomEnd = 6.dp),
+                            ) {}
                         }
-                        TextButton(onClick = { pendingDelete = row }) {
-                            Text(copy.delete, color = SwaraColors.Clay)
+                        Row(
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(start = 13.dp, end = 10.dp, top = 14.dp, bottom = 14.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    text = row.title,
+                                    style = MaterialTheme.typography.titleLarge,
+                                    color = SwaraColors.Ink,
+                                )
+                                Spacer(Modifier.height(4.dp))
+                                Text(
+                                    text = row.detail,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = SwaraColors.Muted,
+                                )
+                            }
+                            TextButton(onClick = { pendingDelete = row }) {
+                                Text(copy.delete, color = SwaraColors.Clay)
+                            }
                         }
                     }
                 }

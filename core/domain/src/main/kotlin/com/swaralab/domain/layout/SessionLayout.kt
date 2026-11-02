@@ -12,7 +12,7 @@ object SessionLayout {
 
     fun takeWav(takeId: String): String = "$TAKES/$takeId.wav"
 
-    fun performanceVideo(): String = "$VIDEO/performance.mp4"
+    fun performanceVideo(takeId: String = "performance"): String = "$VIDEO/$takeId.mp4"
 
     fun backingFile(fileName: String): String = "$BACKING/$fileName"
 

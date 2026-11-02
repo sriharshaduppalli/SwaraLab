@@ -91,6 +91,11 @@ data class PublishUi(
     val status: String?,
     val busy: Boolean = false,
     val hasCameraVideo: Boolean = false,
+    val previewDry: Boolean = true,
+    val vocalPath: String? = null,
+    val vocalStartMs: Long = 0L,
+    val vocalDurationMs: Long = 0L,
+    val backingPath: String? = null,
 )
 
 class PublishViewModel(
@@ -158,6 +163,12 @@ class PublishViewModel(
         compression: Float = uiState.value?.chain?.compression ?: 0f,
         denoise: Float = uiState.value?.chain?.denoise ?: 0f,
         backingDuckDb: Float = uiState.value?.chain?.backingDuckDb ?: 0f,
+        deEss: Float = uiState.value?.chain?.deEss ?: 0f,
+        tone: Float = uiState.value?.chain?.tone ?: 0f,
+        pitchCorrect: Float = uiState.value?.chain?.pitchCorrect ?: 0f,
+        fadeOut: Float = uiState.value?.chain?.fadeOut ?: 0.4f,
+        thicken: Float = uiState.value?.chain?.thicken ?: 0f,
+        effectAmount: Float = uiState.value?.chain?.effectAmount ?: 1f,
     ) {
         val current = uiState.value ?: return
         val updatedChain = current.chain.copy(
@@ -167,16 +178,31 @@ class PublishViewModel(
             compression = compression,
             denoise = denoise,
             backingDuckDb = backingDuckDb,
+            deEss = deEss,
+            tone = tone,
+            pitchCorrect = pitchCorrect,
+            fadeOut = fadeOut,
+            thicken = thicken,
+            effectAmount = effectAmount,
         )
         uiState.value = current.copy(chain = updatedChain)
         scheduleSliderSave()
     }
 
+    fun setPreviewDry(dry: Boolean) {
+        val current = uiState.value ?: return
+        uiState.value = current.copy(previewDry = dry)
+        viewModelScope.launch { playCurrentPreview() }
+    }
+
     private fun scheduleSliderSave() {
         sliderSaveJob?.cancel()
         sliderSaveJob = viewModelScope.launch {
-            delay(140L)
+            delay(160L)
             flushSlidersToDisk()
+            if (uiState.value?.previewDry == false && audio.state.value.playingRelativePath == "preview-mix") {
+                playCurrentPreview()
+            }
         }
     }
 
@@ -194,7 +220,40 @@ class PublishViewModel(
                 compression = snap.chain.compression,
                 denoise = snap.chain.denoise,
                 backingDuckDb = snap.chain.backingDuckDb,
+                deEss = snap.chain.deEss,
+                tone = snap.chain.tone,
+                pitchCorrect = snap.chain.pitchCorrect,
+                fadeOut = snap.chain.fadeOut,
+                thicken = snap.chain.thicken,
+                effectAmount = snap.chain.effectAmount,
             )
+        }
+    }
+
+    fun playCurrentPreview() {
+        viewModelScope.launch {
+            val snap = uiState.value ?: return@launch
+            sliderSaveJob?.cancel()
+            flushSlidersToDisk()
+            if (snap.previewDry) {
+                val vocal = snap.vocalPath ?: return@launch
+                audio.playWithBacking(
+                    sessionId = sessionId,
+                    vocalRelativePath = vocal,
+                    vocalStartMs = snap.vocalStartMs,
+                    vocalDurationMs = snap.vocalDurationMs.coerceAtMost(12_000L).coerceAtLeast(1L),
+                    backingRelativePath = snap.backingPath,
+                    backingStartMs = 0L,
+                    loopBacking = false,
+                )
+            } else {
+                val document = loadSession(sessionId) ?: return@launch
+                val preview = render.preview(document.copy(chain = snap.chain), 12_000L)
+                if (preview != null) {
+                    audio.playPcm(sessionId, preview.left, preview.right, preview.sampleRate, loop = true)
+                    uiState.value = uiState.value?.copy(status = "Previewing the mix. Toggle Dry to hear the raw take.")
+                }
+            }
         }
     }
 
@@ -403,7 +462,31 @@ class PublishViewModel(
                 exportedMime = exportedMime,
                 status = status,
                 busy = false,
-                hasCameraVideo = File(projectsDir, "$sessionId/${SessionLayout.performanceVideo()}").isFile,
+                previewDry = uiState.value?.previewDry ?: true,
+                vocalPath = document.tracks
+                    .filter { it.role != TrackRole.BACKING }
+                    .flatMap { it.clips }
+                    .let { clips -> clips.firstOrNull { it.preferred } ?: clips.lastOrNull() }
+                    ?.sourceRelativePath,
+                vocalStartMs = document.tracks
+                    .filter { it.role != TrackRole.BACKING }
+                    .flatMap { it.clips }
+                    .let { clips -> clips.firstOrNull { it.preferred } ?: clips.lastOrNull() }
+                    ?.sourceInMs ?: 0L,
+                vocalDurationMs = document.tracks
+                    .filter { it.role != TrackRole.BACKING }
+                    .flatMap { it.clips }
+                    .let { clips -> clips.firstOrNull { it.preferred } ?: clips.lastOrNull() }
+                    ?.durationMs ?: 0L,
+                backingPath = document.tracks.firstOrNull { it.role == TrackRole.BACKING }
+                    ?.clips?.lastOrNull()?.sourceRelativePath,
+                hasCameraVideo = document.tracks
+                    .filter { it.role != TrackRole.BACKING }
+                    .flatMap { it.clips }
+                    .mapNotNull { it.videoRelativePath }
+                    .any { File(projectsDir, "$sessionId/$it").isFile } ||
+                    File(projectsDir, "$sessionId/${SessionLayout.VIDEO}").listFiles()
+                        ?.any { it.isFile && it.extension.equals("mp4", ignoreCase = true) } == true,
             )
         }
     }
@@ -608,6 +691,67 @@ fun PublishRoute(
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 Text(text = "Vocal Effects Sliders", style = MaterialTheme.typography.titleLarge)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(
+                        selected = state.previewDry,
+                        onClick = { viewModel.setPreviewDry(true) },
+                        label = { Text("Dry") },
+                    )
+                    FilterChip(
+                        selected = !state.previewDry,
+                        onClick = { viewModel.setPreviewDry(false) },
+                        label = { Text("Mix") },
+                    )
+                    TextButton(onClick = viewModel::playCurrentPreview) {
+                        Text("Hear loop")
+                    }
+                }
+                EffectSliderRow(
+                    label = "Tone (warm ↔ air)",
+                    valueText = if (state.chain.tone >= 0f) {
+                        "Air ${(state.chain.tone * 100).roundToInt()}%"
+                    } else {
+                        "Warm ${(-state.chain.tone * 100).roundToInt()}%"
+                    },
+                    value = state.chain.tone,
+                    valueRange = -1f..1f,
+                    onValueChange = { viewModel.updateChainSliders(tone = it) },
+                )
+                EffectSliderRow(
+                    label = "De-ess",
+                    valueText = "${(state.chain.deEss * 100).roundToInt()}%",
+                    value = state.chain.deEss,
+                    valueRange = 0f..1f,
+                    onValueChange = { viewModel.updateChainSliders(deEss = it) },
+                )
+                EffectSliderRow(
+                    label = "Pitch to key",
+                    valueText = "${(state.chain.pitchCorrect * 100).roundToInt()}%",
+                    value = state.chain.pitchCorrect,
+                    valueRange = 0f..1f,
+                    onValueChange = { viewModel.updateChainSliders(pitchCorrect = it) },
+                )
+                EffectSliderRow(
+                    label = "Thicken",
+                    valueText = "${(state.chain.thicken * 100).roundToInt()}%",
+                    value = state.chain.thicken,
+                    valueRange = 0f..1f,
+                    onValueChange = { viewModel.updateChainSliders(thicken = it) },
+                )
+                EffectSliderRow(
+                    label = "Effect amount",
+                    valueText = "${(state.chain.effectAmount * 100).roundToInt()}%",
+                    value = state.chain.effectAmount,
+                    valueRange = 0f..1f,
+                    onValueChange = { viewModel.updateChainSliders(effectAmount = it) },
+                )
+                EffectSliderRow(
+                    label = "Fade out",
+                    valueText = "${(state.chain.fadeOut * 100).roundToInt()}%",
+                    value = state.chain.fadeOut,
+                    valueRange = 0f..1f,
+                    onValueChange = { viewModel.updateChainSliders(fadeOut = it) },
+                )
                 EffectSliderRow(
                     label = "Reverb (Room & Hall)",
                     valueText = "${(state.chain.reverb * 100).roundToInt()}%",
@@ -630,7 +774,7 @@ fun PublishRoute(
                     onValueChange = { viewModel.updateChainSliders(compression = it) },
                 )
                 EffectSliderRow(
-                    label = "Noise Clean (Gate)",
+                    label = "Noise clean",
                     valueText = "${(state.chain.denoise * 100).roundToInt()}%",
                     value = state.chain.denoise,
                     valueRange = 0f..1f,
@@ -753,10 +897,19 @@ fun PublishRoute(
 
         Text(text = "Target format", style = MaterialTheme.typography.titleLarge)
         PublishTarget.entries.forEach { target ->
+            val (accent, wash) = when (target) {
+                PublishTarget.REELS, PublishTarget.SHORTS ->
+                    SwaraColors.Rose to SwaraColors.RoseWash
+                PublishTarget.WHATSAPP, PublishTarget.SQUARE ->
+                    SwaraColors.Gold to SwaraColors.GoldWash
+                else -> SwaraColors.Teal to SwaraColors.TealWash
+            }
             ChoiceCard(
                 title = target.label(),
                 body = shareCopy(target),
                 selected = state.target == target,
+                accent = accent,
+                accentWash = wash,
                 onClick = { viewModel.select(target) },
             )
         }

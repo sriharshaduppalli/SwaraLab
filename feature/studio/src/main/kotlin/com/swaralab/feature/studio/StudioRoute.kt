@@ -77,9 +77,11 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
+import com.swaralab.domain.audio.BackingPlayback
 import com.swaralab.domain.audio.LiveLyricFollower
 import com.swaralab.domain.audio.LyricLanguage
 import com.swaralab.domain.audio.MusicalKeys
+import com.swaralab.domain.policy.MonitorDecision
 import com.swaralab.domain.audio.VocalMetrics
 import com.swaralab.domain.audio.VocalSignalAnalyzer
 import com.swaralab.domain.model.ScaleMode
@@ -96,6 +98,7 @@ import com.swaralab.domain.port.ArmRequest
 import com.swaralab.domain.port.AudioEngine
 import com.swaralab.domain.port.AudioEngineState
 import com.swaralab.domain.port.EngineStatus
+import com.swaralab.domain.port.FinishedTake
 import com.swaralab.domain.port.TakeControl
 import com.swaralab.domain.usecase.AddVoicePart
 import com.swaralab.domain.usecase.CommitRecordedTake
@@ -155,6 +158,14 @@ data class BackingTrackUi(
     val name: String,
     val durationText: String,
     val relativePath: String,
+    val durationMs: Long,
+    val loops: Boolean,
+)
+
+data class PendingKeepTake(
+    val finished: FinishedTake,
+    val punchStartMs: Long,
+    val silent: Boolean,
 )
 
 data class StudioUi(
@@ -184,6 +195,8 @@ data class StudioUi(
     val scaleMode: ScaleMode,
     val headphoneFx: Boolean,
     val heardLyric: String?,
+    val monitorReverb: Float = 0f,
+    val monitorDelay: Float = 0f,
 )
 
 class StudioViewModel(
@@ -207,6 +220,8 @@ class StudioViewModel(
 ) : ViewModel() {
     private val uiState = MutableStateFlow<StudioUi?>(null)
     val ui: StateFlow<StudioUi?> = uiState.asStateFlow()
+    private val pendingKeepState = MutableStateFlow<PendingKeepTake?>(null)
+    val pendingKeep: StateFlow<PendingKeepTake?> = pendingKeepState.asStateFlow()
     private var activeLine = 0
     private var selectedPartId: String? = null
     private var stageNote: String? = null
@@ -391,8 +406,9 @@ class StudioViewModel(
     }
 
     fun punchFrom(take: RecordedTakeUi, startMs: Long) {
-        punchStartMs = startMs.coerceAtLeast(0L)
-        stageNote = "Punch-in armed at ${formatDuration(punchStartMs)}. Tap Sing to replace from there."
+        val fromSource = (startMs - take.sourceInMs).coerceAtLeast(0L)
+        punchStartMs = (take.timelineStartMs + fromSource).coerceAtLeast(0L)
+        stageNote = "Punch-in armed at ${formatDuration(punchStartMs)}. The first half stays. Tap Sing to replace from there."
         uiState.value = uiState.value?.copy(punchStartMs = punchStartMs, stageNote = stageNote)
     }
 
@@ -501,7 +517,7 @@ class StudioViewModel(
                 if (audio.state.value.playingRelativePath == relativePath) {
                     audio.stopPlayback()
                 } else {
-                    audio.playClip(sessionId, relativePath)
+                    audio.playClip(sessionId, relativePath, loop = true)
                 }
                 stageNote = "Guide melody in ${current.keyName} ${current.scaleMode.label()}."
                 uiState.value = current.copy(stageNote = stageNote)
@@ -527,15 +543,16 @@ class StudioViewModel(
             ) {
                 val finished = audio.stopTake()
                 if (finished != null) {
-                    commitRecordedTake(
-                        sessionId,
-                        current.selectedPartId,
-                        finished,
-                        timelineStartMs = punchStartMs,
+                    pendingKeepState.value = PendingKeepTake(
+                        finished = finished,
+                        punchStartMs = punchStartMs,
+                        silent = finished.peak < 0.012f || finished.durationMs < 400L,
                     )
-                    val punchNote = if (punchStartMs > 0L) " Punch starts at ${formatDuration(punchStartMs)}." else ""
-                    stageNote = "Saved take (${formatDuration(finished.durationMs)}).$punchNote Tap Play below to hear it."
-                    punchStartMs = 0L
+                    stageNote = if (finished.peak < 0.012f) {
+                        "That pass was almost silent. Keep it only if you meant to."
+                    } else {
+                        "Keep this take, or discard and sing again."
+                    }
                 } else {
                     stageNote = "Take stopped."
                 }
@@ -571,23 +588,30 @@ class StudioViewModel(
                         keyShiftSemitones = current.keyShiftSemitones,
                         monitorEnabled = headphoneFx &&
                             (current.route == GearRoute.WIRED || current.route == GearRoute.USB),
-                        monitorReverb = if (headphoneFx) 0.35f else 0f,
-                        monitorDelay = if (headphoneFx) 0.18f else 0f,
+                        monitorReverb = if (headphoneFx) current.monitorReverb else 0f,
+                        monitorDelay = if (headphoneFx) current.monitorDelay else 0f,
+                        loopBacking = current.backing?.loops == true,
                     ),
                 )
+                val armed = audio.state.value.decision
                 stageNote = when (audio.startTake()) {
                     is TakeControl.Started -> {
                         beginLyricFollow()
                         val followsVoice = current.lines.isNotEmpty() && current.lines.none { it.startMs != null }
+                        val bluetooth = if (armed == MonitorDecision.WARN) {
+                            " Bluetooth can make you hear late."
+                        } else {
+                            ""
+                        }
                         when {
                             current.countInEnabled && followsVoice ->
-                                "Count-in started. After 4, lyrics will follow the lines you sing."
+                                "Count-in started. After 4, lyrics will follow the lines you sing.$bluetooth"
                             current.countInEnabled ->
-                                "Count-in started. Sing after 4."
+                                "Count-in started. Sing after 4.$bluetooth"
                             followsVoice ->
-                                "Recording. Lyrics will follow each line as you sing."
+                                "Recording. Lyrics will follow each line as you sing.$bluetooth"
                             else ->
-                                "Recording live. Sing into the mic and tap Stop when done."
+                                "Recording live. Sing into the mic and tap Stop when done.$bluetooth"
                         }
                     }
                     is TakeControl.Refused ->
@@ -629,9 +653,138 @@ class StudioViewModel(
 
     fun togglePlayClip(relativePath: String) {
         viewModelScope.launch {
-            val loop = relativePath.contains("/backing/") || relativePath.endsWith("Guide_Melody.wav")
+            val backing = uiState.value?.backing
+            val loop = (backing?.relativePath == relativePath && backing.loops) ||
+                relativePath.endsWith("Guide_Melody.wav")
             audio.playClip(sessionId, relativePath, loop)
         }
+    }
+
+    fun togglePlayTake(take: RecordedTakeUi) {
+        viewModelScope.launch {
+            val backing = uiState.value?.backing
+            audio.playWithBacking(
+                sessionId = sessionId,
+                vocalRelativePath = take.relativePath,
+                vocalStartMs = take.sourceInMs,
+                vocalDurationMs = take.durationMs,
+                backingRelativePath = backing?.relativePath,
+                backingStartMs = take.timelineStartMs,
+                loopBacking = backing?.loops == true,
+            )
+        }
+    }
+
+    fun hearPreferredWithTrack() {
+        val take = uiState.value?.takes?.firstOrNull { it.preferred } ?: uiState.value?.takes?.firstOrNull() ?: return
+        togglePlayTake(take)
+    }
+
+    fun keepPendingTake() {
+        viewModelScope.launch {
+            val pending = pendingKeepState.value ?: return@launch
+            val current = uiState.value ?: return@launch
+            val videoPath = SessionLayout.performanceVideo(pending.finished.takeId)
+            val videoFile = File(File(projectsDir, sessionId), videoPath)
+            val take = if (videoFile.isFile) {
+                pending.finished.copy(videoRelativePath = videoPath)
+            } else {
+                pending.finished
+            }
+            commitRecordedTake(
+                sessionId,
+                current.selectedPartId,
+                take,
+                timelineStartMs = pending.punchStartMs,
+            )
+            val punchNote = if (pending.punchStartMs > 0L) {
+                " First half stayed in the mix."
+            } else {
+                ""
+            }
+            val cameraNote = if (current.kind == SessionKind.VIDEO && take.videoRelativePath == null) {
+                " Camera did not save this pass."
+            } else {
+                ""
+            }
+            stageNote = "Saved take (${formatDuration(take.durationMs)}).$punchNote$cameraNote Tap Hear with track."
+            punchStartMs = 0L
+            pendingKeepState.value = null
+            refresh()
+        }
+    }
+
+    fun discardPendingTake() {
+        viewModelScope.launch {
+            val pending = pendingKeepState.value ?: return@launch
+            withContext(Dispatchers.IO) {
+                runCatching { File(File(projectsDir, sessionId), pending.finished.relativePath).delete() }
+                runCatching {
+                    File(File(projectsDir, sessionId), SessionLayout.performanceVideo(pending.finished.takeId)).delete()
+                }
+            }
+            pendingKeepState.value = null
+            stageNote = "Take discarded. Tap Sing when you are ready."
+            uiState.value = uiState.value?.copy(stageNote = stageNote)
+        }
+    }
+
+    fun keepLiveAndLeave(onLeft: () -> Unit) {
+        viewModelScope.launch {
+            val current = uiState.value
+            val finished = if (
+                audio.state.value.status == EngineStatus.RECORDING ||
+                audio.state.value.status == EngineStatus.COUNTING
+            ) {
+                audio.stopTake()
+            } else {
+                pendingKeepState.value?.finished
+            }
+            if (finished != null && current != null) {
+                val punch = pendingKeepState.value?.punchStartMs ?: punchStartMs
+                val videoPath = SessionLayout.performanceVideo(finished.takeId)
+                val videoFile = File(File(projectsDir, sessionId), videoPath)
+                commitRecordedTake(
+                    sessionId,
+                    current.selectedPartId,
+                    if (videoFile.isFile) finished.copy(videoRelativePath = videoPath) else finished,
+                    timelineStartMs = punch,
+                )
+            }
+            pendingKeepState.value = null
+            punchStartMs = 0L
+            audio.disarm()
+            onLeft()
+        }
+    }
+
+    fun discardLiveAndLeave(onLeft: () -> Unit) {
+        viewModelScope.launch {
+            val finished = if (
+                audio.state.value.status == EngineStatus.RECORDING ||
+                audio.state.value.status == EngineStatus.COUNTING
+            ) {
+                audio.stopTake()
+            } else {
+                pendingKeepState.value?.finished
+            }
+            if (finished != null) {
+                withContext(Dispatchers.IO) {
+                    runCatching { File(File(projectsDir, sessionId), finished.relativePath).delete() }
+                    runCatching {
+                        File(File(projectsDir, sessionId), SessionLayout.performanceVideo(finished.takeId)).delete()
+                    }
+                }
+            }
+            pendingKeepState.value = null
+            audio.disarm()
+            onLeft()
+        }
+    }
+
+    fun onCaptureFailed() {
+        stageNote = "Could not open the microphone on this device."
+        uiState.value = uiState.value?.copy(stageNote = stageNote)
     }
 
     fun stopAudioOnExit() {
@@ -672,6 +825,8 @@ class StudioViewModel(
                     name = displayName,
                     durationText = formatDuration(clip.durationMs),
                     relativePath = clip.sourceRelativePath,
+                    durationMs = clip.durationMs,
+                    loops = BackingPlayback.shouldLoop(clip.sourceRelativePath, clip.durationMs),
                 )
             }
             audio.arm(
@@ -747,6 +902,8 @@ class StudioViewModel(
                 scaleMode = document.musical.mode ?: ScaleMode.MAJOR,
                 headphoneFx = headphoneFx,
                 heardLyric = heardLyric,
+                monitorReverb = document.chain.reverb,
+                monitorDelay = document.chain.delay,
             )
         }
     }
@@ -856,9 +1013,16 @@ fun StudioRoute(
         ),
     )
     val ui by viewModel.ui.collectAsState()
+    val pendingKeep by viewModel.pendingKeep.collectAsState()
     val playingRelativePath by remember(viewModel.audio) {
         viewModel.audio.state.map { it.playingRelativePath }.distinctUntilChanged()
     }.collectAsState(initial = null)
+    val liveTakeId by remember(viewModel.audio) {
+        viewModel.audio.state.map { it.liveTakeId }.distinctUntilChanged()
+    }.collectAsState(initial = null)
+    val captureFailed by remember(viewModel.audio) {
+        viewModel.audio.state.map { it.captureFailed }.distinctUntilChanged()
+    }.collectAsState(initial = false)
     val state = ui ?: return
     val context = LocalContext.current
     val copy = LocalAppCopy.current
@@ -884,6 +1048,7 @@ fun StudioRoute(
     var pendingDeleteTake by remember { mutableStateOf<String?>(null) }
 
     BackHandler(isCapturing) { confirmLeave = true }
+    BackHandler(pendingKeep != null && !isCapturing) { }
 
     DisposableEffect(isCapturing) {
         view.keepScreenOn = isCapturing
@@ -928,12 +1093,16 @@ fun StudioRoute(
         }
     }
 
-    LaunchedEffect(isLiveTake, state.kind) {
-        if (state.kind == SessionKind.VIDEO && isLiveTake) {
+    LaunchedEffect(captureFailed) {
+        if (captureFailed) viewModel.onCaptureFailed()
+    }
+
+    LaunchedEffect(isCapturing, liveTakeId, state.kind) {
+        if (state.kind == SessionKind.VIDEO && isCapturing && !liveTakeId.isNullOrBlank()) {
             cameraController.start(
-                File(File(projectsDir, sessionId), SessionLayout.performanceVideo()),
+                File(File(projectsDir, sessionId), SessionLayout.performanceVideo(liveTakeId!!)),
             )
-        } else {
+        } else if (!isCapturing) {
             cameraController.stop()
         }
     }
@@ -1005,18 +1174,46 @@ fun StudioRoute(
         AlertDialog(
             onDismissRequest = { confirmLeave = false },
             title = { Text(copy.keepTake) },
-            text = { Text(copy.rightsNote) },
+            text = { Text(copy.keepTakeBody) },
             confirmButton = {
                 Button(
                     onClick = {
                         confirmLeave = false
-                        viewModel.toggleRecording()
-                        onBack()
+                        viewModel.keepLiveAndLeave(onBack)
                     },
-                ) { Text(copy.stop) }
+                ) { Text(copy.keepTake) }
             },
             dismissButton = {
-                TextButton(onClick = { confirmLeave = false }) { Text(copy.stayOnStage) }
+                Row {
+                    TextButton(
+                        onClick = {
+                            confirmLeave = false
+                            viewModel.discardLiveAndLeave(onBack)
+                        },
+                    ) { Text(copy.discardTake) }
+                    TextButton(onClick = { confirmLeave = false }) { Text(copy.stayOnStage) }
+                }
+            },
+        )
+    }
+    pendingKeep?.let { pending ->
+        AlertDialog(
+            onDismissRequest = { },
+            title = { Text(copy.keepTake) },
+            text = {
+                Text(
+                    if (pending.silent) {
+                        "That pass was almost silent. ${copy.keepTakeBody}"
+                    } else {
+                        copy.keepTakeBody
+                    },
+                )
+            },
+            confirmButton = {
+                Button(onClick = viewModel::keepPendingTake) { Text(copy.keepTake) }
+            },
+            dismissButton = {
+                TextButton(onClick = viewModel::discardPendingTake) { Text(copy.discardTake) }
             },
         )
     }
@@ -1105,10 +1302,18 @@ fun StudioRoute(
                 style = MaterialTheme.typography.titleLarge,
             )
             listeningRoutes.forEach { route ->
+                val (accent, wash) = when (route) {
+                    GearRoute.WIRED -> SwaraColors.Teal to SwaraColors.TealWash
+                    GearRoute.USB -> SwaraColors.Gold to SwaraColors.GoldWash
+                    GearRoute.BLUETOOTH -> SwaraColors.Rose to SwaraColors.RoseWash
+                    else -> SwaraColors.Gold to SwaraColors.GoldWash
+                }
                 ChoiceCard(
                     title = route.label(),
                     body = listeningCopy(route),
                     selected = state.route == route,
+                    accent = accent,
+                    accentWash = wash,
                     onClick = {
                         viewModel.selectRoute(route)
                         pickingRoute = false
@@ -1494,12 +1699,21 @@ fun StudioRoute(
         )
 
         if (state.takes.isNotEmpty()) {
-            Text(text = "Recorded takes", style = MaterialTheme.typography.titleLarge)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(text = "Recorded takes", style = MaterialTheme.typography.titleLarge)
+                TextButton(onClick = viewModel::hearPreferredWithTrack) {
+                    Text(copy.hearWithTrack)
+                }
+            }
             state.takes.forEach { take ->
                 TakeEditCard(
                     take = take,
                     isPlaying = playingRelativePath == take.relativePath,
-                    onPlay = { viewModel.togglePlayClip(take.relativePath) },
+                    onPlay = { viewModel.togglePlayTake(take) },
                     onDelete = { pendingDeleteTake = take.id },
                     onPrefer = { viewModel.preferTake(take.id) },
                     onTrim = { start, duration -> viewModel.trimTake(take.id, start, duration) },
@@ -1571,6 +1785,8 @@ fun StudioRoute(
         audioStateFlow = viewModel.audio.state,
         stageNote = state.stageNote,
         copy = copy,
+        lines = state.lines,
+        activeLine = state.activeLine,
         onSingClick = { currentlyRecording ->
             if (currentlyRecording) {
                 viewModel.toggleRecording()
@@ -1608,6 +1824,8 @@ private fun RecordingControlBar(
     audioStateFlow: StateFlow<AudioEngineState>,
     stageNote: String?,
     copy: AppCopy,
+    lines: List<LyricLine>,
+    activeLine: Int,
     onSingClick: (Boolean) -> Unit,
 ) {
     val isRecording by remember(audioStateFlow) {
@@ -1623,6 +1841,54 @@ private fun RecordingControlBar(
     val elapsedSeconds by remember(audioStateFlow) {
         audioStateFlow.map { it.elapsedMs / 1000L }.distinctUntilChanged()
     }.collectAsState(initial = 0L)
+    val micHealth by remember(audioStateFlow) {
+        audioStateFlow.map { engine ->
+            when {
+                engine.status != EngineStatus.RECORDING -> 0
+                engine.peak > 0.89f -> 2
+                engine.maxPeak < 0.012f && engine.elapsedMs > 2000L -> 1
+                else -> 0
+            }
+        }.distinctUntilChanged()
+    }.collectAsState(initial = 0)
+
+    Column(Modifier.fillMaxWidth()) {
+    if (isRecording && lines.isNotEmpty()) {
+        val windowEnd = minOf(lines.lastIndex, maxOf(2, activeLine + 1))
+        val windowStart = (windowEnd - 2).coerceAtLeast(0)
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 4.dp),
+            shape = RoundedCornerShape(16.dp),
+            color = SwaraColors.Card,
+            border = BorderStroke(1.dp, SwaraColors.Teal),
+        ) {
+            Column(Modifier.padding(horizontal = 14.dp, vertical = 8.dp)) {
+                for (index in windowStart..windowEnd) {
+                    val line = lines[index]
+                    val active = index == activeLine
+                    Text(
+                        text = line.text,
+                        maxLines = if (active) 2 else 1,
+                        overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.bodyLarge.copy(
+                            fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal,
+                        ),
+                        color = if (active) SwaraColors.Teal else SwaraColors.Muted,
+                    )
+                }
+            }
+        }
+    }
+    if (micHealth > 0) {
+        Text(
+            text = if (micHealth == 2) copy.micHot else copy.micSilent,
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp),
+            style = MaterialTheme.typography.bodyMedium,
+            color = SwaraColors.Clay,
+        )
+    }
 
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -1681,6 +1947,7 @@ private fun RecordingControlBar(
                 )
             }
         }
+    }
     }
 }
 

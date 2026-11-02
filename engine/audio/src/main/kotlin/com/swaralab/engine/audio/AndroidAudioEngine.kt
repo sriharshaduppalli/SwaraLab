@@ -71,6 +71,18 @@ class AndroidAudioEngine(
     private var mediaPlayer: MediaPlayer? = null
 
     @Volatile
+    private var backingPlayer: MediaPlayer? = null
+
+    @Volatile
+    private var playbackStopJob: Job? = null
+
+    @Volatile
+    private var pcmTrack: AudioTrack? = null
+
+    @Volatile
+    private var pcmPlayJob: Job? = null
+
+    @Volatile
     private var armedRequest: ArmRequest? = null
 
     @Volatile
@@ -157,6 +169,9 @@ class AndroidAudioEngine(
                     elapsedMs = 0L,
                     playingRelativePath = null,
                     metrics = VocalMetrics(),
+                    liveTakeId = takeId,
+                    captureFailed = false,
+                    maxPeak = 0f,
                 )
             }
             countInJob = scope.launch {
@@ -172,7 +187,14 @@ class AndroidAudioEngine(
                         beginCapture(opened, active, request)
                     } else {
                         activeTake = null
-                        states.update { it.copy(status = EngineStatus.ARMED, countInBeat = 0) }
+                        states.update {
+                            it.copy(
+                                status = EngineStatus.ARMED,
+                                countInBeat = 0,
+                                liveTakeId = null,
+                                captureFailed = true,
+                            )
+                        }
                     }
                 }
             }
@@ -230,7 +252,7 @@ class AndroidAudioEngine(
                 runCatching {
                     mediaPlayer = MediaPlayer().apply {
                         setDataSource(backingFile.absolutePath)
-                        isLooping = true
+                        isLooping = request?.loopBacking == true
                         prepare()
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                             val pitch = Math.pow(2.0, (request?.keyShiftSemitones ?: 0) / 12.0).toFloat()
@@ -253,6 +275,9 @@ class AndroidAudioEngine(
                 elapsedMs = 0L,
                 playingRelativePath = null,
                 metrics = VocalMetrics(),
+                liveTakeId = active.takeId,
+                captureFailed = false,
+                maxPeak = 0f,
             )
         }
         active.startedAtMs = System.currentTimeMillis()
@@ -278,7 +303,7 @@ class AndroidAudioEngine(
                 val byteBuffer = ByteBuffer.allocate(shorts.size * 2).order(ByteOrder.LITTLE_ENDIAN)
                 val delayLine = FloatArray(((sampleRate * 0.18).toInt()).coerceAtLeast(1))
                 val monitorState = intArrayOf(0)
-                val reverbState = floatArrayOf(0f)
+                val reverbState = floatArrayOf(0f, 0f, 0f)
                 val isEmulator = Build.FINGERPRINT.contains("generic", ignoreCase = true) ||
                     Build.MODEL.contains("sdk", ignoreCase = true) ||
                     Build.HARDWARE.contains("ranchu", ignoreCase = true)
@@ -357,6 +382,8 @@ class AndroidAudioEngine(
                                         peak = normalizedPeak,
                                         elapsedMs = elapsed,
                                         metrics = updatedMetrics,
+                                        liveTakeId = active.takeId,
+                                        maxPeak = active.maxPeak,
                                     )
                                 }
                             }
@@ -390,6 +417,7 @@ class AndroidAudioEngine(
                 peak = 0f,
                 elapsedMs = 0L,
                 countInBeat = 0,
+                liveTakeId = null,
             )
         }
         if (active == null || !active.wavFile.isFile || active.totalAudioBytes <= 0L) {
@@ -400,41 +428,168 @@ class AndroidAudioEngine(
             relativePath = active.relativePath,
             durationMs = durationMs,
             peak = active.maxPeak,
+            takeId = active.takeId,
         )
     }
 
-    override suspend fun playClip(sessionId: String, relativePath: String, loop: Boolean): Unit = withContext(Dispatchers.IO) {
-        if (states.value.playingRelativePath == relativePath) {
+    override suspend fun playClip(
+        sessionId: String,
+        relativePath: String,
+        loop: Boolean,
+        startMs: Long,
+        durationMs: Long,
+    ): Unit = withContext(Dispatchers.IO) {
+        if (states.value.playingRelativePath == relativePath && backingPlayer == null) {
+            stopPlayback()
+            return@withContext
+        }
+        openPlayer(
+            sessionId = sessionId,
+            relativePath = relativePath,
+            loop = loop,
+            startMs = startMs,
+            durationMs = durationMs,
+            asBacking = false,
+        )
+    }
+
+    override suspend fun playWithBacking(
+        sessionId: String,
+        vocalRelativePath: String,
+        vocalStartMs: Long,
+        vocalDurationMs: Long,
+        backingRelativePath: String?,
+        backingStartMs: Long,
+        loopBacking: Boolean,
+    ): Unit = withContext(Dispatchers.IO) {
+        if (states.value.playingRelativePath == vocalRelativePath) {
+            stopPlayback()
+            return@withContext
+        }
+        openPlayer(
+            sessionId = sessionId,
+            relativePath = vocalRelativePath,
+            loop = false,
+            startMs = vocalStartMs,
+            durationMs = vocalDurationMs,
+            asBacking = false,
+        )
+        if (!backingRelativePath.isNullOrBlank()) {
+            openPlayer(
+                sessionId = sessionId,
+                relativePath = backingRelativePath,
+                loop = loopBacking,
+                startMs = backingStartMs,
+                durationMs = 0L,
+                asBacking = true,
+            )
+        }
+    }
+
+    override suspend fun playPcm(
+        sessionId: String,
+        left: FloatArray,
+        right: FloatArray,
+        sampleRate: Int,
+        loop: Boolean,
+    ): Unit = withContext(Dispatchers.IO) {
+        if (states.value.playingRelativePath == "preview-mix") {
             stopPlayback()
             return@withContext
         }
         stopPlayback()
+        val frames = minOf(left.size, right.size)
+        if (frames < 64) return@withContext
+        val track = AudioTrack.Builder()
+            .setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                    .build(),
+            )
+            .setAudioFormat(
+                AudioFormat.Builder()
+                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                    .setSampleRate(sampleRate)
+                    .setChannelMask(AudioFormat.CHANNEL_OUT_STEREO)
+                    .build(),
+            )
+            .setTransferMode(AudioTrack.MODE_STREAM)
+            .setBufferSizeInBytes(sampleRate)
+            .build()
+        pcmTrack = track
+        track.play()
+        states.update { it.copy(playingRelativePath = "preview-mix") }
+        pcmPlayJob = scope.launch {
+            val chunk = ShortArray(2048)
+            do {
+                var offset = 0
+                while (isActive && pcmTrack === track && offset < frames) {
+                    val count = minOf(1024, frames - offset)
+                    var w = 0
+                    for (i in 0 until count) {
+                        chunk[w++] = (left[offset + i].coerceIn(-1f, 1f) * 22000f).toInt()
+                            .coerceIn(-32767, 32767).toShort()
+                        chunk[w++] = (right[offset + i].coerceIn(-1f, 1f) * 22000f).toInt()
+                            .coerceIn(-32767, 32767).toShort()
+                    }
+                    track.write(chunk, 0, w)
+                    offset += count
+                }
+            } while (loop && isActive && pcmTrack === track)
+            if (pcmTrack === track) stopPlayback()
+        }
+    }
+
+    private fun openPlayer(
+        sessionId: String,
+        relativePath: String,
+        loop: Boolean,
+        startMs: Long,
+        durationMs: Long,
+        asBacking: Boolean,
+    ) {
+        if (!asBacking) {
+            stopPlayback()
+        } else {
+            releaseBackingPlayer()
+        }
         val file = File(File(projectsRoot, sessionId), relativePath)
-        if (!file.isFile) return@withContext
+        if (!file.isFile) return
         runCatching {
             val player = MediaPlayer().apply {
                 setDataSource(file.absolutePath)
                 isLooping = loop
-                if (!loop) {
-                    setOnCompletionListener {
-                        stopPlayback()
-                    }
+                if (!loop && !asBacking) {
+                    setOnCompletionListener { stopPlayback() }
                 }
                 prepare()
+                val seek = startMs.toInt().coerceAtLeast(0)
+                if (seek > 0) seekTo(seek)
                 start()
             }
-            mediaPlayer = player
-            states.update {
-                it.copy(
-                    playingRelativePath = relativePath,
-                    metrics = VocalMetrics(),
-                )
-            }
-            if (file.extension.equals("wav", ignoreCase = true) && file.length() > 44L) {
-                startWavPlaybackMeter(file, player)
+            if (asBacking) {
+                backingPlayer = player
+            } else {
+                mediaPlayer = player
+                states.update {
+                    it.copy(
+                        playingRelativePath = relativePath,
+                        metrics = VocalMetrics(),
+                    )
+                }
+                if (durationMs > 0L && !loop) {
+                    playbackStopJob?.cancel()
+                    playbackStopJob = scope.launch {
+                        delay(durationMs)
+                        if (mediaPlayer === player) stopPlayback()
+                    }
+                }
+                if (file.extension.equals("wav", ignoreCase = true) && file.length() > 44L) {
+                    startWavPlaybackMeter(file, player)
+                }
             }
         }
-        Unit
     }
 
     private fun startWavPlaybackMeter(wavFile: File, player: MediaPlayer) {
@@ -475,15 +630,35 @@ class AndroidAudioEngine(
     }
 
     override fun stopPlayback() {
+        playbackStopJob?.cancel()
+        playbackStopJob = null
         playbackMeterJob?.cancel()
         playbackMeterJob = null
+        pcmPlayJob?.cancel()
+        pcmPlayJob = null
+        val pcm = pcmTrack
+        pcmTrack = null
+        if (pcm != null) {
+            runCatching { pcm.stop() }
+            runCatching { pcm.release() }
+        }
         val player = mediaPlayer
         mediaPlayer = null
         if (player != null) {
             runCatching { player.stop() }
             runCatching { player.release() }
         }
+        releaseBackingPlayer()
         states.update { it.copy(playingRelativePath = null) }
+    }
+
+    private fun releaseBackingPlayer() {
+        val player = backingPlayer
+        backingPlayer = null
+        if (player != null) {
+            runCatching { player.stop() }
+            runCatching { player.release() }
+        }
     }
 
     override fun disarm() {
@@ -577,14 +752,24 @@ class AndroidAudioEngine(
         var rev = reverbState[0]
         val delayMix = delay * 0.35f
         val reverbMix = reverb * 0.28f
+        val hp = 0.986f
+        var prevX = reverbState.getOrElse(1) { 0f }
+        var prevY = reverbState.getOrElse(2) { 0f }
         for (i in 0 until length) {
-            val dry = shorts[i] / 32768f
+            val incoming = shorts[i] / 32768f
+            val dry = hp * (prevY + incoming - prevX)
+            prevX = incoming
+            prevY = dry
             val delayed = delayLine[idx]
             delayLine[idx] = dry + delayed * 0.25f
             idx = (idx + 1) % delayLine.size
             rev = rev * 0.92f + dry * 0.08f
             val mixed = (dry + delayed * delayMix + rev * reverbMix).coerceIn(-1f, 1f)
             wet.putShort((mixed * 22000f).toInt().coerceIn(-32767, 32767).toShort())
+        }
+        if (reverbState.size >= 3) {
+            reverbState[1] = prevX
+            reverbState[2] = prevY
         }
         delayIndex[0] = idx
         reverbState[0] = rev

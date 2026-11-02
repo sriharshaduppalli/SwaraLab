@@ -130,8 +130,11 @@ class SessionReducer(
             label = command.label,
             preferred = true,
             sourceDurationMs = command.durationMs,
+            videoRelativePath = command.videoRelativePath,
         )
-        val existing = track.clips.map { it.copy(preferred = false) }
+        val existing = track.clips.map { clip ->
+            if (command.keepPreviousPreferred && clip.preferred) clip else clip.copy(preferred = false)
+        }
         return SessionEdit.Applied(
             document.copy(
                 tracks = document.tracks.replaceAt(index, track.copy(clips = existing + clip)),

@@ -15,15 +15,23 @@ import kotlin.math.min
  * smaller file on WhatsApp, Reels, and Shorts.
  */
 object CompactAudioEncoder {
-    fun writeAacM4a(outFile: File, sampleRate: Int, samples: FloatArray): Boolean = runCatching {
-        if (samples.isEmpty()) return false
+    fun writeAacM4a(
+        outFile: File,
+        sampleRate: Int,
+        left: FloatArray,
+        right: FloatArray? = null,
+    ): Boolean = runCatching {
+        if (left.isEmpty()) return false
         outFile.parentFile?.mkdirs()
         if (outFile.exists()) outFile.delete()
+        val stereo = right != null && right.isNotEmpty()
+        val channels = if (stereo) 2 else 1
+        val frames = if (stereo) min(left.size, right!!.size) else left.size
 
-        val format = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, sampleRate, 1).apply {
+        val format = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, sampleRate, channels).apply {
             setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
-            setInteger(MediaFormat.KEY_BIT_RATE, 128_000)
-            setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 16_384)
+            setInteger(MediaFormat.KEY_BIT_RATE, if (stereo) 256_000 else 192_000)
+            setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 32_768)
         }
         val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
         codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
@@ -36,7 +44,7 @@ object CompactAudioEncoder {
         var offset = 0
         var inputDone = false
         var outputDone = false
-        val pcmChunk = ShortArray(1024)
+        val pcmChunk = ShortArray(1024 * channels)
 
         while (!outputDone) {
             if (!inputDone) {
@@ -45,22 +53,27 @@ object CompactAudioEncoder {
                     val inBuf = codec.getInputBuffer(inIndex)
                     if (inBuf != null) {
                         inBuf.clear()
-                        val remaining = samples.size - offset
+                        val remaining = frames - offset
                         if (remaining <= 0) {
                             codec.queueInputBuffer(inIndex, 0, 0, 0L, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
                             inputDone = true
                         } else {
-                            val count = min(pcmChunk.size, remaining)
+                            val count = min(1024, remaining)
+                            var w = 0
                             for (i in 0 until count) {
-                                val pcm = (samples[offset + i].coerceIn(-1f, 1f) * 32767f).toInt()
-                                pcmChunk[i] = max(Short.MIN_VALUE.toInt(), min(Short.MAX_VALUE.toInt(), pcm)).toShort()
+                                val l = (left[offset + i].coerceIn(-1f, 1f) * 32767f).toInt()
+                                pcmChunk[w++] = max(Short.MIN_VALUE.toInt(), min(Short.MAX_VALUE.toInt(), l)).toShort()
+                                if (stereo) {
+                                    val r = (right!![offset + i].coerceIn(-1f, 1f) * 32767f).toInt()
+                                    pcmChunk[w++] = max(Short.MIN_VALUE.toInt(), min(Short.MAX_VALUE.toInt(), r)).toShort()
+                                }
                             }
-                            val bytes = ByteBuffer.allocate(count * 2).order(ByteOrder.LITTLE_ENDIAN)
-                            for (i in 0 until count) bytes.putShort(pcmChunk[i])
+                            val bytes = ByteBuffer.allocate(w * 2).order(ByteOrder.LITTLE_ENDIAN)
+                            for (i in 0 until w) bytes.putShort(pcmChunk[i])
                             bytes.flip()
                             inBuf.put(bytes)
                             val pts = (offset * 1_000_000L) / sampleRate
-                            codec.queueInputBuffer(inIndex, 0, count * 2, pts, 0)
+                            codec.queueInputBuffer(inIndex, 0, w * 2, pts, 0)
                             offset += count
                         }
                     }

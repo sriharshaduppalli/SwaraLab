@@ -69,6 +69,28 @@ class LyricsAndTakeUseCaseTest {
     }
 
     @Test
+    fun punchCommitKeepsTheFirstHalfAndBothPreferredClips() = runBlocking {
+        val (_, reducer) = testReducer()
+        val store = InMemorySessions()
+        val created = CreateSession(reducer, store)(SessionKind.SONG, "My Song")
+        val leadTrackId = created.tracks.first { it.role == TrackRole.LEAD }.id
+        val commit = CommitRecordedTake(reducer, store)
+        commit(created.id, leadTrackId, FinishedTake("media/takes/take-1.wav", 20_000L, 0.5f))
+        commit(
+            sessionId = created.id,
+            trackId = leadTrackId,
+            take = FinishedTake("media/takes/take-2.wav", 8_000L, 0.6f, videoRelativePath = "media/video/take-2.mp4"),
+            timelineStartMs = 8_000L,
+        )
+        val clips = LoadSession(store)(created.id)!!.tracks.first { it.id == leadTrackId }.clips
+        assertEquals(8_000L, clips.first().durationMs)
+        assertEquals(8_000L, clips.last().timelineStartMs)
+        assertTrue(clips.first().preferred)
+        assertTrue(clips.last().preferred)
+        assertEquals("media/video/take-2.mp4", clips.last().videoRelativePath)
+    }
+
+    @Test
     fun trimAndPreferKeepTheChosenPhraseInTheMix() = runBlocking {
         val (_, reducer) = testReducer()
         val store = InMemorySessions()

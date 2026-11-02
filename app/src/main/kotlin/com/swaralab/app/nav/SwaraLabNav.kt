@@ -79,10 +79,24 @@ fun SwaraLabNav(graph: SwaraLabGraph) {
                         WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom,
                     ),
                 ) {
-                    val colors = NavigationBarItemDefaults.colors(
+                    val tealNav = NavigationBarItemDefaults.colors(
                         selectedIconColor = SwaraColors.Teal,
                         selectedTextColor = SwaraColors.Teal,
                         indicatorColor = SwaraColors.TealWash,
+                        unselectedIconColor = SwaraColors.Muted,
+                        unselectedTextColor = SwaraColors.Muted,
+                    )
+                    val goldNav = NavigationBarItemDefaults.colors(
+                        selectedIconColor = SwaraColors.Gold,
+                        selectedTextColor = SwaraColors.Gold,
+                        indicatorColor = SwaraColors.GoldWash,
+                        unselectedIconColor = SwaraColors.Muted,
+                        unselectedTextColor = SwaraColors.Muted,
+                    )
+                    val roseNav = NavigationBarItemDefaults.colors(
+                        selectedIconColor = SwaraColors.Rose,
+                        selectedTextColor = SwaraColors.Rose,
+                        indicatorColor = SwaraColors.RoseWash,
                         unselectedIconColor = SwaraColors.Muted,
                         unselectedTextColor = SwaraColors.Muted,
                     )
@@ -95,9 +109,15 @@ fun SwaraLabNav(graph: SwaraLabGraph) {
                                 restoreState = true
                             }
                         },
-                        icon = { SwaraMarkIcon(SwaraMark.SING, route == Routes.HOME) },
+                        icon = {
+                            SwaraMarkIcon(
+                                SwaraMark.SING,
+                                route == Routes.HOME,
+                                selectedColor = SwaraColors.Teal,
+                            )
+                        },
                         label = { Text(copy.sing) },
-                        colors = colors,
+                        colors = tealNav,
                     )
                     NavigationBarItem(
                         selected = route == Routes.LIBRARY,
@@ -108,9 +128,15 @@ fun SwaraLabNav(graph: SwaraLabGraph) {
                                 restoreState = true
                             }
                         },
-                        icon = { SwaraMarkIcon(SwaraMark.SONGS, route == Routes.LIBRARY) },
+                        icon = {
+                            SwaraMarkIcon(
+                                SwaraMark.SONGS,
+                                route == Routes.LIBRARY,
+                                selectedColor = SwaraColors.Gold,
+                            )
+                        },
                         label = { Text(copy.songs) },
-                        colors = colors,
+                        colors = goldNav,
                     )
                     NavigationBarItem(
                         selected = route == Routes.ACCOUNT,
@@ -121,9 +147,15 @@ fun SwaraLabNav(graph: SwaraLabGraph) {
                                 restoreState = true
                             }
                         },
-                        icon = { SwaraMarkIcon(SwaraMark.PROFILE, route == Routes.ACCOUNT) },
+                        icon = {
+                            SwaraMarkIcon(
+                                SwaraMark.PROFILE,
+                                route == Routes.ACCOUNT,
+                                selectedColor = SwaraColors.Rose,
+                            )
+                        },
                         label = { Text(copy.profile) },
-                        colors = colors,
+                        colors = roseNav,
                     )
                 }
             }

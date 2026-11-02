@@ -45,6 +45,9 @@ data class AudioEngineState(
     val playingRelativePath: String? = null,
     val metrics: VocalMetrics = VocalMetrics(),
     val countInBeat: Int = 0,
+    val liveTakeId: String? = null,
+    val captureFailed: Boolean = false,
+    val maxPeak: Float = 0f,
 )
 
 data class ArmRequest(
@@ -62,6 +65,7 @@ data class ArmRequest(
     val monitorEnabled: Boolean = false,
     val monitorReverb: Float = 0f,
     val monitorDelay: Float = 0f,
+    val loopBacking: Boolean = false,
 )
 
 sealed interface TakeControl {
@@ -76,6 +80,8 @@ data class FinishedTake(
     val relativePath: String,
     val durationMs: Long,
     val peak: Float,
+    val takeId: String = relativePath.substringAfterLast('/').removeSuffix(".wav"),
+    val videoRelativePath: String? = null,
 )
 
 /**
@@ -91,7 +97,33 @@ interface AudioEngine {
 
     suspend fun stopTake(): FinishedTake?
 
-    suspend fun playClip(sessionId: String, relativePath: String, loop: Boolean = false) {}
+    suspend fun playClip(
+        sessionId: String,
+        relativePath: String,
+        loop: Boolean = false,
+        startMs: Long = 0L,
+        durationMs: Long = 0L,
+    ) {}
+
+    suspend fun playWithBacking(
+        sessionId: String,
+        vocalRelativePath: String,
+        vocalStartMs: Long = 0L,
+        vocalDurationMs: Long = 0L,
+        backingRelativePath: String? = null,
+        backingStartMs: Long = 0L,
+        loopBacking: Boolean = false,
+    ) {
+        playClip(sessionId, vocalRelativePath, loop = false, startMs = vocalStartMs, durationMs = vocalDurationMs)
+    }
+
+    suspend fun playPcm(
+        sessionId: String,
+        left: FloatArray,
+        right: FloatArray = left,
+        sampleRate: Int = 48_000,
+        loop: Boolean = false,
+    ) {}
 
     fun stopPlayback() {}
 
@@ -122,9 +154,17 @@ sealed interface ExportResult {
     data class Waiting(val message: String) : ExportResult
 }
 
+data class MixPreview(
+    val left: FloatArray,
+    val right: FloatArray,
+    val sampleRate: Int = 48_000,
+)
+
 /**
  * Offline mix and mux. Review playback and export share this graph so the file matches the preview.
  */
 interface RenderEngine {
     suspend fun export(document: SessionDocument, request: ExportRequest): ExportResult
+
+    suspend fun preview(document: SessionDocument, maxDurationMs: Long = 12_000L): MixPreview? = null
 }

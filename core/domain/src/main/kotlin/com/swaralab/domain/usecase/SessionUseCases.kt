@@ -113,6 +113,12 @@ class UpdateVocalChain(
         compression: Float,
         denoise: Float,
         backingDuckDb: Float,
+        deEss: Float? = null,
+        tone: Float? = null,
+        pitchCorrect: Float? = null,
+        fadeOut: Float? = null,
+        thicken: Float? = null,
+        effectAmount: Float? = null,
     ): SessionEdit {
         val document = sessions.load(id) ?: return SessionEdit.Rejected(RejectReason.UNKNOWN_SESSION)
         val updated = document.chain.copy(
@@ -122,6 +128,12 @@ class UpdateVocalChain(
             compression = compression.coerceIn(0f, 1f),
             denoise = denoise.coerceIn(0f, 1f),
             backingDuckDb = backingDuckDb.coerceIn(0f, 12f),
+            deEss = (deEss ?: document.chain.deEss).coerceIn(0f, 1f),
+            tone = (tone ?: document.chain.tone).coerceIn(-1f, 1f),
+            pitchCorrect = (pitchCorrect ?: document.chain.pitchCorrect).coerceIn(0f, 1f),
+            fadeOut = (fadeOut ?: document.chain.fadeOut).coerceIn(0f, 1f),
+            thicken = (thicken ?: document.chain.thicken).coerceIn(0f, 1f),
+            effectAmount = (effectAmount ?: document.chain.effectAmount).coerceIn(0f, 1f),
         )
         return applyAndSave(reducer, sessions, document, SessionCommand.SetVocalChain(updated))
     }
@@ -226,17 +238,38 @@ class CommitRecordedTake(
             ?: voiceTracks.firstOrNull()
             ?: return SessionEdit.Rejected(RejectReason.UNKNOWN_TRACK)
         val takeNumber = targetTrack.clips.size + 1
-        val punchLabel = if (timelineStartMs > 0L) " · punch" else ""
+        val punchMs = timelineStartMs.coerceAtLeast(0L)
+        val punchLabel = if (punchMs > 0L) " · punch" else ""
+        var working = document
+        val previous = targetTrack.clips.lastOrNull { it.preferred } ?: targetTrack.clips.lastOrNull()
+        if (punchMs > 0L && previous != null) {
+            val keepMs = (punchMs - previous.timelineStartMs).coerceAtLeast(1L)
+            val trimmed = applyAndSave(
+                reducer,
+                sessions,
+                working,
+                SessionCommand.TrimClip(
+                    clipId = previous.id,
+                    sourceInMs = previous.sourceInMs,
+                    durationMs = keepMs.coerceAtMost(previous.durationMs.coerceAtLeast(1L)),
+                ),
+            )
+            if (trimmed is SessionEdit.Applied) {
+                working = trimmed.document
+            }
+        }
         return applyAndSave(
             reducer,
             sessions,
-            document,
+            working,
             SessionCommand.CommitTake(
                 trackId = targetTrack.id,
                 relativePath = take.relativePath,
                 durationMs = take.durationMs.coerceAtLeast(1L),
-                timelineStartMs = timelineStartMs.coerceAtLeast(0L),
+                timelineStartMs = punchMs,
                 label = "${targetTrack.name} · Take $takeNumber$punchLabel",
+                keepPreviousPreferred = punchMs > 0L,
+                videoRelativePath = take.videoRelativePath,
             ),
         )
     }
