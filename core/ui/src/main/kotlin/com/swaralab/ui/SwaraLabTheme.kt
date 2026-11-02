@@ -40,7 +40,11 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.res.imageResource
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
@@ -662,6 +666,8 @@ fun Modifier.studioAtmosphere(
     val goldWash = SwaraColors.GoldWash
     val glow = SwaraColors.Glow
     val roseWash = SwaraColors.RoseWash
+    val resources = LocalContext.current.resources
+    val mark = remember { ImageBitmap.imageResource(resources, R.drawable.swaralab_mark) }
     drawBehind {
         drawRect(paper)
         val wash = when (room) {
@@ -710,6 +716,27 @@ fun Modifier.studioAtmosphere(
         if (dim) {
             drawRect(Color(0x99000000))
         }
+        val markAlpha = when {
+            dim -> 0.10f
+            room == BoothRoom.HOME -> 0.22f
+            room == BoothRoom.STAGE -> 0.14f
+            else -> 0.16f
+        }
+        val destW = (size.minDimension * if (room == BoothRoom.HOME) 0.58f else 0.46f)
+            .toInt()
+            .coerceAtLeast(1)
+        val destH = (destW * (mark.height.toFloat() / mark.width.toFloat()))
+            .toInt()
+            .coerceAtLeast(1)
+        val pad = 12.dp.toPx()
+        val x = (size.width - destW - pad).toInt().coerceAtLeast(0)
+        val y = (size.height - destH - 56.dp.toPx()).toInt().coerceAtLeast((size.height * 0.42f).toInt())
+        drawImage(
+            image = mark,
+            dstOffset = IntOffset(x, y),
+            dstSize = IntSize(destW, destH),
+            alpha = markAlpha,
+        )
     }
 }
 

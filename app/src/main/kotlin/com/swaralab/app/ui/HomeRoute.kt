@@ -2,6 +2,7 @@ package com.swaralab.app.ui
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -11,7 +12,12 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.res.painterResource
+import com.swaralab.ui.R as UiR
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -164,21 +170,32 @@ fun HomeRoute(
             shadowElevation = 2.dp,
             border = BorderStroke(1.dp, SwaraColors.Line),
         ) {
-            Column(Modifier.padding(horizontal = 20.dp, vertical = 18.dp)) {
-                Box(
-                    Modifier
-                        .padding(bottom = 10.dp)
-                        .width(36.dp)
-                        .height(4.dp)
-                        .background(SwaraColors.Teal, RoundedCornerShape(4.dp)),
+            Box(Modifier.fillMaxWidth()) {
+                Image(
+                    painter = painterResource(UiR.drawable.swaralab_mark),
+                    contentDescription = "SwaraLab",
+                    modifier = Modifier
+                        .align(Alignment.CenterEnd)
+                        .padding(end = 8.dp)
+                        .size(72.dp)
+                        .alpha(0.28f),
                 )
-                SwaraWordmark()
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    text = copy.homeLine,
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = SwaraColors.Muted,
-                )
+                Column(Modifier.padding(horizontal = 20.dp, vertical = 18.dp)) {
+                    Box(
+                        Modifier
+                            .padding(bottom = 10.dp)
+                            .width(36.dp)
+                            .height(4.dp)
+                            .background(SwaraColors.Teal, RoundedCornerShape(4.dp)),
+                    )
+                    SwaraWordmark()
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = copy.homeLine,
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = SwaraColors.Muted,
+                    )
+                }
             }
         }
         Text(
