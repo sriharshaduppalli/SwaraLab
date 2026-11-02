@@ -862,7 +862,7 @@ class StudioViewModel(
                         durationText = buildString {
                             append(formatDuration(clip.durationMs))
                             if (clip.timelineStartMs > 0L) append(" · from ${formatDuration(clip.timelineStartMs)}")
-                            if (clip.preferred) append(" · in mix")
+                            if (clip.preferred) append(" · this take")
                         },
                         relativePath = clip.sourceRelativePath,
                         sourceInMs = clip.sourceInMs,
@@ -954,10 +954,10 @@ class StudioViewModel(
 }
 
 private val studioPresets = listOf(
-    VocalPreset.RAW,
     VocalPreset.CLOSE,
     VocalPreset.STAGE,
     VocalPreset.RADIO,
+    VocalPreset.RAW,
 )
 
 private val listeningRoutes = listOf(
@@ -1097,12 +1097,12 @@ fun StudioRoute(
         if (captureFailed) viewModel.onCaptureFailed()
     }
 
-    LaunchedEffect(isCapturing, liveTakeId, state.kind) {
-        if (state.kind == SessionKind.VIDEO && isCapturing && !liveTakeId.isNullOrBlank()) {
+    LaunchedEffect(isLiveTake, liveTakeId, state.kind) {
+        if (state.kind == SessionKind.VIDEO && isLiveTake && !liveTakeId.isNullOrBlank()) {
             cameraController.start(
                 File(File(projectsDir, sessionId), SessionLayout.performanceVideo(liveTakeId!!)),
             )
-        } else if (!isCapturing) {
+        } else if (!isLiveTake) {
             cameraController.stop()
         }
     }
@@ -1727,7 +1727,7 @@ fun StudioRoute(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(text = "Voice style", style = MaterialTheme.typography.titleLarge)
+            Text(text = "Mix for this take", style = MaterialTheme.typography.titleLarge)
             TextButton(onClick = onPublish) {
                 Text("FX sliders")
             }
@@ -2355,8 +2355,8 @@ private fun VerticalVideoStageCard(
                 Column(Modifier.weight(1f)) {
                     Text(text = "9:16 Vertical Video Stage", style = MaterialTheme.typography.titleLarge)
                     Text(
-                        text = "Live safe-frame preview with synced lyrics overlay",
-                        maxLines = 1,
+                        text = "1080p 9:16. Picture starts with your take, not the count-in.",
+                        maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
                         style = MaterialTheme.typography.bodyMedium,
                         color = SwaraColors.Muted,
@@ -2639,11 +2639,21 @@ private fun TakeEditCard(
                 }
             }
             Text(
-                text = "Keep ${formatDuration(startMs.toLong())}–${formatDuration(endMs.toLong())}",
+                text = "Keep ${formatDuration(startMs.toLong())} to ${formatDuration(endMs.toLong())}",
                 style = MaterialTheme.typography.bodyMedium,
                 color = SwaraColors.Muted,
             )
+            Text(
+                text = "Cut the start",
+                style = MaterialTheme.typography.bodyMedium,
+                color = SwaraColors.Gold,
+            )
             Slider(value = startMs, onValueChange = { startMs = it.coerceIn(0f, endMs - 250f) }, valueRange = 0f..maxMs)
+            Text(
+                text = "Cut the end",
+                style = MaterialTheme.typography.bodyMedium,
+                color = SwaraColors.Gold,
+            )
             Slider(value = endMs, onValueChange = { endMs = it.coerceIn(startMs + 250f, maxMs) }, valueRange = 0f..maxMs)
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(
@@ -2652,12 +2662,12 @@ private fun TakeEditCard(
                         val duration = (endMs.toLong() - start).coerceAtLeast(250L)
                         onTrim(start, duration)
                     },
-                ) { Text("Trim") }
+                ) { Text("Keep this section") }
                 OutlinedButton(onClick = { onPunch(startMs.toLong()) }) { Text("Punch from here") }
                 FilterChip(
                     selected = take.preferred,
                     onClick = onPrefer,
-                    label = { Text(if (take.preferred) "In mix" else "Use in mix") },
+                    label = { Text(if (take.preferred) "This take" else "Use this take") },
                 )
             }
         }
@@ -2794,19 +2804,19 @@ private fun GearRoute.label(): String = when (this) {
 }
 
 private fun VocalPreset.label(): String = when (this) {
-    VocalPreset.RAW -> "Natural"
-    VocalPreset.CLOSE -> "Studio"
-    VocalPreset.STAGE -> "Hall"
-    VocalPreset.RADIO -> "Bright"
+    VocalPreset.RAW -> "Keep dry"
+    VocalPreset.CLOSE -> "Voice forward"
+    VocalPreset.STAGE -> "Soft hall"
+    VocalPreset.RADIO -> "Phone room clean"
     VocalPreset.CUSTOM -> "Custom"
 }
 
 private fun VocalPreset.description(): String = when (this) {
-    VocalPreset.RAW -> "Your dry voice with no room added."
-    VocalPreset.CLOSE -> "Warm and close, like a booth."
-    VocalPreset.STAGE -> "A fuller room around long notes."
-    VocalPreset.RADIO -> "Clear and forward on a phone speaker."
-    VocalPreset.CUSTOM -> "Custom reverb, echo, warmth, and ducking sliders active."
+    VocalPreset.RAW -> "Your take, cleaned a little. No extra room."
+    VocalPreset.CLOSE -> "Voice sits in front of the track. Small room, presence up."
+    VocalPreset.STAGE -> "A soft hall behind long notes. Gentle, not a cave."
+    VocalPreset.RADIO -> "Phone-speaker clean: noise down, esses tamed, music ducks."
+    VocalPreset.CUSTOM -> "Your sliders on Mix & Save. Tap to open them."
 }
 
 private fun listeningCopy(output: GearRoute): String = when (output) {

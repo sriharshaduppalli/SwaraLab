@@ -5,6 +5,8 @@ import android.view.ViewGroup
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
+import android.util.Range
+import androidx.camera.video.FallbackStrategy
 import androidx.camera.video.FileOutputOptions
 import androidx.camera.video.Quality
 import androidx.camera.video.QualitySelector
@@ -49,9 +51,17 @@ class SingerCameraController(
                     it.surfaceProvider = previewView.surfaceProvider
                 }
                 val recorder = Recorder.Builder()
-                    .setQualitySelector(QualitySelector.from(Quality.HD))
+                    .setQualitySelector(
+                        QualitySelector.fromOrderedList(
+                            listOf(Quality.FHD, Quality.HD, Quality.SD),
+                            FallbackStrategy.lowerQualityOrHigherThan(Quality.SD),
+                        ),
+                    )
                     .build()
-                videoCapture = VideoCapture.withOutput(recorder)
+                videoCapture = VideoCapture.Builder(recorder)
+                    .setTargetFrameRate(Range(24, 30))
+                    .setVideoStabilizationEnabled(true)
+                    .build()
                 runCatching {
                     provider.unbindAll()
                     provider.bindToLifecycle(

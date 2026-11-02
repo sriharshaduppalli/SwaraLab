@@ -20,34 +20,37 @@ import kotlin.math.roundToInt
  * Reels / Shorts / WhatsApp safe frame stored on the session.
  */
 object LyricVideoRenderer {
-    private const val WIDTH = 720
-    private const val HEIGHT = 1280
-    private const val FPS = 10
+    private const val WIDTH = 1080
+    private const val HEIGHT = 1920
+    private const val FPS = 24
 
     fun writeMp4(
         outFile: File,
         document: SessionDocument,
-        samples: FloatArray,
+        left: FloatArray,
+        right: FloatArray = left,
         sampleRate: Int,
     ): Boolean = runCatching {
-        if (samples.isEmpty()) return false
+        if (left.isEmpty()) return false
         outFile.parentFile?.mkdirs()
         if (outFile.exists()) outFile.delete()
 
-        val durationUs = (samples.size * 1_000_000L) / sampleRate
+        val frames = min(left.size, right.size)
+        val durationUs = (frames * 1_000_000L) / sampleRate
         val frameCount = ((durationUs * FPS) / 1_000_000L).toInt().coerceAtLeast(1)
         val audioOk = CompactAudioEncoder.writeAacM4a(
             File(outFile.parentFile, "${outFile.nameWithoutExtension}-audio.m4a"),
             sampleRate,
-            samples,
+            left,
+            right,
         )
         if (!audioOk) return false
 
         val videoFormat = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, WIDTH, HEIGHT).apply {
             setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar)
-            setInteger(MediaFormat.KEY_BIT_RATE, 2_400_000)
+            setInteger(MediaFormat.KEY_BIT_RATE, 8_000_000)
             setInteger(MediaFormat.KEY_FRAME_RATE, FPS)
-            setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
+            setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 2)
         }
         val encoder = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
         encoder.configure(videoFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
@@ -149,16 +152,16 @@ object LyricVideoRenderer {
 
         val titlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = 0xFFFFFFFF.toInt()
-            textSize = 36f
+            textSize = 54f
             isFakeBoldText = true
         }
-        canvas.drawText(document.title.take(28), left + 16f, top + 48f, titlePaint)
+        canvas.drawText(document.title.take(28), left + 24f, top + 72f, titlePaint)
 
         val badgePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = 0xFFF4C430.toInt()
-            textSize = 22f
+            textSize = 32f
         }
-        canvas.drawText(document.publish.target.name, right - 160f, top + 48f, badgePaint)
+        canvas.drawText(document.publish.target.name, right - 240f, top + 72f, badgePaint)
 
         val lines = document.lyrics.lines
         val active = if (lines.any { it.startMs != null }) {
@@ -168,18 +171,18 @@ object LyricVideoRenderer {
         }
         val lyricPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = 0xFFFFFFFF.toInt()
-            textSize = 42f
+            textSize = 64f
             isFakeBoldText = true
         }
         val nextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = 0xB3FFFFFF.toInt()
-            textSize = 28f
+            textSize = 40f
         }
         val currentText = lines.getOrNull(active)?.text ?: "Sing with SwaraLab"
         val nextText = lines.getOrNull(active + 1)?.text.orEmpty()
-        drawWrapped(canvas, currentText, left + 20f, bottom - 150f, right - left - 40f, lyricPaint)
+        drawWrapped(canvas, currentText, left + 28f, bottom - 220f, right - left - 56f, lyricPaint)
         if (nextText.isNotBlank()) {
-            drawWrapped(canvas, nextText, left + 20f, bottom - 70f, right - left - 40f, nextPaint)
+            drawWrapped(canvas, nextText, left + 28f, bottom - 100f, right - left - 56f, nextPaint)
         }
 
         val pulse = 0.18f + 0.08f * kotlin.math.sin(timeMs / 180.0).toFloat()

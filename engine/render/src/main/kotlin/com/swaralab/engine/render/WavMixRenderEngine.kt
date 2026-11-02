@@ -115,7 +115,14 @@ class WavMixRenderEngine(
                     val fileName = "$safeTitle-lyric-card.mp4"
                     val relativePath = SessionLayout.exportFile(fileName)
                     val outFile = File(sessionFolder, relativePath).also { it.parentFile?.mkdirs() }
-                    if (LyricVideoRenderer.writeMp4(outFile, document, downmix, targetSampleRate)) {
+                    if (LyricVideoRenderer.writeMp4(
+                            outFile,
+                            document,
+                            stereo.left,
+                            stereo.right,
+                            targetSampleRate,
+                        )
+                    ) {
                         ExportResult.Written(
                             relativePath = relativePath,
                             durationMs = durationMs,

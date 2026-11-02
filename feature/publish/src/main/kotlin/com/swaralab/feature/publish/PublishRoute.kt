@@ -45,6 +45,7 @@ import com.swaralab.domain.model.PublishTarget
 import com.swaralab.domain.model.TrackRole
 import com.swaralab.domain.model.VocalChain
 import com.swaralab.domain.model.VocalPreset
+import com.swaralab.domain.model.withTarget
 import com.swaralab.domain.port.AudioEngine
 import com.swaralab.domain.layout.SessionLayout
 import com.swaralab.domain.port.ExportKind
@@ -230,6 +231,12 @@ class PublishViewModel(
         }
     }
 
+    fun hearShareLoudness() {
+        val current = uiState.value ?: return
+        uiState.value = current.copy(previewDry = false)
+        playCurrentPreview()
+    }
+
     fun playCurrentPreview() {
         viewModelScope.launch {
             val snap = uiState.value ?: return@launch
@@ -248,10 +255,17 @@ class PublishViewModel(
                 )
             } else {
                 val document = loadSession(sessionId) ?: return@launch
-                val preview = render.preview(document.copy(chain = snap.chain), 12_000L)
+                val aimed = document.copy(
+                    chain = snap.chain,
+                    publish = document.publish.withTarget(snap.target),
+                )
+                val preview = render.preview(aimed, 12_000L)
                 if (preview != null) {
                     audio.playPcm(sessionId, preview.left, preview.right, preview.sampleRate, loop = true)
-                    uiState.value = uiState.value?.copy(status = "Previewing the mix. Toggle Dry to hear the raw take.")
+                    val lufs = aimed.publish.loudnessLufs.toInt()
+                    uiState.value = uiState.value?.copy(
+                        status = "This is ${snap.target.label()} loudness ($lufs LUFS). Share will sound this loud.",
+                    )
                 }
             }
         }
@@ -705,6 +719,9 @@ fun PublishRoute(
                     TextButton(onClick = viewModel::playCurrentPreview) {
                         Text("Hear loop")
                     }
+                    TextButton(onClick = viewModel::hearShareLoudness) {
+                        Text("Hear as ${state.target.label()}")
+                    }
                 }
                 EffectSliderRow(
                     label = "Tone (warm ↔ air)",
@@ -962,10 +979,10 @@ private fun mimeFor(path: String): String = when (path.substringAfterLast('.').l
 }
 
 private fun shareCopy(target: PublishTarget): String = when (target) {
-    PublishTarget.REELS -> "Vertical 9:16 framing, with lyrics kept clear of Reels buttons."
-    PublishTarget.SHORTS -> "Vertical 9:16 framing, with lyrics kept clear of Shorts buttons."
-    PublishTarget.WHATSAPP -> "Leveled for WhatsApp status and voice/audio sharing."
-    PublishTarget.SQUARE -> "Square 1:1 feed post framing."
-    PublishTarget.LANDSCAPE -> "Wide 16:9 framing."
-    PublishTarget.MASTER -> "Full vocal + backing master WAV with your custom sliders applied."
+    PublishTarget.REELS -> "Vertical 9:16. Leveled hot for Reels (−11 LUFS). Hear as Reels before you share."
+    PublishTarget.SHORTS -> "Vertical 9:16. Leveled hot for Shorts (−11 LUFS). Hear as Shorts before you share."
+    PublishTarget.WHATSAPP -> "Quieter for chats and status (−16 LUFS). Hear as WhatsApp so it is not a surprise."
+    PublishTarget.SQUARE -> "Square 1:1 feed. Share loudness about −13 LUFS."
+    PublishTarget.LANDSCAPE -> "Wide 16:9. Share loudness about −13 LUFS."
+    PublishTarget.MASTER -> "Full vocal + backing WAV at −14 LUFS, the studio master."
 }

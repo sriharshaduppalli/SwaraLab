@@ -9,9 +9,12 @@ import com.swaralab.domain.model.MusicalSettings
 import com.swaralab.domain.model.SessionKind
 import com.swaralab.domain.model.SongwriterNotes
 import com.swaralab.domain.model.TrackRole
+import com.swaralab.domain.model.PublishSettings
+import com.swaralab.domain.model.PublishTarget
 import com.swaralab.domain.model.VocalChain
 import com.swaralab.domain.model.VocalPreset
 import com.swaralab.domain.model.recordingSnapshot
+import com.swaralab.domain.model.withTarget
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -169,5 +172,25 @@ class SessionReducerTest {
         assertEquals(-1f, lead.gainDb)
         assertEquals(3f, lead.monitorGainDb)
         assertTrue(lead.solo)
+    }
+
+    @Test
+    fun shareTargetsSetSingerLoudness() {
+        assertEquals(-11f, PublishSettings().withTarget(PublishTarget.REELS).loudnessLufs)
+        assertEquals(-11f, PublishSettings().withTarget(PublishTarget.SHORTS).loudnessLufs)
+        assertEquals(-16f, PublishSettings().withTarget(PublishTarget.WHATSAPP).loudnessLufs)
+        assertEquals(-14f, PublishSettings().withTarget(PublishTarget.MASTER).loudnessLufs)
+        assertEquals(-13f, PublishSettings().withTarget(PublishTarget.SQUARE).loudnessLufs)
+    }
+
+    @Test
+    fun singerPresetsStayNamedOnTheChain() {
+        val voice = VocalChain.preset(VocalPreset.CLOSE)
+        val hall = VocalChain.preset(VocalPreset.STAGE)
+        val phone = VocalChain.preset(VocalPreset.RADIO)
+        assertTrue(voice.eqPresenceDb > hall.eqPresenceDb)
+        assertTrue(hall.reverb > voice.reverb)
+        assertTrue(phone.denoise > voice.denoise)
+        assertTrue(phone.backingDuckDb > voice.backingDuckDb)
     }
 }
