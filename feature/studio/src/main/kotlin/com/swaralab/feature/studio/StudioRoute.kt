@@ -9,6 +9,11 @@ import android.provider.OpenableColumns
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Arrangement
@@ -60,6 +65,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
@@ -89,6 +96,7 @@ import com.swaralab.domain.audio.MusicalKeys
 import com.swaralab.domain.policy.MonitorDecision
 import com.swaralab.domain.audio.VocalMetrics
 import com.swaralab.domain.audio.VocalSignalAnalyzer
+import com.swaralab.domain.audio.WavPeaks
 import com.swaralab.domain.model.ScaleMode
 import com.swaralab.domain.layout.SessionLayout
 import com.swaralab.domain.model.GearRoute
@@ -104,6 +112,8 @@ import com.swaralab.domain.port.AudioEngine
 import com.swaralab.domain.port.AudioEngineState
 import com.swaralab.domain.port.EngineStatus
 import com.swaralab.domain.port.FinishedTake
+import com.swaralab.domain.port.InstrumentalResult
+import com.swaralab.domain.port.RenderEngine
 import com.swaralab.domain.port.TakeControl
 import com.swaralab.domain.usecase.AddVoicePart
 import com.swaralab.domain.usecase.CommitRecordedTake
@@ -119,6 +129,7 @@ import com.swaralab.domain.usecase.UpdateMusicalSettings
 import com.swaralab.domain.usecase.UpdatePracticeStats
 import com.swaralab.domain.usecase.UpdatePublishSettings
 import com.swaralab.domain.usecase.UpdateVocalPreset
+import com.swaralab.ui.BoothRoom
 import com.swaralab.ui.ChoiceCard
 import com.swaralab.ui.AppCopy
 import com.swaralab.ui.LocalAppCopy
@@ -166,6 +177,8 @@ data class BackingTrackUi(
     val relativePath: String,
     val durationMs: Long,
     val loops: Boolean,
+    val canMakeInstrumental: Boolean = false,
+    val isInstrumental: Boolean = false,
 )
 
 data class PendingKeepTake(
@@ -223,6 +236,7 @@ class StudioViewModel(
     private val preferRecordedClip: PreferRecordedClip,
     private val updatePractice: UpdatePracticeStats,
     val audio: AudioEngine,
+    private val render: RenderEngine,
 ) : ViewModel() {
     private val uiState = MutableStateFlow<StudioUi?>(null)
     val ui: StateFlow<StudioUi?> = uiState.asStateFlow()
@@ -232,6 +246,7 @@ class StudioViewModel(
     private var selectedPartId: String? = null
     private var stageNote: String? = null
     private var punchStartMs: Long = 0L
+    private var instrumentalBusy = false
     private var lyricFollow = LiveLyricFollower.State()
     private var heardLyric: String? = null
     private var headphoneFx = true
@@ -466,11 +481,53 @@ class StudioViewModel(
             }
             if (durationMs != null) {
                 importBackingTrack(sessionId, relativePath, durationMs, fileName, rightsConfirmed = true)
-                stageNote = "Backing track loaded ($fileName). It will play while you sing."
+                stageNote = "Backing track loaded ($fileName). Tap Music only to hear it without the original lyrics, then Sing."
                 refresh()
             } else {
                 stageNote = "Could not load that audio file."
                 uiState.value = uiState.value?.copy(stageNote = stageNote)
+            }
+        }
+    }
+
+    fun makeInstrumental() {
+        val backing = uiState.value?.backing ?: return
+        if (instrumentalBusy || !backing.canMakeInstrumental) return
+        instrumentalBusy = true
+        viewModelScope.launch {
+            try {
+                audio.stopPlayback()
+                stageNote = "Making music only… removing the sung lyrics from this song."
+                uiState.value = uiState.value?.copy(stageNote = stageNote)
+                val source = File(File(projectsDir, sessionId), backing.relativePath)
+                if (!source.isFile) {
+                    stageNote = "That song file is missing. Import the track again."
+                    uiState.value = uiState.value?.copy(stageNote = stageNote)
+                    return@launch
+                }
+                val clean = backing.name
+                    .replace(Regex("[^a-zA-Z0-9._-]"), "_")
+                    .ifBlank { "song" }
+                val relativePath = SessionLayout.backingFile("Instrumental_$clean.wav")
+                val destination = File(File(projectsDir, sessionId), relativePath)
+                when (val result = render.writeInstrumental(source, destination)) {
+                    is InstrumentalResult.Written -> {
+                        val label = "Music only · ${backing.name}"
+                        importBackingTrack(sessionId, relativePath, result.durationMs, label, rightsConfirmed = true)
+                        stageNote = if (result.mostlyMono) {
+                            "This file is mostly one channel, so some words may still be heard. Preview it, then Sing."
+                        } else {
+                            "Music only is ready — the sung lyrics are pulled off the track. Hear it, then add your voice."
+                        }
+                        refresh()
+                    }
+                    is InstrumentalResult.Failed -> {
+                        stageNote = result.message
+                        uiState.value = uiState.value?.copy(stageNote = stageNote)
+                    }
+                }
+            } finally {
+                instrumentalBusy = false
             }
         }
     }
@@ -833,6 +890,9 @@ class StudioViewModel(
                     relativePath = clip.sourceRelativePath,
                     durationMs = clip.durationMs,
                     loops = BackingPlayback.shouldLoop(clip.sourceRelativePath, clip.durationMs),
+                    canMakeInstrumental = !BackingPlayback.shouldLoop(clip.sourceRelativePath, clip.durationMs) &&
+                        !isMusicOnlyBacking(displayName, clip.sourceRelativePath),
+                    isInstrumental = isMusicOnlyBacking(displayName, clip.sourceRelativePath),
                 )
             }
             audio.arm(
@@ -933,6 +993,7 @@ class StudioViewModel(
             preferRecordedClip: PreferRecordedClip,
             updatePractice: UpdatePracticeStats,
             audio: AudioEngine,
+            render: RenderEngine,
         ): ViewModelProvider.Factory = viewModelFactory {
             initializer {
                 StudioViewModel(
@@ -953,6 +1014,7 @@ class StudioViewModel(
                     preferRecordedClip = preferRecordedClip,
                     updatePractice = updatePractice,
                     audio = audio,
+                    render = render,
                 )
             }
         }
@@ -993,6 +1055,7 @@ fun StudioRoute(
     preferRecordedClip: PreferRecordedClip,
     updatePractice: UpdatePracticeStats,
     audio: AudioEngine,
+    render: RenderEngine,
     onBack: () -> Unit,
     onPublish: () -> Unit,
     modifier: Modifier = Modifier,
@@ -1016,6 +1079,7 @@ fun StudioRoute(
             preferRecordedClip = preferRecordedClip,
             updatePractice = updatePractice,
             audio = audio,
+            render = render,
         ),
     )
     val ui by viewModel.ui.collectAsState()
@@ -1241,7 +1305,21 @@ fun StudioRoute(
         )
     }
 
-    Column(modifier.fillMaxSize().studioAtmosphere()) {
+    Column(modifier.fillMaxSize().studioAtmosphere(BoothRoom.STAGE, dim = isCapturing)) {
+    if (isCapturing) {
+        StageLightsPane(
+            modifier = Modifier.weight(1f),
+            kind = state.kind,
+            title = state.title,
+            lines = state.lines,
+            activeLine = state.activeLine,
+            publishTarget = state.publishTarget,
+            cameraController = cameraController,
+            audioStateFlow = viewModel.audio.state,
+            onSelectLine = viewModel::selectLine,
+            onSelectTarget = viewModel::selectVideoTarget,
+        )
+    } else {
     Column(
         Modifier
             .weight(1f)
@@ -1465,11 +1543,26 @@ fun StudioRoute(
                         text = if (backing != null) {
                             "${backing.name} · ${backing.durationText}"
                         } else {
-                            "Optional: upload an instrumental or karaoke track from your phone."
+                            "Upload a song you have the right to use. Then tap Music only to play it without the original lyrics."
                         },
                         style = MaterialTheme.typography.bodyMedium,
                         color = SwaraColors.Muted,
                     )
+                    if (backing?.isInstrumental == true) {
+                        Text(
+                            text = "Playing music only — original lyrics removed. Sing your part on this.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = SwaraColors.Teal,
+                        )
+                    }
+                    if (backing?.canMakeInstrumental == true) {
+                        Button(
+                            onClick = viewModel::makeInstrumental,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text("Music only — remove lyrics")
+                        }
+                    }
                     if (backing == null) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Checkbox(checked = rightsOk, onCheckedChange = { rightsOk = it })
@@ -1802,6 +1895,7 @@ fun StudioRoute(
             state.takes.forEach { take ->
                 TakeEditCard(
                     take = take,
+                    wavFile = File(File(projectsDir, sessionId), take.relativePath),
                     isPlaying = playingRelativePath == take.relativePath,
                     onPlay = { viewModel.togglePlayTake(take) },
                     onDelete = { pendingDeleteTake = take.id },
@@ -1841,6 +1935,7 @@ fun StudioRoute(
                 Text(copy.mixSave)
             }
         }
+    }
     }
     RecordingControlBar(
         audioStateFlow = viewModel.audio.state,
@@ -1913,35 +2008,18 @@ private fun RecordingControlBar(
         }.distinctUntilChanged()
     }.collectAsState(initial = 0)
 
+    val recPulse = rememberInfiniteTransition(label = "recPulse")
+    val pulseScale by recPulse.animateFloat(
+        initialValue = 1f,
+        targetValue = 1.08f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(700),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "recPulseScale",
+    )
+
     Column(Modifier.fillMaxWidth()) {
-    if (isRecording && lines.isNotEmpty()) {
-        val windowEnd = minOf(lines.lastIndex, maxOf(2, activeLine + 1))
-        val windowStart = (windowEnd - 2).coerceAtLeast(0)
-        Surface(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 4.dp),
-            shape = RoundedCornerShape(16.dp),
-            color = SwaraColors.Card,
-            border = BorderStroke(1.dp, SwaraColors.Teal),
-        ) {
-            Column(Modifier.padding(horizontal = 14.dp, vertical = 8.dp)) {
-                for (index in windowStart..windowEnd) {
-                    val line = lines[index]
-                    val active = index == activeLine
-                    Text(
-                        text = line.text,
-                        maxLines = if (active) 2 else 1,
-                        overflow = TextOverflow.Ellipsis,
-                        style = MaterialTheme.typography.bodyLarge.copy(
-                            fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal,
-                        ),
-                        color = if (active) SwaraColors.Teal else SwaraColors.Muted,
-                    )
-                }
-            }
-        }
-    }
     if (micHealth > 0) {
         Text(
             text = if (micHealth == 2) copy.micHot else copy.micSilent,
@@ -1968,6 +2046,7 @@ private fun RecordingControlBar(
                 onClick = { onSingClick(isRecording) },
                 modifier = Modifier
                     .size(72.dp)
+                    .scale(if (isRecording && !isCounting) pulseScale else 1f)
                     .clip(CircleShape),
                 color = if (isRecording) SwaraColors.Clay else SwaraColors.Teal,
                 shape = CircleShape,
@@ -2384,6 +2463,154 @@ private val videoFrameTargets = listOf(
     PublishTarget.WHATSAPP,
 )
 
+@Composable
+private fun StageLightsPane(
+    kind: SessionKind,
+    title: String,
+    lines: List<LyricLine>,
+    activeLine: Int,
+    publishTarget: PublishTarget,
+    cameraController: SingerCameraController,
+    audioStateFlow: StateFlow<AudioEngineState>,
+    onSelectLine: (Int) -> Unit,
+    onSelectTarget: (PublishTarget) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier
+            .fillMaxSize()
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        StagePitchChip(audioStateFlow)
+        if (kind == SessionKind.VIDEO) {
+            VerticalVideoStageCard(
+                title = title,
+                target = publishTarget,
+                activeLyric = lines.getOrNull(activeLine)?.text.orEmpty(),
+                nextLyric = lines.getOrNull(activeLine + 1)?.text.orEmpty(),
+                audioStateFlow = audioStateFlow,
+                cameraController = cameraController,
+                onSelectTarget = onSelectTarget,
+                expanded = true,
+                modifier = Modifier.weight(1f),
+            )
+        } else {
+            LyricStagePane(
+                lines = lines,
+                activeLine = activeLine,
+                onSelectLine = onSelectLine,
+                modifier = Modifier.weight(1f),
+            )
+        }
+    }
+}
+
+@Composable
+private fun LyricStagePane(
+    lines: List<LyricLine>,
+    activeLine: Int,
+    onSelectLine: (Int) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val previous = lines.getOrNull(activeLine - 1)
+    val current = lines.getOrNull(activeLine)
+    val next = lines.getOrNull(activeLine + 1)
+    Surface(
+        modifier = modifier.fillMaxSize(),
+        shape = RoundedCornerShape(24.dp),
+        color = Color(0xCC0A1214),
+        border = BorderStroke(1.dp, SwaraColors.Teal.copy(alpha = 0.45f)),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 22.dp, vertical = 28.dp),
+            verticalArrangement = Arrangement.SpaceEvenly,
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            if (previous != null) {
+                Surface(
+                    onClick = { onSelectLine(activeLine - 1) },
+                    color = Color.Transparent,
+                ) {
+                    Text(
+                        text = previous.text,
+                        style = MaterialTheme.typography.titleLarge,
+                        color = Color.White.copy(alpha = 0.42f),
+                        textAlign = TextAlign.Center,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            Surface(
+                onClick = { if (current != null) onSelectLine(activeLine) },
+                color = Color.Transparent,
+            ) {
+                Text(
+                    text = current?.text ?: "Sing. The words can wait until after this take.",
+                    style = MaterialTheme.typography.displayMedium,
+                    color = SwaraColors.Teal,
+                    textAlign = TextAlign.Center,
+                    maxLines = 4,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            if (next != null) {
+                Surface(
+                    onClick = { onSelectLine(activeLine + 1) },
+                    color = Color.Transparent,
+                ) {
+                    Text(
+                        text = next.text,
+                        style = MaterialTheme.typography.titleLarge.copy(lineHeight = 28.sp),
+                        color = Color.White.copy(alpha = 0.55f),
+                        textAlign = TextAlign.Center,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun StagePitchChip(audioStateFlow: StateFlow<AudioEngineState>) {
+    var note by remember { mutableStateOf("LISTEN") }
+    var tuning by remember { mutableStateOf("Hold the note you want") }
+    LaunchedEffect(audioStateFlow) {
+        while (true) {
+            val metrics = audioStateFlow.value.metrics
+            if (metrics.pitchHz > 0f) {
+                note = "${metrics.noteName} · ${metrics.swaraName}"
+                tuning = when {
+                    kotlin.math.abs(metrics.centsOffset) <= 12 -> "In tune"
+                    metrics.centsOffset < 0 -> "A little low"
+                    else -> "A little high"
+                }
+            }
+            delay(380L)
+        }
+    }
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        color = Color(0x990A1214),
+        border = BorderStroke(1.dp, SwaraColors.Teal.copy(alpha = 0.4f)),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(text = note, style = MaterialTheme.typography.titleMedium, color = SwaraColors.Teal)
+            Text(text = tuning, style = MaterialTheme.typography.bodyMedium, color = Color.White.copy(alpha = 0.72f))
+        }
+    }
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun VerticalVideoStageCard(
@@ -2394,20 +2621,25 @@ private fun VerticalVideoStageCard(
     audioStateFlow: StateFlow<AudioEngineState>,
     cameraController: SingerCameraController,
     onSelectTarget: (PublishTarget) -> Unit,
+    expanded: Boolean = false,
+    modifier: Modifier = Modifier,
 ) {
     val audioState = audioStateFlow.collectAsState()
     val effectiveTarget = if (target in videoFrameTargets) target else PublishTarget.REELS
 
     Surface(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = if (expanded) modifier.fillMaxSize() else modifier.fillMaxWidth(),
         shape = RoundedCornerShape(22.dp),
-        color = SwaraColors.Card,
-        border = BorderStroke(1.dp, SwaraColors.Line),
+        color = if (expanded) Color.Transparent else SwaraColors.Card,
+        border = if (expanded) null else BorderStroke(1.dp, SwaraColors.Line),
     ) {
         Column(
-            modifier = Modifier.padding(18.dp),
+            modifier = Modifier
+                .then(if (expanded) Modifier.fillMaxSize() else Modifier)
+                .padding(if (expanded) 0.dp else 18.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
+            if (!expanded) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -2442,11 +2674,12 @@ private fun VerticalVideoStageCard(
                     )
                 }
             }
+            }
 
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(320.dp),
+                    .then(if (expanded) Modifier.weight(1f, fill = true) else Modifier.height(320.dp)),
                 contentAlignment = Alignment.Center,
             ) {
             Surface(
@@ -2519,6 +2752,11 @@ private fun VerticalVideoStageCard(
             }
         }
     }
+}
+
+private fun isMusicOnlyBacking(name: String, relativePath: String): Boolean {
+    val text = "$name $relativePath".lowercase()
+    return text.contains("instrumental") || text.contains("music only")
 }
 
 private fun formatDuration(durationMs: Long): String {
@@ -2658,10 +2896,51 @@ private fun MusicalSetupCard(
     }
 }
 
+@Composable
+private fun TakeWaveform(
+    peaks: FloatArray,
+    startFraction: Float,
+    endFraction: Float,
+    playing: Boolean,
+) {
+    Canvas(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(56.dp)
+            .clip(RoundedCornerShape(10.dp)),
+    ) {
+        drawRect(SwaraColors.Paper)
+        val keepLeft = size.width * startFraction
+        val keepRight = size.width * endFraction
+        drawRect(
+            color = SwaraColors.Teal.copy(alpha = if (playing) 0.22f else 0.14f),
+            topLeft = Offset(keepLeft, 0f),
+            size = Size((keepRight - keepLeft).coerceAtLeast(1f), size.height),
+        )
+        val step = size.width / peaks.size.coerceAtLeast(1).toFloat()
+        val mid = size.height / 2f
+        peaks.forEachIndexed { index, peak ->
+            val x = index * step + step / 2f
+            val half = (peak.coerceIn(0.06f, 1f) * size.height * 0.42f)
+            val inside = x in keepLeft..keepRight
+            drawLine(
+                color = if (inside) SwaraColors.Teal else SwaraColors.Muted.copy(alpha = 0.35f),
+                start = Offset(x, mid - half),
+                end = Offset(x, mid + half),
+                strokeWidth = (step * 0.62f).coerceIn(1.5.dp.toPx(), 4.dp.toPx()),
+                cap = StrokeCap.Round,
+            )
+        }
+        drawLine(SwaraColors.Gold, Offset(keepLeft, 4.dp.toPx()), Offset(keepLeft, size.height - 4.dp.toPx()), 2.dp.toPx())
+        drawLine(SwaraColors.Gold, Offset(keepRight, 4.dp.toPx()), Offset(keepRight, size.height - 4.dp.toPx()), 2.dp.toPx())
+    }
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun TakeEditCard(
     take: RecordedTakeUi,
+    wavFile: File,
     isPlaying: Boolean,
     onPlay: () -> Unit,
     onDelete: () -> Unit,
@@ -2674,6 +2953,10 @@ private fun TakeEditCard(
         mutableStateOf((take.sourceInMs + take.durationMs).toFloat())
     }
     val maxMs = take.sourceDurationMs.toFloat().coerceAtLeast(1f)
+    var peaks by remember(take.id, wavFile.path) { mutableStateOf(FloatArray(0)) }
+    LaunchedEffect(take.id, wavFile.path) {
+        peaks = withContext(Dispatchers.IO) { WavPeaks.fromFile(wavFile) }
+    }
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp),
@@ -2704,6 +2987,14 @@ private fun TakeEditCard(
                 style = MaterialTheme.typography.bodyMedium,
                 color = SwaraColors.Muted,
             )
+            if (peaks.isNotEmpty()) {
+                TakeWaveform(
+                    peaks = peaks,
+                    startFraction = (startMs / maxMs).coerceIn(0f, 1f),
+                    endFraction = (endMs / maxMs).coerceIn(0f, 1f),
+                    playing = isPlaying,
+                )
+            }
             Text(
                 text = "Cut the start",
                 style = MaterialTheme.typography.bodyMedium,

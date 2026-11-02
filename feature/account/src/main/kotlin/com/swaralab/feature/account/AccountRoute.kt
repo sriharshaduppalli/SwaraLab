@@ -40,11 +40,12 @@ import com.swaralab.domain.usecase.RegisterAccount
 import com.swaralab.domain.usecase.SignIn
 import com.swaralab.domain.usecase.SignOut
 import com.swaralab.ui.AppLanguage
+import com.swaralab.ui.BoothRoom
 import com.swaralab.ui.LocalAppCopy
 import com.swaralab.ui.PageHero
 import com.swaralab.ui.SwaraColors
 import com.swaralab.ui.SwaraThemeId
-import com.swaralab.ui.ThemePickCard
+import com.swaralab.ui.ThemeSwatchGrid
 import com.swaralab.ui.studioAtmosphere
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -182,7 +183,7 @@ fun AccountRoute(
     Column(
         modifier
             .fillMaxSize()
-            .studioAtmosphere()
+            .studioAtmosphere(BoothRoom.PROFILE)
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp, vertical = 28.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -212,15 +213,11 @@ fun AccountRoute(
             text = copy.appTheme,
             style = MaterialTheme.typography.titleMedium,
         )
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            SwaraThemeId.entries.forEach { theme ->
-                ThemePickCard(
-                    theme = theme,
-                    selected = theme == themeId,
-                    onClick = { onTheme(theme) },
-                )
-            }
-        }
+        ThemeSwatchGrid(selected = themeId, onSelect = onTheme)
+        Text(
+            text = "Account on this phone",
+            style = MaterialTheme.typography.titleMedium,
+        )
         if (signedIn != null) {
             Text(text = signedIn.displayName, style = MaterialTheme.typography.titleLarge)
             Text(

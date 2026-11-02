@@ -347,13 +347,19 @@ fun SwaraLabTheme(
             extraLarge = RoundedCornerShape(28.dp),
         ),
         typography = Typography(
+            displayMedium = base.displayMedium.copy(
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 40.sp,
+                lineHeight = 48.sp,
+                letterSpacing = (-0.8).sp,
+            ),
             headlineLarge = base.headlineLarge.copy(
                 fontWeight = FontWeight.SemiBold,
                 fontSize = 34.sp,
                 letterSpacing = (-0.6).sp,
             ),
             titleLarge = base.titleLarge.copy(fontWeight = FontWeight.SemiBold, letterSpacing = (-0.2).sp),
-            bodyLarge = base.bodyLarge.copy(lineHeight = 24.sp),
+            bodyLarge = base.bodyLarge.copy(lineHeight = 26.sp),
         ),
         content = content,
     )
@@ -533,7 +539,124 @@ fun ThemePickCard(
     }
 }
 
-fun Modifier.studioAtmosphere(): Modifier = composed {
+enum class BoothRoom {
+    HOME,
+    SONGS,
+    STAGE,
+    MIX,
+    PROFILE,
+}
+
+@Composable
+fun ThemeSwatchGrid(
+    selected: SwaraThemeId,
+    onSelect: (SwaraThemeId) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        SwaraThemeId.entries.chunked(3).forEach { row ->
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                row.forEach { theme ->
+                    ThemeSwatchCell(
+                        theme = theme,
+                        selected = theme == selected,
+                        onClick = { onSelect(theme) },
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+                repeat(3 - row.size) {
+                    Spacer(Modifier.weight(1f))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ThemeSwatchCell(
+    theme: SwaraThemeId,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val preview = SwaraPalette.preview(theme)
+    Surface(
+        onClick = onClick,
+        modifier = modifier,
+        shape = RoundedCornerShape(16.dp),
+        color = preview.card,
+        border = BorderStroke(if (selected) 2.dp else 1.dp, if (selected) preview.teal else preview.line),
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 12.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Row(horizontalArrangement = Arrangement.spacedBy((-5).dp)) {
+                listOf(preview.paper, preview.teal, preview.gold, preview.rose).forEach { swatch ->
+                    Box(
+                        Modifier
+                            .size(16.dp)
+                            .border(1.dp, preview.line, CircleShape)
+                            .background(swatch, CircleShape),
+                    )
+                }
+            }
+            Text(
+                text = theme.label,
+                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+                color = preview.ink,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+            )
+        }
+    }
+}
+
+@Composable
+fun CompactChoiceCard(
+    title: String,
+    body: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    accent: Color = SwaraColors.Teal,
+    accentWash: Color = SwaraColors.TealWash,
+) {
+    Surface(
+        onClick = onClick,
+        modifier = modifier,
+        shape = RoundedCornerShape(18.dp),
+        color = SwaraColors.Card,
+        tonalElevation = 1.dp,
+        shadowElevation = 1.dp,
+        border = BorderStroke(1.dp, accent.copy(alpha = 0.55f)),
+    ) {
+        Column(Modifier.padding(horizontal = 14.dp, vertical = 14.dp)) {
+            Box(
+                Modifier
+                    .width(22.dp)
+                    .height(3.dp)
+                    .background(accent, RoundedCornerShape(4.dp)),
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(text = title, style = MaterialTheme.typography.titleMedium, color = accent)
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = body,
+                style = MaterialTheme.typography.bodyMedium,
+                color = SwaraColors.Muted,
+                maxLines = 3,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+fun Modifier.studioAtmosphere(
+    room: BoothRoom = BoothRoom.HOME,
+    dim: Boolean = false,
+): Modifier = composed {
     val paper = SwaraColors.Paper
     val tealWash = SwaraColors.TealWash
     val goldWash = SwaraColors.GoldWash
@@ -541,24 +664,52 @@ fun Modifier.studioAtmosphere(): Modifier = composed {
     val roseWash = SwaraColors.RoseWash
     drawBehind {
         drawRect(paper)
-        drawRect(
-            brush = Brush.verticalGradient(
+        val wash = when (room) {
+            BoothRoom.HOME -> Brush.verticalGradient(
                 0f to tealWash.copy(alpha = 0.88f),
                 0.28f to goldWash.copy(alpha = 0.42f),
                 0.58f to paper,
                 1f to paper,
-            ),
-        )
+            )
+            BoothRoom.SONGS -> Brush.verticalGradient(
+                0f to goldWash.copy(alpha = 0.78f),
+                0.36f to paper,
+                1f to paper,
+            )
+            BoothRoom.STAGE -> Brush.verticalGradient(
+                0f to tealWash.copy(alpha = if (dim) 0.35f else 0.55f),
+                0.22f to paper,
+                1f to paper,
+            )
+            BoothRoom.MIX -> Brush.verticalGradient(
+                0f to tealWash.copy(alpha = 0.72f),
+                0.2f to roseWash.copy(alpha = 0.12f),
+                0.55f to paper,
+                1f to paper,
+            )
+            BoothRoom.PROFILE -> Brush.verticalGradient(
+                0f to roseWash.copy(alpha = 0.7f),
+                0.34f to goldWash.copy(alpha = 0.28f),
+                1f to paper,
+            )
+        }
+        drawRect(brush = wash)
+        val glowAlpha = if (dim) 0.18f else 1f
         drawCircle(
-            color = glow,
-            radius = size.minDimension * 0.62f,
+            color = glow.copy(alpha = glow.alpha * glowAlpha),
+            radius = size.minDimension * if (room == BoothRoom.STAGE) 0.48f else 0.62f,
             center = Offset(size.width * 0.94f, size.height * -0.02f),
         )
-        drawCircle(
-            color = roseWash.copy(alpha = 0.35f),
-            radius = size.minDimension * 0.34f,
-            center = Offset(size.width * 0.08f, size.height * 0.18f),
-        )
+        if (room != BoothRoom.MIX) {
+            drawCircle(
+                color = roseWash.copy(alpha = if (dim) 0.12f else 0.35f),
+                radius = size.minDimension * 0.34f,
+                center = Offset(size.width * 0.08f, size.height * 0.18f),
+            )
+        }
+        if (dim) {
+            drawRect(Color(0x99000000))
+        }
     }
 }
 

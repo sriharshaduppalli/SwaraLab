@@ -4,6 +4,8 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -20,6 +22,9 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
@@ -46,12 +51,15 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.swaralab.domain.model.SessionKind
+import com.swaralab.domain.usecase.CreateSession
 import com.swaralab.domain.usecase.DeleteSession
 import com.swaralab.domain.usecase.ListSessions
 import com.swaralab.session.SessionInvitePack
+import java.time.LocalTime
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
+import com.swaralab.ui.BoothRoom
 import com.swaralab.ui.LocalAppCopy
 import com.swaralab.ui.PageHero
 import com.swaralab.ui.SwaraColors
@@ -70,12 +78,14 @@ data class LibraryRow(
     val title: String,
     val detail: String,
     val kind: SessionKind,
+    val lastHeard: Boolean = false,
 )
 
 class LibraryViewModel(
     private val listSessions: ListSessions,
     private val deleteSession: DeleteSession,
     private val invitePack: SessionInvitePack,
+    private val createSession: CreateSession,
 ) : ViewModel() {
     private val rowsState = MutableStateFlow<List<LibraryRow>>(emptyList())
     val rows: StateFlow<List<LibraryRow>> = rowsState.asStateFlow()
@@ -85,7 +95,9 @@ class LibraryViewModel(
     fun refresh() {
         viewModelScope.launch {
             val format = DateTimeFormatter.ofLocalizedDate(FormatStyle.MEDIUM)
-            rowsState.value = listSessions().map { summary ->
+            val listed = listSessions()
+            val lastId = listed.maxByOrNull { it.updatedAtEpochMs }?.id
+            rowsState.value = listed.map { summary ->
                 val day = Instant.ofEpochMilli(summary.updatedAtEpochMs)
                     .atZone(ZoneId.systemDefault())
                     .format(format)
@@ -95,6 +107,7 @@ class LibraryViewModel(
                     title = summary.title,
                     detail = "${summary.kind.label()} · $takes · $day",
                     kind = summary.kind,
+                    lastHeard = summary.id == lastId,
                 )
             }
         }
@@ -130,13 +143,22 @@ class LibraryViewModel(
         }
     }
 
+    fun startSong(onOpened: (String) -> Unit) {
+        viewModelScope.launch {
+            val clock = LocalTime.now().format(DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT))
+            val document = createSession(SessionKind.SONG, "Song · $clock")
+            onOpened(document.id)
+        }
+    }
+
     companion object {
         fun factory(
             listSessions: ListSessions,
             deleteSession: DeleteSession,
             invitePack: SessionInvitePack,
+            createSession: CreateSession,
         ): ViewModelProvider.Factory = viewModelFactory {
-            initializer { LibraryViewModel(listSessions, deleteSession, invitePack) }
+            initializer { LibraryViewModel(listSessions, deleteSession, invitePack, createSession) }
         }
     }
 }
@@ -147,16 +169,18 @@ private fun SessionKind.label(): String = when (this) {
     SessionKind.VIDEO -> "Video"
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun LibraryRoute(
     listSessions: ListSessions,
     deleteSession: DeleteSession,
     invitePack: SessionInvitePack,
+    createSession: CreateSession,
     onOpen: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val viewModel: LibraryViewModel = viewModel(
-        factory = LibraryViewModel.factory(listSessions, deleteSession, invitePack),
+        factory = LibraryViewModel.factory(listSessions, deleteSession, invitePack, createSession),
     )
     val rows by viewModel.rows.collectAsState()
     val status by viewModel.status.collectAsState()
@@ -171,10 +195,14 @@ fun LibraryRoute(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
+    var kindFilter by remember { mutableStateOf<SessionKind?>(null) }
+    var menuFor by remember { mutableStateOf<String?>(null) }
+    val visible = if (kindFilter == null) rows else rows.filter { it.kind == kindFilter }
+
     Column(
         modifier
             .fillMaxSize()
-            .studioAtmosphere()
+            .studioAtmosphere(BoothRoom.SONGS)
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp, vertical = 28.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -184,6 +212,28 @@ fun LibraryRoute(
             body = "Open a song to sing, edit its lyrics, or listen back to takes.",
             accent = SwaraColors.Gold,
         )
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip(
+                selected = kindFilter == null,
+                onClick = { kindFilter = null },
+                label = { Text("All") },
+            )
+            FilterChip(
+                selected = kindFilter == SessionKind.SONG,
+                onClick = { kindFilter = SessionKind.SONG },
+                label = { Text("Songs") },
+            )
+            FilterChip(
+                selected = kindFilter == SessionKind.VIDEO,
+                onClick = { kindFilter = SessionKind.VIDEO },
+                label = { Text("Video") },
+            )
+            FilterChip(
+                selected = kindFilter == SessionKind.PRACTICE,
+                onClick = { kindFilter = SessionKind.PRACTICE },
+                label = { Text("Warm-up") },
+            )
+        }
         status?.let { message ->
             Text(
                 text = message,
@@ -217,14 +267,38 @@ fun LibraryRoute(
             Text("Open a friend's duet invite")
         }
         if (rows.isEmpty()) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(20.dp),
+                color = SwaraColors.Card,
+                border = BorderStroke(1.dp, SwaraColors.Gold),
+            ) {
+                Column(
+                    Modifier.padding(20.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Text("No songs yet", style = MaterialTheme.typography.titleLarge, color = SwaraColors.Ink)
+                    Text(
+                        text = "Start a song here. Your takes stay on this phone.",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = SwaraColors.Muted,
+                    )
+                    Button(
+                        onClick = { viewModel.startSong(onOpen) },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text("Start a song")
+                    }
+                }
+            }
+        } else if (visible.isEmpty()) {
             Text(
-                text = "No songs yet. Start one from ${copy.sing}.",
+                text = "Nothing in this filter yet.",
                 style = MaterialTheme.typography.bodyLarge,
                 color = SwaraColors.Muted,
-                modifier = Modifier.padding(top = 12.dp),
             )
         } else {
-            rows.forEach { row ->
+            visible.forEach { row ->
                 val accent = when (row.kind) {
                     SessionKind.SONG -> SwaraColors.Teal
                     SessionKind.VIDEO -> SwaraColors.Rose
@@ -279,9 +353,30 @@ fun LibraryRoute(
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = SwaraColors.Muted,
                                 )
+                                if (row.lastHeard) {
+                                    Text(
+                                        text = "Last heard",
+                                        style = MaterialTheme.typography.labelLarge,
+                                        color = SwaraColors.Gold,
+                                    )
+                                }
                             }
-                            TextButton(onClick = { pendingDelete = row }) {
-                                Text(copy.delete, color = SwaraColors.Clay)
+                            Box {
+                                TextButton(onClick = { menuFor = row.id }) {
+                                    Text("···")
+                                }
+                                DropdownMenu(
+                                    expanded = menuFor == row.id,
+                                    onDismissRequest = { menuFor = null },
+                                ) {
+                                    DropdownMenuItem(
+                                        text = { Text(copy.delete, color = SwaraColors.Clay) },
+                                        onClick = {
+                                            menuFor = null
+                                            pendingDelete = row
+                                        },
+                                    )
+                                }
                             }
                         }
                     }

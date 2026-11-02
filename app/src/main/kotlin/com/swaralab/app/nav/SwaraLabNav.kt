@@ -193,6 +193,7 @@ fun SwaraLabNav(graph: SwaraLabGraph) {
                     listSessions = graph.listSessions,
                     deleteSession = graph.deleteSession,
                     invitePack = graph.invitePack,
+                    createSession = graph.createSession,
                     onOpen = { id -> nav.navigate(Routes.studio(id)) },
                 )
             }
@@ -237,6 +238,7 @@ fun SwaraLabNav(graph: SwaraLabGraph) {
                     preferRecordedClip = graph.preferRecordedClip,
                     updatePractice = graph.updatePractice,
                     audio = graph.audio,
+                    render = graph.render,
                     onBack = { nav.popBackStack() },
                     onPublish = { nav.navigate(Routes.publish(sessionId)) },
                 )

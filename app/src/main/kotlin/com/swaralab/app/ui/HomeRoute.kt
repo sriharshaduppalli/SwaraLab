@@ -5,6 +5,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -39,7 +40,8 @@ import com.swaralab.domain.usecase.ListSessions
 import java.time.LocalTime
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
-import com.swaralab.ui.ChoiceCard
+import com.swaralab.ui.BoothRoom
+import com.swaralab.ui.CompactChoiceCard
 import com.swaralab.ui.LocalAppCopy
 import com.swaralab.ui.SwaraColors
 import com.swaralab.ui.SwaraWordmark
@@ -146,7 +148,7 @@ fun HomeRoute(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    Box(modifier.fillMaxSize().studioAtmosphere()) {
+    Box(modifier.fillMaxSize().studioAtmosphere(BoothRoom.HOME)) {
     Column(
         Modifier
             .fillMaxSize()
@@ -185,35 +187,70 @@ fun HomeRoute(
             color = SwaraColors.Teal,
         )
         lastSong?.let { (_, title) ->
-            ChoiceCard(
-                title = copy.continueLast,
-                body = title,
+            Surface(
                 onClick = viewModel::continueLast,
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                color = SwaraColors.GoldWash,
+                border = BorderStroke(1.dp, SwaraColors.Gold),
+            ) {
+                Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+                    Text(
+                        text = copy.continueLast,
+                        style = MaterialTheme.typography.labelLarge,
+                        color = SwaraColors.Gold,
+                    )
+                    Text(text = title, style = MaterialTheme.typography.titleMedium, color = SwaraColors.Ink)
+                }
+            }
+        }
+        Surface(
+            onClick = { viewModel.start(SessionKind.SONG) },
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(24.dp),
+            color = SwaraColors.TealWash,
+            tonalElevation = 2.dp,
+            shadowElevation = 3.dp,
+            border = BorderStroke(1.5.dp, SwaraColors.Teal),
+        ) {
+            Column(Modifier.padding(horizontal = 22.dp, vertical = 26.dp)) {
+                Text(
+                    text = "Start here",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = SwaraColors.Teal,
+                )
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    text = copy.soloTitle,
+                    style = MaterialTheme.typography.headlineLarge,
+                    color = SwaraColors.Teal,
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    text = copy.soloBody,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = SwaraColors.Ink,
+                )
+            }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            CompactChoiceCard(
+                title = copy.videoTitle,
+                body = copy.videoBody,
+                onClick = { viewModel.start(SessionKind.VIDEO) },
+                modifier = Modifier.weight(1f),
+                accent = SwaraColors.Rose,
+                accentWash = SwaraColors.RoseWash,
+            )
+            CompactChoiceCard(
+                title = copy.warmupTitle,
+                body = copy.warmupBody,
+                onClick = { viewModel.start(SessionKind.PRACTICE) },
+                modifier = Modifier.weight(1f),
                 accent = SwaraColors.Gold,
                 accentWash = SwaraColors.GoldWash,
             )
         }
-        ChoiceCard(
-            title = copy.soloTitle,
-            body = copy.soloBody,
-            onClick = { viewModel.start(SessionKind.SONG) },
-            accent = SwaraColors.Teal,
-            accentWash = SwaraColors.TealWash,
-        )
-        ChoiceCard(
-            title = copy.videoTitle,
-            body = copy.videoBody,
-            onClick = { viewModel.start(SessionKind.VIDEO) },
-            accent = SwaraColors.Rose,
-            accentWash = SwaraColors.RoseWash,
-        )
-        ChoiceCard(
-            title = copy.warmupTitle,
-            body = copy.warmupBody,
-            onClick = { viewModel.start(SessionKind.PRACTICE) },
-            accent = SwaraColors.Gold,
-            accentWash = SwaraColors.GoldWash,
-        )
     }
     }
 }

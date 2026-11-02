@@ -15,6 +15,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -61,6 +63,7 @@ import com.swaralab.domain.usecase.UpdatePublishSettings
 import com.swaralab.domain.usecase.UpdateTrackMix
 import com.swaralab.domain.usecase.UpdateVocalChain
 import com.swaralab.domain.usecase.UpdateVocalSyncOffset
+import com.swaralab.ui.BoothRoom
 import com.swaralab.ui.ChoiceCard
 import com.swaralab.ui.LocalAppCopy
 import com.swaralab.ui.PageHero
@@ -276,7 +279,7 @@ class PublishViewModel(
         }
     }
 
-    fun shareThisTake(context: Context) {
+    fun shareThisTake(context: Context, packageName: String? = null) {
         viewModelScope.launch {
             val current = uiState.value ?: return@launch
             if (current.busy) return@launch
@@ -288,16 +291,23 @@ class PublishViewModel(
             }
             sliderSaveJob?.cancel()
             flushSlidersToDisk()
+            updatePublish(sessionId, current.target)
             audio.stopPlayback()
             uiState.value = current.copy(busy = true, status = "Preparing this take to share...")
-            val document = loadSession(sessionId) ?: return@launch
-            when (val result = render.export(document, ExportRequest(document.publish.target, kind))) {
+            val document = loadSession(sessionId)
+            if (document == null) {
+                status = "Open the song again, then share."
+                refresh()
+                return@launch
+            }
+            val aimed = document.copy(publish = document.publish.withTarget(current.target))
+            when (val result = render.export(aimed, ExportRequest(current.target, kind))) {
                 is ExportResult.Written -> {
                     exportedRelativePath = result.relativePath
                     exportedMime = mimeFor(result.relativePath)
                     status = "This take is ready. Opening share..."
                     refresh()
-                    shareExportToApps(context)
+                    shareExportToApps(context, packageName)
                 }
                 is ExportResult.Waiting -> {
                     status = result.message
@@ -408,7 +418,7 @@ class PublishViewModel(
         }
     }
 
-    fun shareExportToApps(context: Context) {
+    fun shareExportToApps(context: Context, packageName: String? = null) {
         val current = uiState.value ?: return
         val path = exportedRelativePath ?: return
         val source = File(File(projectsDir, sessionId), path)
@@ -453,14 +463,18 @@ class PublishViewModel(
                 }.getOrNull()
             }
             if (uri != null) {
-                val shareIntent = Intent(Intent.ACTION_SEND).apply {
-                    type = exportedMime
-                    putExtra(Intent.EXTRA_STREAM, uri)
-                    putExtra(Intent.EXTRA_TITLE, current.title)
-                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                PreferredShare.open(
+                    context = context,
+                    uri = uri,
+                    mime = exportedMime,
+                    title = current.title,
+                    packageName = packageName,
+                )
+                status = if (packageName != null) {
+                    "Saved to Music/SwaraLab and opened that app."
+                } else {
+                    "Saved to Music/SwaraLab. WhatsApp, Instagram, and YouTube sit first if they are on this phone."
                 }
-                context.startActivity(Intent.createChooser(shareIntent, "Share ${current.title}"))
-                status = "Saved to Music/SwaraLab and opened share sheet."
                 refresh()
             } else {
                 status = "Use Save to phone to pick a folder on this device."
@@ -632,15 +646,15 @@ fun PublishRoute(
         }
     }
 
+    val copy = LocalAppCopy.current
+    Column(modifier.fillMaxSize().studioAtmosphere(BoothRoom.MIX)) {
     Column(
-        modifier
-            .fillMaxSize()
-            .studioAtmosphere()
+        Modifier
+            .weight(1f)
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        val copy = LocalAppCopy.current
         TextButton(onClick = onBack) { Text("Back to stage") }
         PageHero(
             title = copy.mixSave,
@@ -860,13 +874,6 @@ fun PublishRoute(
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 Button(
-                    onClick = { viewModel.shareThisTake(context) },
-                    enabled = !state.busy,
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text("Share this take")
-                }
-                Button(
                     onClick = viewModel::prepare,
                     enabled = !state.busy,
                     modifier = Modifier.fillMaxWidth(),
@@ -978,6 +985,61 @@ fun PublishRoute(
                 accentWash = wash,
                 onClick = { viewModel.select(target) },
             )
+        }
+    }
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp),
+            color = SwaraColors.Card,
+            tonalElevation = 4.dp,
+            shadowElevation = 6.dp,
+            border = BorderStroke(1.dp, SwaraColors.Teal),
+        ) {
+            Column(Modifier.padding(horizontal = 18.dp, vertical = 14.dp)) {
+                Button(
+                    onClick = { viewModel.shareThisTake(context) },
+                    enabled = !state.busy,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("Share this take")
+                }
+                val installed = remember(state.exportedMime, state.hasCameraVideo) {
+                    val mime = when {
+                        state.exportedMime.isNotBlank() -> state.exportedMime
+                        state.hasCameraVideo -> "video/mp4"
+                        state.target == PublishTarget.WHATSAPP ||
+                            state.target == PublishTarget.MASTER -> "audio/wav"
+                        else -> "video/mp4"
+                    }
+                    PreferredShare.installed(context, mime)
+                }
+                if (installed.isNotEmpty()) {
+                    Spacer(Modifier.height(8.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        installed.forEach { target ->
+                            OutlinedButton(
+                                onClick = { viewModel.shareThisTake(context, target.packageName) },
+                                enabled = !state.busy,
+                                modifier = Modifier.weight(1f),
+                            ) {
+                                Text(target.label, maxLines = 1)
+                            }
+                        }
+                    }
+                }
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = if (state.busy) {
+                        state.status ?: "Preparing this take..."
+                    } else if (installed.isEmpty()) {
+                        "Ready for ${state.target.label()}. Share opens the apps on this phone."
+                    } else {
+                        "WhatsApp, Instagram, and YouTube first if they can take this file."
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = SwaraColors.Muted,
+                )
+            }
         }
     }
 }

@@ -163,8 +163,18 @@ data class MixPreview(
 /**
  * Offline mix and mux. Review playback and export share this graph so the file matches the preview.
  */
+sealed interface InstrumentalResult {
+    data class Written(val durationMs: Long, val mostlyMono: Boolean) : InstrumentalResult
+    data class Failed(val message: String) : InstrumentalResult
+}
+
 interface RenderEngine {
     suspend fun export(document: SessionDocument, request: ExportRequest): ExportResult
 
     suspend fun preview(document: SessionDocument, maxDurationMs: Long = 12_000L): MixPreview? = null
+
+    suspend fun writeInstrumental(
+        source: java.io.File,
+        destination: java.io.File,
+    ): InstrumentalResult = InstrumentalResult.Failed("Instrumental is not available.")
 }

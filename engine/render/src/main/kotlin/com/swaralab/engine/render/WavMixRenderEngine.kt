@@ -3,6 +3,7 @@ package com.swaralab.engine.render
 import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
+import com.swaralab.domain.audio.VocalCancel
 import com.swaralab.domain.audio.VocalMixProcessor
 import com.swaralab.domain.layout.SessionLayout
 import com.swaralab.domain.model.ClipState
@@ -11,6 +12,7 @@ import com.swaralab.domain.model.TrackRole
 import com.swaralab.domain.port.ExportKind
 import com.swaralab.domain.port.ExportRequest
 import com.swaralab.domain.port.ExportResult
+import com.swaralab.domain.port.InstrumentalResult
 import com.swaralab.domain.port.MixPreview
 import com.swaralab.domain.port.RenderEngine
 import kotlinx.coroutines.Dispatchers
@@ -147,6 +149,17 @@ class WavMixRenderEngine(
             val sessionFolder = File(projectsRoot, document.id)
             val stereo = renderStereo(document, sessionFolder, 48_000, maxDurationMs) ?: return@withContext null
             MixPreview(left = stereo.left, right = stereo.right, sampleRate = 48_000)
+        }
+
+    override suspend fun writeInstrumental(source: File, destination: File): InstrumentalResult =
+        withContext(Dispatchers.IO) {
+            val stereo = decodeAudioFileToStereo48k(source, 48_000)
+                ?: return@withContext InstrumentalResult.Failed("Could not read that song.")
+            val made = VocalCancel.apply(stereo.first, stereo.second, 48_000)
+            destination.parentFile?.mkdirs()
+            writePcm16StereoWav(destination, 48_000, made.left, made.right)
+            val durationMs = ((made.left.size * 1000L) / 48_000L).coerceAtLeast(1L)
+            InstrumentalResult.Written(durationMs = durationMs, mostlyMono = made.mostlyMono)
         }
 
     private data class StereoMix(
