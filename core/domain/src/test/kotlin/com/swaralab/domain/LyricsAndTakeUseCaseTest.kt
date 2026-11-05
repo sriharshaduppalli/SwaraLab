@@ -11,10 +11,12 @@ import com.swaralab.domain.port.SessionSummary
 import com.swaralab.domain.usecase.CommitRecordedTake
 import com.swaralab.domain.usecase.CreateSession
 import com.swaralab.domain.usecase.ImportBackingTrack
+import com.swaralab.domain.usecase.SaveTake
 import com.swaralab.domain.usecase.LoadSession
 import com.swaralab.domain.usecase.PreferRecordedClip
 import com.swaralab.domain.usecase.TrimRecordedClip
 import com.swaralab.domain.usecase.UpdateLyrics
+import com.swaralab.domain.usecase.encodeLyricLines
 import com.swaralab.domain.usecase.UpdateTrackMix
 import com.swaralab.domain.usecase.UpdateVocalChain
 import com.swaralab.domain.usecase.UpdateVocalSyncOffset
@@ -41,6 +43,9 @@ class LyricsAndTakeUseCaseTest {
         assertEquals(LyricAlignment.LINE, loaded.lyrics.alignment)
         assertEquals(listOf("First verse line", "Chorus line here"), loaded.lyrics.lines.map { it.text })
         assertEquals(listOf(5_500L, 62_000L), loaded.lyrics.lines.map { it.startMs })
+        val encoded = encodeLyricLines(loaded.lyrics.lines)
+        assertTrue(encoded.contains("[00:05.50]"))
+        assertTrue(encoded.contains("First verse line"))
     }
 
     @Test
@@ -163,6 +168,22 @@ class LyricsAndTakeUseCaseTest {
 
         val video = create(SessionKind.VIDEO, "Reel Cover")
         assertEquals(PublishTarget.REELS, video.publish.target)
+    }
+
+    @Test
+    fun saveTakeCommitsTheDryVocal() = runBlocking {
+        val (_, reducer) = testReducer()
+        val store = InMemorySessions()
+        val created = CreateSession(reducer, store)(SessionKind.SONG, "My Song")
+        val leadId = created.tracks.first { it.role == TrackRole.LEAD }.id
+        val edit = SaveTake(CommitRecordedTake(reducer, store))(
+            sessionId = created.id,
+            trackId = leadId,
+            take = FinishedTake("media/takes/take-9.wav", 5_000L, 0.4f, score = 72f),
+        )
+        assertTrue(edit is com.swaralab.domain.command.SessionEdit.Applied)
+        val clips = LoadSession(store)(created.id)!!.tracks.first { it.id == leadId }.clips
+        assertEquals("media/takes/take-9.wav", clips.single().sourceRelativePath)
     }
 }
 

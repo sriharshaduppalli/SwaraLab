@@ -9,6 +9,6 @@ class SwaraLabApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
-        graph = SwaraLabGraph(filesDir)
+        graph = SwaraLabGraph(this)
     }
 }

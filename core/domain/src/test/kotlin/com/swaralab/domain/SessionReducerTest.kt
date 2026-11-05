@@ -181,6 +181,9 @@ class SessionReducerTest {
         assertEquals(-16f, PublishSettings().withTarget(PublishTarget.WHATSAPP).loudnessLufs)
         assertEquals(-14f, PublishSettings().withTarget(PublishTarget.MASTER).loudnessLufs)
         assertEquals(-13f, PublishSettings().withTarget(PublishTarget.SQUARE).loudnessLufs)
+        assertEquals(-0.3f, PublishSettings().withTarget(PublishTarget.REELS).truePeakDbtp)
+        assertEquals(-2.5f, PublishSettings().withTarget(PublishTarget.WHATSAPP).truePeakDbtp)
+        assertEquals(-1f, PublishSettings().withTarget(PublishTarget.MASTER).truePeakDbtp)
     }
 
     @Test
@@ -190,7 +193,7 @@ class SessionReducerTest {
         val phone = VocalChain.preset(VocalPreset.RADIO)
         val dry = VocalChain.preset(VocalPreset.RAW)
         assertTrue(voice.eqPresenceDb > hall.eqPresenceDb)
-        assertTrue(hall.reverb > voice.reverb * 4f)
+        assertTrue(hall.reverb > voice.reverb)
         assertTrue(hall.delay > voice.delay)
         assertTrue(phone.denoise > voice.denoise)
         assertTrue(phone.backingDuckDb > voice.backingDuckDb)

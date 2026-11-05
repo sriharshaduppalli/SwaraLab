@@ -1,11 +1,14 @@
 package com.swaralab.domain.port
 
+import com.swaralab.domain.audio.LiveMonitorEffect
 import com.swaralab.domain.audio.VocalMetrics
 import com.swaralab.domain.model.GearRoute
 import com.swaralab.domain.model.PublishTarget
 import com.swaralab.domain.model.SessionDocument
 import com.swaralab.domain.model.SessionKind
+import com.swaralab.domain.model.VocalPreset
 import com.swaralab.domain.policy.MonitorDecision
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 
 data class SessionSummary(
@@ -14,7 +17,14 @@ data class SessionSummary(
     val kind: SessionKind,
     val updatedAtEpochMs: Long,
     val takeCount: Int = 0,
+    val lastPracticeScore: Int = 0,
 )
+
+interface InvitePack {
+    fun exportZip(sessionId: String, destination: java.io.File): Boolean
+
+    fun importZip(source: java.io.File): SessionDocument?
+}
 
 interface SessionRepository {
     suspend fun save(document: SessionDocument)
@@ -32,6 +42,44 @@ enum class EngineStatus {
     BLOCKED,
     COUNTING,
     RECORDING,
+    PAUSED,
+}
+
+fun EngineStatus.isLive(): Boolean =
+    this == EngineStatus.RECORDING || this == EngineStatus.COUNTING || this == EngineStatus.PAUSED
+
+sealed interface AudioEngineError {
+    data object DeviceBusy : AudioEngineError
+    data object PermissionDenied : AudioEngineError
+    data object UnsupportedSampleRate : AudioEngineError
+    data class StreamFailed(val code: Int) : AudioEngineError
+    data object DiskFull : AudioEngineError
+    data object TrackDecodeFailed : AudioEngineError
+}
+
+fun AudioEngineError.userMessage(): String = when (this) {
+    AudioEngineError.DeviceBusy -> "Another app is using the microphone. Close other audio apps, then retry."
+    AudioEngineError.PermissionDenied -> "Microphone permission is required to record."
+    AudioEngineError.UnsupportedSampleRate -> "This device would not open a 48 kHz stream."
+    is AudioEngineError.StreamFailed -> "Audio interrupted. Resume or restart this pass."
+    AudioEngineError.DiskFull -> "Not enough storage space. Free some space, then retry."
+    AudioEngineError.TrackDecodeFailed -> "This audio file cannot be used. Pick another song from this phone."
+}
+
+enum class ErrorRecovery {
+    RETRY,
+    PERMISSION,
+    PICK_TRACK,
+    FREE_SPACE,
+    RESTART,
+}
+
+fun AudioEngineError.recovery(): ErrorRecovery = when (this) {
+    AudioEngineError.DeviceBusy, AudioEngineError.UnsupportedSampleRate -> ErrorRecovery.RETRY
+    AudioEngineError.PermissionDenied -> ErrorRecovery.PERMISSION
+    AudioEngineError.TrackDecodeFailed -> ErrorRecovery.PICK_TRACK
+    AudioEngineError.DiskFull -> ErrorRecovery.FREE_SPACE
+    is AudioEngineError.StreamFailed -> ErrorRecovery.RESTART
 }
 
 data class AudioEngineState(
@@ -48,6 +96,10 @@ data class AudioEngineState(
     val liveTakeId: String? = null,
     val captureFailed: Boolean = false,
     val maxPeak: Float = 0f,
+    val positionMs: Long = 0L,
+    val voiceGain: Float = 1f,
+    val trackGain: Float = 0.8f,
+    val lastError: AudioEngineError? = null,
 )
 
 data class ArmRequest(
@@ -65,7 +117,10 @@ data class ArmRequest(
     val monitorEnabled: Boolean = false,
     val monitorReverb: Float = 0f,
     val monitorDelay: Float = 0f,
+    val monitorPreset: VocalPreset? = null,
     val loopBacking: Boolean = false,
+    val voiceGain: Float = 1f,
+    val trackGain: Float = 0.8f,
 )
 
 sealed interface TakeControl {
@@ -82,6 +137,8 @@ data class FinishedTake(
     val peak: Float,
     val takeId: String = relativePath.substringAfterLast('/').removeSuffix(".wav"),
     val videoRelativePath: String? = null,
+    val score: Float? = null,
+    val aacRelativePath: String? = null,
 )
 
 /**
@@ -90,12 +147,38 @@ data class FinishedTake(
  */
 interface AudioEngine {
     val state: StateFlow<AudioEngineState>
+    val errors: SharedFlow<AudioEngineError>
 
     suspend fun arm(request: ArmRequest): MonitorDecision
 
     suspend fun startTake(): TakeControl
 
     suspend fun stopTake(): FinishedTake?
+
+    fun pauseTake() {}
+
+    fun resumeTake() {}
+
+    fun recover() {
+        disarm()
+    }
+
+    /** Seek backing playhead. Ignored while counting or recording. */
+    fun seekTake(positionMs: Long) {}
+
+    /** Seek take playback (listen-back). */
+    fun seekPlayback(positionMs: Long) {}
+
+    fun setVoiceGain(gain: Float) {}
+
+    fun setTrackGain(gain: Float) {}
+
+    fun setLiveEffect(effect: LiveMonitorEffect) {}
+
+    /** Next [startTake] appends dry PCM onto this session-relative WAV. */
+    fun enableDraftMode(draftPath: String) {}
+
+    fun getDraftPath(): String? = null
 
     suspend fun playClip(
         sessionId: String,
@@ -177,4 +260,10 @@ interface RenderEngine {
         source: java.io.File,
         destination: java.io.File,
     ): InstrumentalResult = InstrumentalResult.Failed("Instrumental is not available.")
+
+    /** AAC companion for sharing. Leaves the dry WAV in place. */
+    suspend fun encodeCompanionAac(
+        wav: java.io.File,
+        destination: java.io.File,
+    ): Boolean = false
 }

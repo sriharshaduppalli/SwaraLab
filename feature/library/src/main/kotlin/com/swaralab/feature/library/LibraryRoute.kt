@@ -18,19 +18,17 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.ui.platform.LocalContext
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
@@ -51,22 +49,19 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.swaralab.domain.model.SessionKind
-import com.swaralab.domain.usecase.CreateSession
 import com.swaralab.domain.usecase.DeleteSession
 import com.swaralab.domain.usecase.ListSessions
-import com.swaralab.session.SessionInvitePack
-import java.time.LocalTime
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-import java.io.File
 import com.swaralab.ui.BoothRoom
+import com.swaralab.ui.EmptyState
 import com.swaralab.ui.LocalAppCopy
+import com.swaralab.ui.StatusMark
 import com.swaralab.ui.PageHero
 import com.swaralab.ui.SwaraColors
 import com.swaralab.ui.studioAtmosphere
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.time.Instant
 import java.time.ZoneId
@@ -78,22 +73,26 @@ data class LibraryRow(
     val title: String,
     val detail: String,
     val kind: SessionKind,
+    val takeCount: Int = 0,
     val lastHeard: Boolean = false,
 )
 
 class LibraryViewModel(
     private val listSessions: ListSessions,
     private val deleteSession: DeleteSession,
-    private val invitePack: SessionInvitePack,
-    private val createSession: CreateSession,
 ) : ViewModel() {
     private val rowsState = MutableStateFlow<List<LibraryRow>>(emptyList())
     val rows: StateFlow<List<LibraryRow>> = rowsState.asStateFlow()
     private val statusState = MutableStateFlow<String?>(null)
     val status: StateFlow<String?> = statusState.asStateFlow()
+    private val refreshingState = MutableStateFlow(false)
+    val isRefreshing: StateFlow<Boolean> = refreshingState.asStateFlow()
 
-    fun refresh() {
+    fun refresh(fromPull: Boolean = false) {
+        if (fromPull && refreshingState.value) return
         viewModelScope.launch {
+            if (fromPull) refreshingState.value = true
+            val started = System.currentTimeMillis()
             val format = DateTimeFormatter.ofLocalizedDate(FormatStyle.MEDIUM)
             val listed = listSessions()
             val lastId = listed.maxByOrNull { it.updatedAtEpochMs }?.id
@@ -107,31 +106,13 @@ class LibraryViewModel(
                     title = summary.title,
                     detail = "${summary.kind.label()} · $takes · $day",
                     kind = summary.kind,
+                    takeCount = summary.takeCount,
                     lastHeard = summary.id == lastId,
                 )
             }
-        }
-    }
-
-    fun importInvite(copyToFile: (File) -> Boolean, onOpened: (String) -> Unit) {
-        viewModelScope.launch {
-            val imported = withContext(Dispatchers.IO) {
-                val temp = File.createTempFile("swaralab-invite", ".zip")
-                val copied = copyToFile(temp)
-                if (!copied) {
-                    temp.delete()
-                    return@withContext null
-                }
-                val document = invitePack.importZip(temp)
-                temp.delete()
-                document
-            }
-            if (imported != null) {
-                statusState.value = "Invite · ${imported.title} — your part is ready to sing."
-                refresh()
-                onOpened(imported.id)
-            } else {
-                statusState.value = "That file is not a SwaraLab invite."
+            if (fromPull) {
+                delay((500L - (System.currentTimeMillis() - started)).coerceAtLeast(0L))
+                refreshingState.value = false
             }
         }
     }
@@ -143,22 +124,12 @@ class LibraryViewModel(
         }
     }
 
-    fun startSong(onOpened: (String) -> Unit) {
-        viewModelScope.launch {
-            val clock = LocalTime.now().format(DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT))
-            val document = createSession(SessionKind.SONG, "Song · $clock")
-            onOpened(document.id)
-        }
-    }
-
     companion object {
         fun factory(
             listSessions: ListSessions,
             deleteSession: DeleteSession,
-            invitePack: SessionInvitePack,
-            createSession: CreateSession,
         ): ViewModelProvider.Factory = viewModelFactory {
-            initializer { LibraryViewModel(listSessions, deleteSession, invitePack, createSession) }
+            initializer { LibraryViewModel(listSessions, deleteSession) }
         }
     }
 }
@@ -169,21 +140,21 @@ private fun SessionKind.label(): String = when (this) {
     SessionKind.VIDEO -> "Video"
 }
 
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun LibraryRoute(
     listSessions: ListSessions,
     deleteSession: DeleteSession,
-    invitePack: SessionInvitePack,
-    createSession: CreateSession,
     onOpen: (String) -> Unit,
+    onListen: (String) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val viewModel: LibraryViewModel = viewModel(
-        factory = LibraryViewModel.factory(listSessions, deleteSession, invitePack, createSession),
+        factory = LibraryViewModel.factory(listSessions, deleteSession),
     )
     val rows by viewModel.rows.collectAsState()
     val status by viewModel.status.collectAsState()
+    val isRefreshing by viewModel.isRefreshing.collectAsState()
     val copy = LocalAppCopy.current
     var pendingDelete by remember { mutableStateOf<LibraryRow?>(null) }
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -199,17 +170,21 @@ fun LibraryRoute(
     var menuFor by remember { mutableStateOf<String?>(null) }
     val visible = if (kindFilter == null) rows else rows.filter { it.kind == kindFilter }
 
+    PullToRefreshBox(
+        isRefreshing = isRefreshing,
+        onRefresh = { viewModel.refresh(fromPull = true) },
+        modifier = modifier.fillMaxSize().studioAtmosphere(BoothRoom.SONGS),
+    ) {
     Column(
-        modifier
+        Modifier
             .fillMaxSize()
-            .studioAtmosphere(BoothRoom.SONGS)
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp, vertical = 28.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         PageHero(
             title = copy.songs,
-            body = "Open a song to sing, edit its lyrics, or listen back to takes.",
+            body = copy.songsLine,
             accent = SwaraColors.Gold,
         )
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -241,61 +216,19 @@ fun LibraryRoute(
                 color = if (message.startsWith("That file")) SwaraColors.Clay else SwaraColors.Teal,
             )
         }
-        val context = LocalContext.current
-        val inviteLauncher = rememberLauncherForActivityResult(
-            contract = ActivityResultContracts.OpenDocument(),
-        ) { uri ->
-            if (uri != null) {
-                viewModel.importInvite(
-                    copyToFile = { dest ->
-                        runCatching {
-                            context.contentResolver.openInputStream(uri)?.use { input ->
-                                dest.outputStream().use { output -> input.copyTo(output) }
-                            } != null
-                        }.getOrDefault(false)
-                    },
-                    onOpened = onOpen,
-                )
-            }
-        }
-        OutlinedButton(
-            onClick = {
-                inviteLauncher.launch(arrayOf("application/zip", "application/octet-stream", "*/*"))
-            },
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Text("Open a friend's duet invite")
-        }
         if (rows.isEmpty()) {
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(20.dp),
-                color = SwaraColors.Card,
-                border = BorderStroke(1.dp, SwaraColors.Gold),
-            ) {
-                Column(
-                    Modifier.padding(20.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    Text("No songs yet", style = MaterialTheme.typography.titleLarge, color = SwaraColors.Ink)
-                    Text(
-                        text = "Start a song here. Your takes stay on this phone.",
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = SwaraColors.Muted,
-                    )
-                    Button(
-                        onClick = { viewModel.startSong(onOpen) },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Text("Start a song")
-                    }
-                }
-            }
+            EmptyState(
+                title = copy.emptySongs,
+                message = copy.emptySongsBody,
+                mark = StatusMark.SONG,
+                fillMax = false,
+            )
         } else if (visible.isEmpty()) {
-            Text(
-                text = "Nothing in this filter yet.",
-                style = MaterialTheme.typography.bodyLarge,
-                color = SwaraColors.Muted,
+            EmptyState(
+                title = copy.noSearchResults,
+                message = "Nothing in this filter yet.",
+                mark = StatusMark.SEARCH,
+                fillMax = false,
             )
         } else {
             visible.forEach { row ->
@@ -369,6 +302,15 @@ fun LibraryRoute(
                                     expanded = menuFor == row.id,
                                     onDismissRequest = { menuFor = null },
                                 ) {
+                                    if (row.takeCount > 0) {
+                                        DropdownMenuItem(
+                                            text = { Text(copy.listenTake) },
+                                            onClick = {
+                                                menuFor = null
+                                                onListen(row.id)
+                                            },
+                                        )
+                                    }
                                     DropdownMenuItem(
                                         text = { Text(copy.delete, color = SwaraColors.Clay) },
                                         onClick = {
@@ -383,6 +325,7 @@ fun LibraryRoute(
                 }
             }
         }
+    }
     }
     pendingDelete?.let { row ->
         AlertDialog(

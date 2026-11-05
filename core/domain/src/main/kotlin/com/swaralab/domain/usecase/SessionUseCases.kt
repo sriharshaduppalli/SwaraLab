@@ -52,6 +52,29 @@ class CreateSession(
     }
 }
 
+class StartSession(
+    private val createSession: CreateSession,
+    private val listSessions: ListSessions,
+) {
+    suspend operator fun invoke(kind: SessionKind): String {
+        val recentEmpty = listSessions().firstOrNull { summary ->
+            summary.kind == kind &&
+                summary.takeCount == 0 &&
+                System.currentTimeMillis() - summary.updatedAtEpochMs < 24 * 60 * 60 * 1000L
+        }
+        if (recentEmpty != null) return recentEmpty.id
+        val clock = java.time.LocalTime.now().format(
+            java.time.format.DateTimeFormatter.ofLocalizedTime(java.time.format.FormatStyle.SHORT),
+        )
+        val name = when (kind) {
+            SessionKind.PRACTICE -> "Practice"
+            SessionKind.SONG -> "Song"
+            SessionKind.VIDEO -> "Video"
+        }
+        return createSession(kind, "$name · $clock").id
+    }
+}
+
 class ListSessions(
     private val sessions: SessionRepository,
 ) {
@@ -419,6 +442,24 @@ internal fun warmupLinesForKey(keyName: String, mode: ScaleMode? = null): List<L
             startMs = index * 2_000L,
         )
     }
+}
+
+fun encodeLyricLines(lines: List<LyricLine>): String {
+    if (lines.isEmpty()) return ""
+    val timed = lines.any { it.startMs != null }
+    return lines.joinToString("\n") { line ->
+        val text = line.text.trim()
+        if (text.isEmpty()) return@joinToString ""
+        if (!timed) {
+            text
+        } else {
+            val start = line.startMs?.coerceAtLeast(0L) ?: 0L
+            val minutes = start / 60_000L
+            val seconds = (start % 60_000L) / 1_000L
+            val hundredths = (start % 1_000L) / 10L
+            "[%02d:%02d.%02d] %s".format(minutes, seconds, hundredths, text)
+        }
+    }.lines().filter { it.isNotBlank() }.joinToString("\n")
 }
 
 internal fun parseLyricLines(raw: String, ids: IdGenerator): List<LyricLine> {

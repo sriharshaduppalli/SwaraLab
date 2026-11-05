@@ -182,19 +182,19 @@ data class SwaraPalette(
         )
 
         val MidnightStage = SwaraPalette(
-            ink = Color(0xFFE8F7F8),
-            teal = Color(0xFF46E0D4),
-            tealWash = Color(0xFF12383A),
-            gold = Color(0xFFF2C65A),
-            goldWash = Color(0xFF3A2E12),
+            ink = Color(0xFFE0E0E0),
+            teal = Color(0xFF00E5FF),
+            tealWash = Color(0xFF00363A),
+            gold = Color(0xFFBB86FC),
+            goldWash = Color(0xFF2A2140),
             rose = Color(0xFFFF8FB3),
             roseWash = Color(0xFF3A1C2A),
-            paper = Color(0xFF070B10),
-            card = Color(0xFF121A22),
-            line = Color(0xFF2A3A46),
-            muted = Color(0xFF8AA4AC),
-            clay = Color(0xFFE07A6C),
-            glow = Color(0x3346E0D4),
+            paper = Color(0xFF0F0F0F),
+            card = Color(0xFF1A1A1A),
+            line = Color(0xFF3A3A3A),
+            muted = Color(0xFFB0B0B0),
+            clay = Color(0xFFCF6679),
+            glow = Color(0x3300E5FF),
             isDark = true,
         )
 
@@ -297,6 +297,8 @@ object SwaraColors {
 
 enum class SwaraMark {
     SING,
+    BOOTH,
+    EXPLORE,
     SONGS,
     PROFILE,
 }
@@ -358,12 +360,14 @@ fun SwaraLabTheme(
                 letterSpacing = (-0.8).sp,
             ),
             headlineLarge = base.headlineLarge.copy(
-                fontWeight = FontWeight.SemiBold,
-                fontSize = 34.sp,
-                letterSpacing = (-0.6).sp,
+                fontWeight = FontWeight.Bold,
+                fontSize = 32.sp,
+                letterSpacing = (-0.5).sp,
             ),
             titleLarge = base.titleLarge.copy(fontWeight = FontWeight.SemiBold, letterSpacing = (-0.2).sp),
-            bodyLarge = base.bodyLarge.copy(lineHeight = 26.sp),
+            titleMedium = base.titleMedium.copy(fontWeight = FontWeight.SemiBold, fontSize = 18.sp),
+            bodyLarge = base.bodyLarge.copy(fontSize = 16.sp, lineHeight = 24.sp),
+            labelLarge = base.labelLarge.copy(fontWeight = FontWeight.Medium, fontSize = 14.sp),
         ),
         content = content,
     )
@@ -403,6 +407,35 @@ fun SwaraMarkIcon(
     Canvas(modifier.size(24.dp)) {
         val stroke = 2.dp.toPx()
         when (mark) {
+            SwaraMark.BOOTH -> {
+                val cx = size.width / 2
+                val cy = size.height / 2
+                drawCircle(color, radius = 3.dp.toPx(), center = Offset(cx, cy))
+                drawCircle(
+                    color = color,
+                    radius = 7.dp.toPx(),
+                    center = Offset(cx, cy),
+                    style = androidx.compose.ui.graphics.drawscope.Stroke(stroke),
+                )
+                drawCircle(
+                    color = color,
+                    radius = 10.5.dp.toPx(),
+                    center = Offset(cx, cy),
+                    style = androidx.compose.ui.graphics.drawscope.Stroke(stroke * 0.85f),
+                )
+            }
+            SwaraMark.EXPLORE -> {
+                val cx = size.width / 2
+                val cy = size.height / 2
+                drawCircle(
+                    color = color,
+                    radius = 9.dp.toPx(),
+                    center = Offset(cx, cy),
+                    style = androidx.compose.ui.graphics.drawscope.Stroke(stroke),
+                )
+                drawLine(color, Offset(cx, 4.dp.toPx()), Offset(cx, size.height - 4.dp.toPx()), stroke, StrokeCap.Round)
+                drawLine(color, Offset(4.dp.toPx(), cy), Offset(size.width - 4.dp.toPx(), cy), stroke, StrokeCap.Round)
+            }
             SwaraMark.SING -> {
                 val centerX = size.width / 2
                 drawRoundRect(

@@ -12,6 +12,15 @@ object SessionLayout {
 
     fun takeWav(takeId: String): String = "$TAKES/$takeId.wav"
 
+    fun takeAac(takeId: String): String = "$TAKES/$takeId.m4a"
+
+    /** Crash-safe dry vocal while a take is live. Promoted to [takeWav] on stop. */
+    const val DRAFT_WAV = "$TAKES/draft.wav"
+
+    fun draftWav(): String = DRAFT_WAV
+
+    const val TAKE_INDEX = "media/takes/index.json"
+
     fun performanceVideo(takeId: String = "performance"): String = "$VIDEO/$takeId.mp4"
 
     fun backingFile(fileName: String): String = "$BACKING/$fileName"

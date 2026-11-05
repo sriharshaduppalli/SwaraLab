@@ -48,6 +48,44 @@ class VocalMixProcessorTest {
         assertTrue("Voice should remain, after=$afterTone", afterTone > 0.04f)
     }
 
+    @Test
+    fun softHallSpreadIsWiderThanKeepDry() {
+        val sampleRate = 48_000
+        val mono = FloatArray(sampleRate) { i ->
+            0.22f * sin(2.0 * PI * 220.0 * i / sampleRate).toFloat()
+        }
+        val dry = VocalMixProcessor.spreadStereo(mono.copyOf(), sampleRate, VocalChain.preset(VocalPreset.RAW))
+        val hall = VocalMixProcessor.spreadStereo(mono.copyOf(), sampleRate, VocalChain.preset(VocalPreset.STAGE))
+        fun width(pair: Pair<FloatArray, FloatArray>): Float {
+            var side = 0.0
+            var mid = 0.0
+            for (i in pair.first.indices) {
+                val m = (pair.first[i] + pair.second[i]) * 0.5f
+                val s = (pair.first[i] - pair.second[i]) * 0.5f
+                mid += m * m
+                side += s * s
+            }
+            return kotlin.math.sqrt((side / mid).toFloat())
+        }
+        assertTrue("Hall should be wider than dry, dry=${width(dry)} hall=${width(hall)}", width(hall) > width(dry) * 1.25f)
+    }
+
+    @Test
+    fun reelsCeilingStaysHotterThanMaster() {
+        val sampleRate = 8_000
+        fun tone(): Pair<FloatArray, FloatArray> {
+            val left = FloatArray(sampleRate) { i -> 0.55f * sin(2.0 * PI * 220.0 * i / sampleRate).toFloat() }
+            return left to left.copyOf()
+        }
+        val reels = tone()
+        val master = tone()
+        VocalMixProcessor.finishMasterStereo(reels.first, reels.second, targetLufs = -11f, truePeakDbtp = -0.3f)
+        VocalMixProcessor.finishMasterStereo(master.first, master.second, targetLufs = -14f, truePeakDbtp = -1f)
+        val reelsPeak = reels.first.maxOf { kotlin.math.abs(it) }
+        val masterPeak = master.first.maxOf { kotlin.math.abs(it) }
+        assertTrue("Reels peak $reelsPeak should exceed Master $masterPeak", reelsPeak > masterPeak + 0.02f)
+    }
+
     private fun rms(samples: FloatArray, start: Int, end: Int): Float {
         var sum = 0.0
         val from = start.coerceIn(0, samples.lastIndex)

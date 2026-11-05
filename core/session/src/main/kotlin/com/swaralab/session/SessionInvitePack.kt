@@ -6,6 +6,7 @@ import com.swaralab.domain.layout.SessionLayout
 import com.swaralab.domain.model.SessionDocument
 import com.swaralab.domain.model.TrackRole
 import com.swaralab.domain.model.TrackState
+import com.swaralab.domain.port.InvitePack
 import com.swaralab.domain.time.Clock
 import java.io.File
 import java.util.zip.ZipEntry
@@ -21,8 +22,8 @@ class SessionInvitePack(
     private val codec: SessionCodec,
     private val ids: IdGenerator,
     private val clock: Clock,
-) {
-    fun exportZip(sessionId: String, destination: File): Boolean {
+) : InvitePack {
+    override fun exportZip(sessionId: String, destination: File): Boolean {
         val folder = File(root, sessionId)
         val documentFile = File(folder, SessionLayout.DOCUMENT)
         if (!documentFile.isFile) return false
@@ -56,7 +57,7 @@ class SessionInvitePack(
         }.getOrDefault(false)
     }
 
-    fun importZip(source: File): SessionDocument? {
+    override fun importZip(source: File): SessionDocument? {
         if (!source.isFile) return null
         return runCatching {
             val newId = ids.newId()

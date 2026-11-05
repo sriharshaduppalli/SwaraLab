@@ -56,6 +56,7 @@ class FileSessionRepository(
                     takeCount = document.tracks
                         .filter { it.role != TrackRole.BACKING }
                         .sumOf { it.clips.size },
+                    lastPracticeScore = document.practice.scorePercent,
                 )
             }
             .sortedByDescending { it.updatedAtEpochMs }

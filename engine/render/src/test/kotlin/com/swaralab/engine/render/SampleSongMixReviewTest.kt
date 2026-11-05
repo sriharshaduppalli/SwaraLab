@@ -71,7 +71,12 @@ class SampleSongMixReviewTest {
                 val voice = rms(vocals.first, sampleRate + sampleRate / 8, sampleRate + sampleRate / 3)
                 val knock = peak(vocals.first, (sampleRate * 0.35).toInt(), (sampleRate * 0.55).toInt())
                 val music = rms(master.first, 0, sampleRate / 5)
-                reports += "${preset.name}: vocalGap=${"%.5f".format(gap)} voice=${"%.4f".format(voice)} knock=${"%.4f".format(knock)} music=${"%.4f".format(music)}"
+                val mixSeconds = master.first.size / sampleRate.toFloat()
+                reports += "${preset.name}: vocalGap=${"%.5f".format(gap)} voice=${"%.4f".format(voice)} knock=${"%.4f".format(knock)} music=${"%.4f".format(music)} mixSec=${"%.2f".format(mixSeconds)}"
+                assertTrue(
+                    "${preset.name} mix must stay near song length, not slow-motion, sec=$mixSeconds",
+                    mixSeconds in 3.5f..5.5f,
+                )
                 assertTrue("${preset.name} voice should survive, voice=$voice", voice > 0.035f)
                 assertTrue("${preset.name} vocal gap should be quiet, gap=$gap voice=$voice", gap < voice * 0.28f)
                 val knockLimit = if (preset == VocalPreset.STAGE || preset == VocalPreset.RAW) 0.20f else 0.16f

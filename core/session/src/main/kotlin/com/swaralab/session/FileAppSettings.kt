@@ -12,6 +12,12 @@ class FileAppSettings(private val file: File) {
 
     fun setThemeId(tag: String) = setProperty("themeId", tag)
 
+    fun firstOpenSeen(): Boolean = property("firstOpenSeen", "false") == "true"
+
+    fun markFirstOpenSeen() = setProperty("firstOpenSeen", "true")
+
+    fun replayOnboarding() = setProperty("firstOpenSeen", "false")
+
     private fun property(key: String, fallback: String): String {
         if (!file.isFile) return fallback
         return runCatching {

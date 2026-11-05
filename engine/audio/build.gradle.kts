@@ -7,6 +7,22 @@ android {
     compileSdk = libs.versions.compileSdk.get().toInt()
     defaultConfig {
         minSdk = libs.versions.minSdk.get().toInt()
+        ndk {
+            abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86_64")
+        }
+        externalNativeBuild {
+            cmake {
+                arguments += "-DANDROID_STL=c++_shared"
+            }
+        }
+    }
+    buildFeatures {
+        prefab = true
+    }
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+        }
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -17,6 +33,7 @@ android {
 dependencies {
     implementation(project(":core:domain"))
     implementation(libs.coroutines.core)
+    implementation(libs.oboe)
     testImplementation(libs.junit)
     testImplementation(libs.coroutines.core)
 }

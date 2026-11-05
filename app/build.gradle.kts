@@ -126,5 +126,8 @@ dependencies {
     implementation(libs.lifecycle.runtime.compose)
     implementation(libs.navigation.compose)
     implementation(libs.coroutines.android)
+    implementation(libs.media3.exoplayer)
+    implementation(libs.splashscreen)
+    implementation("androidx.core:core-ktx:1.16.0")
     debugImplementation(libs.compose.ui.tooling)
 }

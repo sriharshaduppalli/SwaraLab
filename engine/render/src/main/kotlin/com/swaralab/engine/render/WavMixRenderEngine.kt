@@ -4,6 +4,7 @@ import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import com.swaralab.domain.audio.VocalCancel
+import com.swaralab.domain.audio.WavPcm
 import com.swaralab.domain.audio.VocalMixProcessor
 import com.swaralab.domain.layout.SessionLayout
 import com.swaralab.domain.model.ClipState
@@ -177,7 +178,7 @@ class WavMixRenderEngine(
         targetSampleRate: Int,
         maxDurationMs: Long = 0L,
     ): StereoMix? {
-        val vocalMix = mixVocalTracks(document, sessionFolder, targetSampleRate) ?: return null
+        val vocalMix = mixVocalTracks(document, sessionFolder, targetSampleRate) ?: FloatArray(0)
         val limited = if (maxDurationMs > 0L) {
             val frames = ((maxDurationMs * targetSampleRate) / 1000L).toInt().coerceAtLeast(1)
             if (vocalMix.size > frames) vocalMix.copyOf(frames) else vocalMix
@@ -191,8 +192,9 @@ class WavMixRenderEngine(
             keyName = document.musical.keyName,
             mode = document.musical.mode,
         )
-        val vocalL = limited.copyOf()
-        val vocalR = limited.copyOf()
+        val imaged = VocalMixProcessor.spreadStereo(limited, targetSampleRate, document.chain)
+        val vocalL = imaged.first
+        val vocalR = imaged.second
 
         val backingTrack = document.tracks.firstOrNull { it.role == TrackRole.BACKING && !it.mute }
         val backingClip = backingTrack?.clips?.lastOrNull()
@@ -219,28 +221,32 @@ class WavMixRenderEngine(
             }
         }
 
-        val totalSamples = if (backingL != null) {
-            val maxTail = min(backingL.size, limited.size + targetSampleRate * 3)
-            max(limited.size, maxTail)
-        } else {
-            limited.size
+        val vocalFrames = min(vocalL.size, vocalR.size)
+        val totalSamples = when {
+            backingL != null && vocalFrames > 0 -> {
+                max(vocalFrames, min(backingL.size, vocalFrames + targetSampleRate * 3))
+            }
+            backingL != null -> backingL.size
+            else -> vocalFrames
         }
+        if (totalSamples <= 0) return null
         val masterL = FloatArray(totalSamples)
         val masterR = FloatArray(totalSamples)
         val duckLinear = dbToLinear(-abs(document.chain.backingDuckDb))
         var env = 0f
         for (i in 0 until totalSamples) {
-            val v = if (i < limited.size) limited[i] else 0f
-            val vMag = abs(v)
+            val vL = if (i < vocalL.size) vocalL[i] else 0f
+            val vR = if (i < vocalR.size) vocalR[i] else 0f
+            val vMag = max(abs(vL), abs(vR))
             env = if (vMag > env) env + 0.012f * (vMag - env) else env * 0.9994f
             val duckAmount = if (env > 0.04f) ((env - 0.04f) * 7f).coerceIn(0f, 1f) else 0f
             val currentDuck = 1f - duckAmount * (1f - duckLinear)
             if (backingL != null && backingR != null && i < backingL.size && i < backingR.size) {
-                masterL[i] = v + backingL[i] * currentDuck
-                masterR[i] = v + backingR[i] * currentDuck
+                masterL[i] = vL + backingL[i] * currentDuck
+                masterR[i] = vR + backingR[i] * currentDuck
             } else {
-                masterL[i] = v
-                masterR[i] = v
+                masterL[i] = vL
+                masterR[i] = vR
             }
         }
         VocalMixProcessor.finishMasterStereo(
@@ -357,25 +363,103 @@ class WavMixRenderEngine(
 
     private fun dbToLinear(db: Float): Float = 10.0.pow(db / 20.0).toFloat()
 
-    private fun readPcm16MonoWav(file: File): ShortArray? = runCatching {
+    private fun readPcm16MonoWav(file: File): ShortArray? {
+        val wav = readRiffWav(file) ?: return null
+        val left = wav.left
+        val right = wav.right
+        val rate = wav.sampleRate
+        val mono = FloatArray(left.size) { i ->
+            if (i < right.size) (left[i] + right[i]) * 0.5f else left[i]
+        }
+        val atTarget = if (rate == 48_000 || rate <= 0) mono else resample(mono, rate / 48_000f)
+        return ShortArray(atTarget.size) { i ->
+            (atTarget[i].coerceIn(-1f, 1f) * 32767f).toInt().toShort()
+        }
+    }
+
+    private data class RiffWav(
+        val left: FloatArray,
+        val right: FloatArray,
+        val sampleRate: Int,
+    )
+
+    private fun readRiffWav(file: File): RiffWav? = runCatching {
         val bytes = file.readBytes()
-        if (bytes.size <= 44) return null
-        val riff = String(bytes, 0, 4, Charsets.US_ASCII)
-        if (riff != "RIFF") return null
-        val payloadBytes = bytes.size - 44
-        val count = payloadBytes / 2
-        val shorts = ShortArray(count)
-        ByteBuffer.wrap(bytes, 44, count * 2)
-            .order(ByteOrder.LITTLE_ENDIAN)
-            .asShortBuffer()
-            .get(shorts)
-        shorts
+        if (bytes.size < 44) return null
+        if (String(bytes, 0, 4, Charsets.US_ASCII) != "RIFF") return null
+        if (String(bytes, 8, 4, Charsets.US_ASCII) != "WAVE") return null
+        var offset = 12
+        var channels = 1
+        var sampleRate = 48_000
+        var bits = 16
+        var audioFormat = 1
+        var dataStart = -1
+        var dataSize = 0
+        while (offset + 8 <= bytes.size) {
+            val id = String(bytes, offset, 4, Charsets.US_ASCII)
+            val size = ByteBuffer.wrap(bytes, offset + 4, 4).order(ByteOrder.LITTLE_ENDIAN).int
+            val body = offset + 8
+            if (id == "fmt " && body + 16 <= bytes.size) {
+                val fmt = ByteBuffer.wrap(bytes, body, min(size, bytes.size - body)).order(ByteOrder.LITTLE_ENDIAN)
+                audioFormat = fmt.short.toInt() and 0xFFFF
+                channels = fmt.short.toInt().coerceAtLeast(1)
+                sampleRate = fmt.int.coerceAtLeast(1)
+                fmt.int
+                fmt.short
+                bits = fmt.short.toInt() and 0xFFFF
+            } else if (id == "data") {
+                dataStart = body
+                dataSize = size.coerceAtMost(bytes.size - body)
+                break
+            }
+            offset = body + size + (size and 1)
+        }
+        if (dataStart < 0 || dataSize < 2) return null
+        val bytesPerSample = (bits / 8).coerceAtLeast(1)
+        val frameBytes = bytesPerSample * channels
+        if (frameBytes <= 0) return null
+        val frames = dataSize / frameBytes
+        if (frames <= 0) return null
+        val left = FloatArray(frames)
+        val right = FloatArray(frames)
+        var i = dataStart
+        for (f in 0 until frames) {
+            val l = pcmSample(bytes, i, bits, audioFormat)
+            val r = if (channels > 1) pcmSample(bytes, i + bytesPerSample, bits, audioFormat) else l
+            left[f] = l
+            right[f] = r
+            i += frameBytes
+        }
+        RiffWav(left, right, sampleRate)
     }.getOrNull()
 
+    private fun pcmSample(bytes: ByteArray, index: Int, bits: Int, audioFormat: Int): Float {
+        return when {
+            audioFormat == 3 && bits == 32 && index + 3 < bytes.size ->
+                ByteBuffer.wrap(bytes, index, 4).order(ByteOrder.LITTLE_ENDIAN).float
+            bits >= 24 && index + 2 < bytes.size -> {
+                val v = (bytes[index].toInt() and 0xFF) or
+                    ((bytes[index + 1].toInt() and 0xFF) shl 8) or
+                    (bytes[index + 2].toInt() shl 16)
+                val signed = if (v and 0x800000 != 0) v or -0x1000000 else v
+                signed / 8388608f
+            }
+            index + 1 < bytes.size -> {
+                val v = (bytes[index].toInt() and 0xFF) or (bytes[index + 1].toInt() shl 8)
+                v.toShort() / 32768f
+            }
+            else -> 0f
+        }
+    }
+
     private fun decodeAudioFileToStereo48k(file: File, targetRate: Int): Pair<FloatArray, FloatArray>? {
-        readPcm16MonoWav(file)?.let { shorts ->
-            val mono = FloatArray(shorts.size) { i -> shorts[i] / 32768f }
-            return mono to mono.copyOf()
+        readRiffWav(file)?.let { wav ->
+            return if (wav.sampleRate == targetRate || wav.sampleRate <= 0) {
+                wav.left to wav.right
+            } else {
+                resample(wav.left, wav.sampleRate.toFloat() / targetRate) to
+                    resample(wav.right, wav.sampleRate.toFloat() / targetRate)
+            }
         }
         return runCatching {
             val extractor = MediaExtractor()
@@ -540,5 +624,10 @@ class WavMixRenderEngine(
                 raf.write(chunk.array(), 0, chunk.position())
             }
         }
+    }
+
+    override suspend fun encodeCompanionAac(wav: File, destination: File): Boolean = withContext(Dispatchers.IO) {
+        val pcm = WavPcm.readMono(wav) ?: return@withContext false
+        CompactAudioEncoder.writeAacM4a(destination, pcm.sampleRate, pcm.samples)
     }
 }

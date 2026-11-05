@@ -38,8 +38,9 @@ object PreferredShare {
         mime: String,
         title: String,
         packageName: String? = null,
+        text: String? = null,
     ) {
-        val send = sendIntent(uri, mime, title)
+        val send = sendIntent(uri, mime, title, text)
         if (!packageName.isNullOrBlank()) {
             context.grantUriPermission(packageName, uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
             context.startActivity(Intent(send).setPackage(packageName))
@@ -56,11 +57,12 @@ object PreferredShare {
         context.startActivity(chooser)
     }
 
-    private fun sendIntent(uri: Uri, mime: String, title: String): Intent {
+    private fun sendIntent(uri: Uri, mime: String, title: String, text: String? = null): Intent {
         return Intent(Intent.ACTION_SEND).apply {
             type = mime.ifBlank { "*/*" }
             putExtra(Intent.EXTRA_STREAM, uri)
             putExtra(Intent.EXTRA_TITLE, title)
+            if (!text.isNullOrBlank()) putExtra(Intent.EXTRA_TEXT, text)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
     }

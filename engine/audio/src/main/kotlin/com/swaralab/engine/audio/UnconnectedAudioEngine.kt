@@ -5,12 +5,16 @@ import com.swaralab.domain.policy.MonitorPolicy
 import com.swaralab.domain.policy.MonitorPurpose
 import com.swaralab.domain.port.ArmRequest
 import com.swaralab.domain.port.AudioEngine
+import com.swaralab.domain.port.AudioEngineError
 import com.swaralab.domain.port.AudioEngineState
 import com.swaralab.domain.port.EngineStatus
 import com.swaralab.domain.port.FinishedTake
 import com.swaralab.domain.port.TakeControl
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 /**
@@ -20,7 +24,9 @@ import kotlinx.coroutines.flow.asStateFlow
  */
 class UnconnectedAudioEngine : AudioEngine {
     private val states = MutableStateFlow(AudioEngineState())
+    private val errorEvents = MutableSharedFlow<AudioEngineError>(extraBufferCapacity = 8)
     override val state: StateFlow<AudioEngineState> = states.asStateFlow()
+    override val errors: SharedFlow<AudioEngineError> = errorEvents.asSharedFlow()
 
     override suspend fun arm(request: ArmRequest): MonitorDecision {
         val decision = MonitorPolicy.evaluate(request.output, MonitorPurpose.RECORD)

@@ -10,6 +10,14 @@ enum class SessionKind {
     VIDEO,
 }
 
+enum class SingMode {
+    SOLO,
+    DUET,
+    GROUP,
+    FROM_PHONE,
+    LYRICS,
+}
+
 fun defaultTitle(kind: SessionKind): String = when (kind) {
     SessionKind.PRACTICE -> "Practice"
     SessionKind.SONG -> "Song"
@@ -199,47 +207,50 @@ data class VocalChain(
             )
             VocalPreset.CLOSE -> VocalChain(
                 preset = VocalPreset.CLOSE,
-                denoise = 0.84f,
-                breathReduction = 0.38f,
-                deEss = 0.36f,
-                compression = 0.48f,
-                backingDuckDb = 3.4f,
-                reverb = 0.05f,
-                eqLowDb = -2.0f,
-                eqPresenceDb = 2.8f,
-                tone = 0.22f,
+                denoise = 0.72f,
+                breathReduction = 0.32f,
+                deEss = 0.30f,
+                compression = 0.36f,
+                backingDuckDb = 2.8f,
+                reverb = 0.16f,
+                eqLowDb = -0.4f,
+                eqPresenceDb = 1.1f,
+                eqAirDb = 2.0f,
+                tone = 0.08f,
                 fadeOut = 0.28f,
-                thicken = 0.34f,
+                thicken = 0.22f,
             )
             VocalPreset.STAGE -> VocalChain(
                 preset = VocalPreset.STAGE,
-                denoise = 0.78f,
-                breathReduction = 0.28f,
-                deEss = 0.22f,
-                compression = 0.22f,
-                reverb = 0.58f,
-                delay = 0.34f,
-                eqAirDb = 1.6f,
-                tone = -0.18f,
-                fadeOut = 0.62f,
-                thicken = 0.06f,
+                denoise = 0.68f,
+                breathReduction = 0.24f,
+                deEss = 0.18f,
+                compression = 0.18f,
+                reverb = 0.32f,
+                delay = 0.20f,
+                eqLowDb = 0.5f,
+                eqPresenceDb = 0.2f,
+                eqAirDb = 2.2f,
+                tone = -0.04f,
+                fadeOut = 0.58f,
+                thicken = 0.08f,
                 effectAmount = 1f,
             )
             VocalPreset.RADIO -> VocalChain(
                 preset = VocalPreset.RADIO,
-                denoise = 0.94f,
-                breathReduction = 0.58f,
-                deEss = 0.62f,
-                compression = 0.68f,
-                rider = 0.46f,
-                backingDuckDb = 5f,
-                reverb = 0.08f,
-                eqLowDb = -3.0f,
-                eqPresenceDb = 3.0f,
-                eqAirDb = 1.8f,
-                tone = 0.28f,
+                denoise = 0.86f,
+                breathReduction = 0.48f,
+                deEss = 0.48f,
+                compression = 0.52f,
+                rider = 0.36f,
+                backingDuckDb = 4.2f,
+                reverb = 0.14f,
+                eqLowDb = -1.2f,
+                eqPresenceDb = 1.5f,
+                eqAirDb = 2.4f,
+                tone = 0.16f,
                 fadeOut = 0.24f,
-                thicken = 0.14f,
+                thicken = 0.16f,
             )
             VocalPreset.CUSTOM -> VocalChain(preset = VocalPreset.CUSTOM)
         }
@@ -288,7 +299,12 @@ fun PublishSettings.withTarget(target: PublishTarget): PublishSettings {
             PublishTarget.MASTER -> -14f
             else -> -13f
         },
-        truePeakDbtp = -1f,
+        truePeakDbtp = when (target) {
+            PublishTarget.REELS, PublishTarget.SHORTS -> -0.3f
+            PublishTarget.WHATSAPP -> -2.5f
+            PublishTarget.MASTER -> -1f
+            else -> -0.8f
+        },
     )
 }
 
