@@ -30,7 +30,7 @@ object CompactAudioEncoder {
 
         val format = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, sampleRate, channels).apply {
             setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
-            setInteger(MediaFormat.KEY_BIT_RATE, if (stereo) 256_000 else 192_000)
+            setInteger(MediaFormat.KEY_BIT_RATE, if (stereo) 128_000 else 96_000)
             setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 32_768)
         }
         val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)

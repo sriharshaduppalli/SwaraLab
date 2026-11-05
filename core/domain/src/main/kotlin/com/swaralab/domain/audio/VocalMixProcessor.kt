@@ -27,10 +27,15 @@ object VocalMixProcessor {
         mode: ScaleMode? = null,
     ) {
         if (samples.isEmpty() || !chain.enabled) return
-        highPass(samples, sampleRate, cutoffHz = 85.0)
-        val denoise = chain.denoise.coerceIn(0f, 1f).coerceAtLeast(0.55f)
+        highPass(samples, sampleRate, cutoffHz = 90.0)
+        val denoise = if (chain.preset == VocalPreset.RAW) {
+            chain.denoise.coerceIn(0f, 1f).coerceAtLeast(0.4f)
+        } else {
+            chain.denoise.coerceIn(0f, 1f).coerceAtLeast(0.7f)
+        }
         spectralDenoise(samples, sampleRate, denoise)
-        val breath = chain.breathReduction.coerceIn(0f, 1f).let { if (it <= 0f) 0.35f else it }
+        gateGaps(samples, 0.55f + denoise * 0.4f)
+        val breath = chain.breathReduction.coerceIn(0f, 1f).let { if (it <= 0f) 0.42f else it }
         reduceBreaths(samples, sampleRate, breath)
         val deEss = chain.deEss.coerceIn(0f, 1f).let { if (it <= 0f && chain.preset != VocalPreset.RAW) 0.28f else it }
         if (deEss > 0.02f) deEss(samples, sampleRate, deEss)
@@ -152,17 +157,27 @@ object VocalMixProcessor {
         }
         for (k in noise.indices) noise[k] /= noiseFrames.toFloat()
 
-        val alpha = 1.15f + amount * 2.1f
-        val floor = (0.06f - amount * 0.03f).coerceIn(0.02f, 0.08f)
-        val rumbleBins = ((80.0 * n) / sampleRate).toInt().coerceAtLeast(1)
+        val alpha = 1.4f + amount * 2.5f
+        val floor = (0.028f - amount * 0.016f).coerceIn(0.008f, 0.028f)
+        val rumbleBins = ((90.0 * n) / sampleRate).toInt().coerceAtLeast(1)
+        val hissBin = ((4_500.0 * n) / sampleRate).toInt()
+        val airBin = ((8_000.0 * n) / sampleRate).toInt()
         for (f in 0 until frameCount) {
+            val speech = rms[f] / (noiseCut + 1e-8f)
+            val frameGate = if (speech < 1.85f) {
+                (speech / 1.85f).pow(2.3f + amount).coerceIn(0.04f, 1f)
+            } else {
+                1f
+            }
             for (k in mag[f].indices) {
                 val nMag = noise[k]
                 val sMag = mag[f][k]
                 var gain = if (sMag > 1e-8f) 1f - alpha * nMag / sMag else 0f
                 gain = gain.coerceIn(floor, 1f)
-                if (k <= rumbleBins) gain *= 0.15f
-                mag[f][k] = sMag * gain
+                if (k <= rumbleBins) gain *= 0.12f
+                if (k >= hissBin) gain *= 1f - amount * 0.38f
+                if (k >= airBin) gain *= 1f - amount * 0.22f
+                mag[f][k] = sMag * (gain * frameGate).coerceIn(0.006f, 1f)
             }
         }
 
@@ -195,12 +210,21 @@ object VocalMixProcessor {
     }
 
     private fun expander(samples: FloatArray, amount: Float) {
-        val threshold = 0.012f + (1f - amount) * 0.01f
+        gateGaps(samples, amount)
+    }
+
+    private fun gateGaps(samples: FloatArray, amount: Float) {
+        val threshold = (0.010f + (1f - amount.coerceIn(0f, 1f)) * 0.008f)
         var env = 0f
         for (i in samples.indices) {
             val mag = abs(samples[i])
-            env = if (mag > env) env + 0.15f * (mag - env) else env * 0.997f
-            val gate = if (env < threshold) (env / threshold).pow(1.6f + amount) else 1f
+            val attack = if (env < threshold * 1.5f) 0.055f else 0.24f
+            env = if (mag > env) env + attack * (mag - env) else env * 0.9968f
+            val gate = if (env < threshold) {
+                (env / threshold).pow(2.1f + amount * 0.7f).coerceIn(0.02f, 1f)
+            } else {
+                1f
+            }
             samples[i] *= gate
         }
     }
@@ -288,9 +312,9 @@ object VocalMixProcessor {
                 val compressed = threshold * over.pow(1f / ratio)
                 gain = compressed / env
             }
-            if (ride > 0.02f && slow > 1e-4f) {
+            if (ride > 0.02f && env > 0.05f && slow > 0.04f) {
                 val target = 0.12f
-                gain *= (1f + ride * (target / slow - 1f).coerceIn(-0.35f, 0.55f))
+                gain *= (1f + ride * (target / slow - 1f).coerceIn(-0.28f, 0.32f))
             }
             samples[i] *= gain
         }
@@ -406,18 +430,29 @@ object VocalMixProcessor {
         val n = min(left.size, right.size)
         if (n <= 0) return
         var sumSq = 0.0
+        var voicedSq = 0.0
+        var voiced = 0
         var peak = 0f
         for (i in 0 until n) {
             val l = abs(left[i])
             val r = abs(right[i])
             if (l > peak) peak = l
             if (r > peak) peak = r
-            sumSq += left[i] * left[i] + right[i] * right[i]
+            val energy = left[i] * left[i] + right[i] * right[i]
+            sumSq += energy
+            if ((l + r) * 0.5f > 0.028f) {
+                voicedSq += energy
+                voiced += 1
+            }
         }
-        val rms = sqrt(sumSq / (n * 2.0)).toFloat()
+        val rms = if (voiced > n / 20) {
+            sqrt(voicedSq / (voiced * 2.0)).toFloat()
+        } else {
+            sqrt(sumSq / (n * 2.0)).toFloat()
+        }
         if (rms < 1e-6f) return
-        val targetRms = 10.0.pow(targetLufs / 20.0).toFloat().coerceIn(0.08f, 0.32f)
-        val loudnessGain = (targetRms / rms).coerceIn(0.35f, 3.5f)
+        val targetRms = 10.0.pow(targetLufs / 20.0).toFloat().coerceIn(0.08f, 0.28f)
+        val loudnessGain = (targetRms / rms).coerceIn(0.4f, 2.15f)
         val ceiling = 10.0.pow(truePeakDbtp / 20.0).toFloat().coerceIn(0.7f, 0.95f)
         for (i in 0 until n) {
             left[i] = (left[i] * loudnessGain).let { x ->

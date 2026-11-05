@@ -15,6 +15,13 @@ class LyricLanguageTest {
         assertEquals(LyricLanguage.HINDI, LyricLanguage.detect("\u0924\u0941\u092E \u0939\u0940 \u0939\u094B"))
         assertEquals(LyricLanguage.ENGLISH, LyricLanguage.detect("Hold the final note"))
         assertEquals(LyricLanguage.TAMIL, LyricLanguage.detect("\u0B95\u0BBE\u0BA4\u0BB2\u0BCD"))
+        assertEquals(LyricLanguage.ARABIC, LyricLanguage.detect("\u0623\u0646\u062A\u064E"))
+        assertEquals(LyricLanguage.KOREAN, LyricLanguage.detect("\uB2E4\uB978 \uB9D0"))
+        assertEquals(LyricLanguage.JAPANESE, LyricLanguage.detect("\u3042\u306A\u305F\u306E \u58F0"))
+        assertEquals(LyricLanguage.RUSSIAN, LyricLanguage.detect("\u0413\u043E\u043B\u043E\u0441"))
+        assertEquals(LyricLanguage.SPANISH, LyricLanguage.fromTag("es"))
+        assertEquals("en-IN", LyricLanguage.resolve("auto", "Hold the note").speechTag)
+        assertEquals("ja-JP", LyricLanguage.resolve("auto", "\u3042\u306A\u305F").speechTag)
     }
 
     @Test

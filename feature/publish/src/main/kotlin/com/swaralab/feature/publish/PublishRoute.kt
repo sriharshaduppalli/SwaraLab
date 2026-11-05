@@ -283,12 +283,7 @@ class PublishViewModel(
         viewModelScope.launch {
             val current = uiState.value ?: return@launch
             if (current.busy) return@launch
-            val kind = when {
-                current.hasCameraVideo -> ExportKind.VIDEO
-                current.target == PublishTarget.WHATSAPP -> ExportKind.COMPACT
-                current.target == PublishTarget.MASTER -> ExportKind.MIX
-                else -> ExportKind.LYRIC_VIDEO
-            }
+            val kind = shareKindFor(current, packageName)
             sliderSaveJob?.cancel()
             flushSlidersToDisk()
             updatePublish(sessionId, current.target)
@@ -303,8 +298,9 @@ class PublishViewModel(
             val aimed = document.copy(publish = document.publish.withTarget(current.target))
             when (val result = render.export(aimed, ExportRequest(current.target, kind))) {
                 is ExportResult.Written -> {
-                    exportedRelativePath = result.relativePath
-                    exportedMime = mimeFor(result.relativePath)
+                    val shareable = ensureWhatsAppSize(aimed, result.relativePath)
+                    exportedRelativePath = shareable
+                    exportedMime = mimeFor(shareable)
                     status = "This take is ready. Opening share..."
                     refresh()
                     shareExportToApps(context, packageName)
@@ -421,10 +417,21 @@ class PublishViewModel(
     fun shareExportToApps(context: Context, packageName: String? = null) {
         val current = uiState.value ?: return
         val path = exportedRelativePath ?: return
-        val source = File(File(projectsDir, sessionId), path)
+        var sharePath = path
+        var source = File(File(projectsDir, sessionId), sharePath)
         if (!source.isFile) return
-        val fileName = current.exportedFileName ?: "swaralab-mix.wav"
         viewModelScope.launch {
+            if (source.length() > SHARE_MAX_BYTES && !exportedMime.contains("zip")) {
+                val document = loadSession(sessionId)
+                if (document != null) {
+                    val compactPath = ensureWhatsAppSize(document, sharePath)
+                    sharePath = compactPath
+                    source = File(File(projectsDir, sessionId), sharePath)
+                    exportedRelativePath = compactPath
+                    exportedMime = mimeFor(compactPath)
+                }
+            }
+            val fileName = File(sharePath).name.ifBlank { "swaralab-mix.m4a" }
             val uri = withContext(Dispatchers.IO) {
                 runCatching {
                     val resolver = context.contentResolver
@@ -485,6 +492,23 @@ class PublishViewModel(
 
     fun stopAudioOnExit() {
         audio.stopPlayback()
+    }
+
+    private suspend fun ensureWhatsAppSize(
+        document: com.swaralab.domain.model.SessionDocument,
+        relativePath: String,
+    ): String {
+        val file = File(File(projectsDir, sessionId), relativePath)
+        if (!file.isFile || file.length() <= SHARE_MAX_BYTES) return relativePath
+        return when (
+            val compact = render.export(
+                document,
+                ExportRequest(document.publish.target, ExportKind.COMPACT),
+            )
+        ) {
+            is ExportResult.Written -> compact.relativePath
+            is ExportResult.Waiting -> relativePath
+        }
     }
 
     private fun refresh() {
@@ -1082,6 +1106,18 @@ private fun PublishTarget.label(): String = when (this) {
     PublishTarget.LANDSCAPE -> "Wide"
 }
 
+private const val SHARE_MAX_BYTES = 15L * 1024 * 1024
+
+private fun shareKindFor(current: PublishUi, packageName: String?): ExportKind {
+    val pkg = packageName.orEmpty()
+    val whatsApp = pkg.contains("whatsapp") || current.target == PublishTarget.WHATSAPP
+    if (whatsApp) return ExportKind.COMPACT
+    if (pkg.contains("instagram") || pkg.contains("youtube")) {
+        return if (current.hasCameraVideo) ExportKind.VIDEO else ExportKind.LYRIC_VIDEO
+    }
+    return ExportKind.COMPACT
+}
+
 private fun mimeFor(path: String): String = when (path.substringAfterLast('.').lowercase()) {
     "mp4" -> "video/mp4"
     "m4a", "aac" -> "audio/mp4"
@@ -1092,7 +1128,7 @@ private fun mimeFor(path: String): String = when (path.substringAfterLast('.').l
 private fun shareCopy(target: PublishTarget): String = when (target) {
     PublishTarget.REELS -> "Vertical 9:16. Leveled hot for Reels (−11 LUFS). Hear as Reels before you share."
     PublishTarget.SHORTS -> "Vertical 9:16. Leveled hot for Shorts (−11 LUFS). Hear as Shorts before you share."
-    PublishTarget.WHATSAPP -> "Quieter for chats and status (−16 LUFS). Hear as WhatsApp so it is not a surprise."
+    PublishTarget.WHATSAPP -> "Small AAC under 16 MB for chats and status (−16 LUFS). Hear as WhatsApp first."
     PublishTarget.SQUARE -> "Square 1:1 feed. Share loudness about −13 LUFS."
     PublishTarget.LANDSCAPE -> "Wide 16:9. Share loudness about −13 LUFS."
     PublishTarget.MASTER -> "Full vocal + backing WAV at −14 LUFS, the studio master."

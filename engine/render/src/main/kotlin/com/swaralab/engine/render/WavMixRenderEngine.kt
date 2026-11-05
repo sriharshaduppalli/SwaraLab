@@ -229,26 +229,15 @@ class WavMixRenderEngine(
         val masterR = FloatArray(totalSamples)
         val duckLinear = dbToLinear(-abs(document.chain.backingDuckDb))
         var env = 0f
-        var lpLow = 0f
-        var lpHigh = 0f
-        val aLow = 0.014f
-        val aHigh = 0.11f
         for (i in 0 until totalSamples) {
             val v = if (i < limited.size) limited[i] else 0f
             val vMag = abs(v)
-            env = if (vMag > env) env + 0.01f * (vMag - env) else env * 0.9992f
-            val duckAmount = (env * 8f).coerceIn(0f, 1f)
+            env = if (vMag > env) env + 0.012f * (vMag - env) else env * 0.9994f
+            val duckAmount = if (env > 0.04f) ((env - 0.04f) * 7f).coerceIn(0f, 1f) else 0f
             val currentDuck = 1f - duckAmount * (1f - duckLinear)
-            val midDip = 1f - duckAmount * 0.28f
             if (backingL != null && backingR != null && i < backingL.size && i < backingR.size) {
-                val bl = backingL[i] * currentDuck
-                val br = backingR[i] * currentDuck
-                lpLow += aLow * (bl - lpLow)
-                lpHigh += aHigh * (bl - lpHigh)
-                val mid = (lpHigh - lpLow) * midDip
-                val side = (bl - mid)
-                masterL[i] = v + side + mid
-                masterR[i] = v + (br * currentDuck - (lpHigh - lpLow) * (1f - midDip)) + mid
+                masterL[i] = v + backingL[i] * currentDuck
+                masterR[i] = v + backingR[i] * currentDuck
             } else {
                 masterL[i] = v
                 masterR[i] = v

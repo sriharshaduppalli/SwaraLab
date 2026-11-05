@@ -33,6 +33,21 @@ class VocalMixProcessorTest {
         assertTrue("Sung tone should still be present, before=$beforeTone after=$afterTone", afterTone > beforeTone * 0.45f)
     }
 
+    @Test
+    fun voiceForwardMixDoesNotLiftGapHiss() {
+        val sampleRate = 48_000
+        val samples = FloatArray(sampleRate) { i ->
+            val hiss = ((i * 1103515245 + 12345) and 0x7fff) / 32768f * 0.10f - 0.05f
+            if (i < sampleRate / 3) hiss else hiss + 0.28f * sin(2.0 * PI * 220.0 * i / sampleRate).toFloat()
+        }
+        val beforeHiss = rms(samples, 0, sampleRate / 5)
+        VocalMixProcessor.applyChain(samples, sampleRate, VocalChain.preset(VocalPreset.CLOSE))
+        val afterHiss = rms(samples, 0, sampleRate / 5)
+        val afterTone = rms(samples, sampleRate / 2, sampleRate / 2 + 8192)
+        assertTrue("Mix gap should be quieter, before=$beforeHiss after=$afterHiss", afterHiss < beforeHiss * 0.35f)
+        assertTrue("Voice should remain, after=$afterTone", afterTone > 0.04f)
+    }
+
     private fun rms(samples: FloatArray, start: Int, end: Int): Float {
         var sum = 0.0
         val from = start.coerceIn(0, samples.lastIndex)

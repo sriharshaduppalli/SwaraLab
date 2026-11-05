@@ -7,7 +7,10 @@ import android.media.AudioRecord
 import android.media.AudioTrack
 import android.media.MediaPlayer
 import android.media.MediaRecorder
+import android.media.audiofx.AcousticEchoCanceler
 import android.os.Build
+import com.swaralab.domain.model.GearRoute
+import com.swaralab.domain.audio.LiveCaptureCleaner
 import com.swaralab.domain.audio.MusicalKeys
 import com.swaralab.domain.audio.VocalMetrics
 import com.swaralab.domain.audio.VocalSignalAnalyzer
@@ -93,6 +96,9 @@ class AndroidAudioEngine(
 
     @Volatile
     private var monitorTrack: AudioTrack? = null
+
+    @Volatile
+    private var echoCanceler: AcousticEchoCanceler? = null
 
     private data class ActiveRecording(
         val sessionId: String,
@@ -182,7 +188,7 @@ class AndroidAudioEngine(
                     delay(beatMs)
                 }
                 if (isActive) {
-                    val opened = openRecorder(sampleRate)
+                    val opened = openRecorder(sampleRate, request)
                     if (opened != null) {
                         beginCapture(opened, active, request)
                     } else {
@@ -201,7 +207,7 @@ class AndroidAudioEngine(
             return@withContext TakeControl.Started(takeId)
         }
 
-        val recorder = openRecorder(sampleRate) ?: run {
+        val recorder = openRecorder(sampleRate, request) ?: run {
             activeTake = null
             return@withContext TakeControl.TransportUnavailable
         }
@@ -210,34 +216,70 @@ class AndroidAudioEngine(
     }
 
     @SuppressLint("MissingPermission")
-    private fun openRecorder(sampleRate: Int): AudioRecord? {
+    private fun openRecorder(sampleRate: Int, request: ArmRequest?): AudioRecord? {
         val channelConfig = AudioFormat.CHANNEL_IN_MONO
         val audioFormat = AudioFormat.ENCODING_PCM_16BIT
         val minBuffer = AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat)
         if (minBuffer <= 0) return null
         val bufferSize = max(minBuffer * 2, 8192)
-        val recorder = try {
-            AudioRecord(
-                MediaRecorder.AudioSource.MIC,
-                sampleRate,
-                channelConfig,
-                audioFormat,
-                bufferSize,
-            )
-        } catch (_: Throwable) {
-            return null
+        val wantsEchoCancel = !request?.backingRelativePath.isNullOrBlank() ||
+            request?.metronomeEnabled == true ||
+            request?.monitorEnabled == true
+        val sources = buildList {
+            if (wantsEchoCancel && Build.VERSION.SDK_INT >= 31) {
+                add(MediaRecorder.AudioSource.VOICE_PERFORMANCE)
+            }
+            add(MediaRecorder.AudioSource.MIC)
         }
-        if (recorder.state != AudioRecord.STATE_INITIALIZED) {
-            recorder.release()
-            return null
+        for (source in sources) {
+            val recorder = try {
+                AudioRecord(
+                    source,
+                    sampleRate,
+                    channelConfig,
+                    audioFormat,
+                    bufferSize,
+                )
+            } catch (_: Throwable) {
+                null
+            } ?: continue
+            if (recorder.state != AudioRecord.STATE_INITIALIZED) {
+                recorder.release()
+                continue
+            }
+            return try {
+                recorder.startRecording()
+                attachEchoCancel(recorder, wantsEchoCancel)
+                recorder
+            } catch (_: Throwable) {
+                releaseCaptureEffects()
+                recorder.release()
+                null
+            }
         }
-        return try {
-            recorder.startRecording()
-            recorder
-        } catch (_: Throwable) {
-            recorder.release()
-            null
+        return null
+    }
+
+    private fun attachEchoCancel(recorder: AudioRecord, enabled: Boolean) {
+        releaseCaptureEffects()
+        if (!enabled || !AcousticEchoCanceler.isAvailable()) return
+        echoCanceler = runCatching {
+            AcousticEchoCanceler.create(recorder.audioSessionId)?.also { it.enabled = true }
+        }.getOrNull()
+    }
+
+    private fun releaseCaptureEffects() {
+        val canceler = echoCanceler
+        echoCanceler = null
+        if (canceler != null) {
+            runCatching { canceler.enabled = false }
+            runCatching { canceler.release() }
         }
+    }
+
+    private fun clicksStayInHeadphones(request: ArmRequest?): Boolean {
+        val output = request?.output ?: return false
+        return output == GearRoute.WIRED || output == GearRoute.USB
     }
 
     private fun beginCapture(
@@ -303,7 +345,8 @@ class AndroidAudioEngine(
                 val byteBuffer = ByteBuffer.allocate(shorts.size * 2).order(ByteOrder.LITTLE_ENDIAN)
                 val delayLine = FloatArray(((sampleRate * 0.18).toInt()).coerceAtLeast(1))
                 val monitorState = intArrayOf(0)
-                val reverbState = floatArrayOf(0f, 0f, 0f)
+                val reverbState = floatArrayOf(0f, 0f, 0f, 0f)
+                val liveCleaner = LiveCaptureCleaner(sampleRate)
                 val isEmulator = Build.FINGERPRINT.contains("generic", ignoreCase = true) ||
                     Build.MODEL.contains("sdk", ignoreCase = true) ||
                     Build.HARDWARE.contains("ranchu", ignoreCase = true)
@@ -337,9 +380,14 @@ class AndroidAudioEngine(
                                 }
                                 peakSample = 14_500
                             }
+                            liveCleaner.process(shorts, read)
                             val previousCursor = sampleCursor
                             sampleCursor += read.toLong()
-                            if (metronomeEnabled && previousCursor / beatSamples != sampleCursor / beatSamples) {
+                            if (
+                                metronomeEnabled &&
+                                clicksStayInHeadphones(request) &&
+                                previousCursor / beatSamples != sampleCursor / beatSamples
+                            ) {
                                 playClick(sampleRate, accent = (sampleCursor / beatSamples) % 4L == 0L)
                             }
                             for (i in 0 until read) {
@@ -390,6 +438,7 @@ class AndroidAudioEngine(
                         }
                     }
                 } finally {
+                    releaseCaptureEffects()
                     runCatching { recorder.stop() }
                     recorder.release()
                     writeWavHeader(raf, sampleRate, active.totalAudioBytes)
@@ -411,6 +460,7 @@ class AndroidAudioEngine(
         }
         releaseClickTrack()
         releaseMonitorTrack()
+        releaseCaptureEffects()
         states.update {
             it.copy(
                 status = EngineStatus.ARMED,
@@ -671,6 +721,7 @@ class AndroidAudioEngine(
         job?.cancel()
         releaseClickTrack()
         releaseMonitorTrack()
+        releaseCaptureEffects()
         states.value = AudioEngineState(transportConnected = true)
     }
 
@@ -755,21 +806,26 @@ class AndroidAudioEngine(
         val hp = 0.986f
         var prevX = reverbState.getOrElse(1) { 0f }
         var prevY = reverbState.getOrElse(2) { 0f }
+        var noiseEnv = reverbState.getOrElse(3) { 0f }
         for (i in 0 until length) {
             val incoming = shorts[i] / 32768f
             val dry = hp * (prevY + incoming - prevX)
             prevX = incoming
             prevY = dry
+            val mag = abs(dry)
+            noiseEnv = if (mag > noiseEnv) noiseEnv + 0.22f * (mag - noiseEnv) else noiseEnv * 0.996f
+            val gated = if (noiseEnv < 0.016f) dry * (noiseEnv / 0.016f) else dry
             val delayed = delayLine[idx]
-            delayLine[idx] = dry + delayed * 0.25f
+            delayLine[idx] = gated + delayed * 0.25f
             idx = (idx + 1) % delayLine.size
-            rev = rev * 0.92f + dry * 0.08f
-            val mixed = (dry + delayed * delayMix + rev * reverbMix).coerceIn(-1f, 1f)
+            rev = rev * 0.92f + gated * 0.08f
+            val mixed = (gated + delayed * delayMix + rev * reverbMix).coerceIn(-1f, 1f)
             wet.putShort((mixed * 22000f).toInt().coerceIn(-32767, 32767).toShort())
         }
-        if (reverbState.size >= 3) {
+        if (reverbState.size >= 4) {
             reverbState[1] = prevX
             reverbState[2] = prevY
+            reverbState[3] = noiseEnv
         }
         delayIndex[0] = idx
         reverbState[0] = rev

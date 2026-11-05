@@ -46,6 +46,7 @@ import androidx.compose.material3.ExposedDropdownMenuAnchorType
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -269,8 +270,9 @@ class StudioViewModel(
     fun selectPreset(preset: VocalPreset) {
         viewModelScope.launch {
             updateVocalPreset(sessionId, preset)
-            stageNote = null
+            stageNote = "Hearing ${preset.mixHearLabel()}…"
             refresh()
+            hearMix(maxDurationMs = 12_000L, loop = true)
         }
     }
 
@@ -739,8 +741,26 @@ class StudioViewModel(
     }
 
     fun hearPreferredWithTrack() {
-        val take = uiState.value?.takes?.firstOrNull { it.preferred } ?: uiState.value?.takes?.firstOrNull() ?: return
-        togglePlayTake(take)
+        viewModelScope.launch {
+            stageNote = "Mixing this take…"
+            refresh()
+            val heard = hearMix(maxDurationMs = 0L, loop = false)
+            if (!heard) {
+                val take = uiState.value?.takes?.firstOrNull { it.preferred }
+                    ?: uiState.value?.takes?.firstOrNull()
+                    ?: return@launch
+                togglePlayTake(take)
+            }
+        }
+    }
+
+    private suspend fun hearMix(maxDurationMs: Long, loop: Boolean): Boolean {
+        val document = loadSession(sessionId) ?: return false
+        val preview = render.preview(document, maxDurationMs) ?: return false
+        audio.playPcm(sessionId, preview.left, preview.right, preview.sampleRate, loop)
+        stageNote = "This is ${document.chain.preset.mixHearLabel()}."
+        refresh()
+        return true
     }
 
     fun keepPendingTake() {
@@ -1117,8 +1137,15 @@ fun StudioRoute(
     var confirmLeave by remember { mutableStateOf(false) }
     var pendingDeleteTake by remember { mutableStateOf<String?>(null) }
 
+    val studioOverlayOpen = editingTitle || editingLyrics || pickingRoute || showMusical
     BackHandler(isCapturing) { confirmLeave = true }
     BackHandler(pendingKeep != null && !isCapturing) { }
+    BackHandler(!isCapturing && pendingKeep == null && studioOverlayOpen) {
+        editingTitle = false
+        editingLyrics = false
+        pickingRoute = false
+        showMusical = false
+    }
 
     DisposableEffect(isCapturing) {
         view.keepScreenOn = isCapturing
@@ -1667,7 +1694,7 @@ fun StudioRoute(
                         LyricLanguage.entries.forEach { language ->
                             DropdownMenuItem(
                                 text = {
-                                    Text(language.englishName, maxLines = 1, softWrap = false)
+                                    Text(language.menuLabel, maxLines = 1, softWrap = false)
                                 },
                                 onClick = {
                                     viewModel.setMusical(lyricLanguage = language.tag)
@@ -1680,9 +1707,9 @@ fun StudioRoute(
                 Text(
                     text = buildString {
                         if (chosenLanguage == LyricLanguage.AUTO) {
-                            append("Auto reads the script. Now ${resolvedLanguage.englishName}.")
+                            append("Auto reads the script (Telugu, Arabic, Korean…). Latin songs: pick Spanish, French, or English.")
                         } else {
-                            append("Follows ${chosenLanguage.englishName} while you sing.")
+                            append("Follows ${chosenLanguage.menuLabel} while you sing.")
                         }
                         if (!state.heardLyric.isNullOrBlank()) {
                             append(" · ${state.heardLyric}")
@@ -1854,7 +1881,9 @@ fun StudioRoute(
                     Text(text = thisTake.label, style = MaterialTheme.typography.titleMedium, color = SwaraColors.Ink)
                     Text(text = thisTake.durationText, style = MaterialTheme.typography.bodyMedium, color = SwaraColors.Muted)
                     Button(onClick = viewModel::hearPreferredWithTrack, modifier = Modifier.fillMaxWidth()) {
-                        Text(copy.hearWithTrack)
+                        Text(
+                            if (playingRelativePath == "preview-mix") "Stop mix" else "Hear this mix with the track",
+                        )
                     }
                     Button(onClick = onPublish, modifier = Modifier.fillMaxWidth()) {
                         Text("Share this take")
@@ -1864,6 +1893,11 @@ fun StudioRoute(
         }
 
         Text(text = "Mix for this take", style = MaterialTheme.typography.titleLarge)
+        Text(
+            text = "Tap a mix to hear it. Share sends this mix as a small file WhatsApp can take.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = SwaraColors.Muted,
+        )
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             val presetsToShow = if (state.preset == VocalPreset.CUSTOM) {
                 studioPresets + VocalPreset.CUSTOM
@@ -1871,6 +1905,7 @@ fun StudioRoute(
                 studioPresets
             }
             presetsToShow.forEach { preset ->
+                val (accent, wash) = preset.chipColors()
                 FilterChip(
                     selected = state.preset == preset,
                     onClick = {
@@ -1881,13 +1916,18 @@ fun StudioRoute(
                         }
                     },
                     label = { Text(preset.label()) },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = wash,
+                        selectedLabelColor = accent,
+                    ),
+                    border = BorderStroke(1.dp, if (state.preset == preset) accent else SwaraColors.Line),
                 )
             }
         }
         Text(
             text = state.preset.description(),
             style = MaterialTheme.typography.bodyMedium,
-            color = SwaraColors.Muted,
+            color = SwaraColors.Ink,
         )
 
         if (state.takes.isNotEmpty()) {
@@ -2121,6 +2161,28 @@ private fun LiveVocalMonitorCard(
         }
     }
 
+    val hasPitch = calmMetrics.pitchHz > 0f
+    val tuningLabel = when {
+        !hasPitch -> "Listen, then sing"
+        abs(calmMetrics.centsOffset) <= 12 -> "In tune"
+        abs(calmMetrics.centsOffset) <= 35 && calmMetrics.centsOffset < 0 -> "A little low"
+        abs(calmMetrics.centsOffset) <= 35 -> "A little high"
+        calmMetrics.centsOffset < 0 -> "Low · lift the note"
+        else -> "High · ease the note"
+    }
+    val voiceLevel = voiceLevelFromDb(calmMetrics.rmsDb)
+    val voiceTone = when {
+        voiceLevel < 0.22f -> SwaraColors.Muted
+        voiceLevel > 0.88f -> SwaraColors.Clay
+        else -> SwaraColors.Teal
+    }
+    val pitchTone = when {
+        !hasPitch -> SwaraColors.Gold
+        abs(calmMetrics.centsOffset) <= 12 -> SwaraColors.Teal
+        abs(calmMetrics.centsOffset) <= 35 -> SwaraColors.Gold
+        else -> SwaraColors.Clay
+    }
+
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(22.dp),
@@ -2130,90 +2192,101 @@ private fun LiveVocalMonitorCard(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(18.dp),
+                .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Row(
+            Text(
+                text = "Live pitch",
+                style = MaterialTheme.typography.titleLarge,
+                color = SwaraColors.Ink,
+            )
+            Surface(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
+                shape = RoundedCornerShape(16.dp),
+                color = if (hasPitch) pitchTone.copy(alpha = 0.16f) else SwaraColors.Paper,
             ) {
-                Column(Modifier.weight(1f).padding(end = 8.dp)) {
+                Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
                     Text(
-                        text = "Live Pitch & Sound Graph",
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        style = MaterialTheme.typography.titleLarge,
-                        color = SwaraColors.Ink,
-                    )
-                    Text(
-                        text = if (calmMetrics.pitchHz > 0f) {
-                            val tuning = when {
-                                abs(calmMetrics.centsOffset) <= 12 -> "In tune"
-                                calmMetrics.centsOffset < 0 -> "Flat (${calmMetrics.centsOffset}c)"
-                                else -> "Sharp (+${calmMetrics.centsOffset}c)"
-                            }
-                            "${calmMetrics.pitchHz.roundToInt()} Hz · $tuning · ${calmMetrics.rmsDb.roundToInt()} dB"
-                        } else {
-                            "Sing or play a take to see your live pitch"
-                        },
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = SwaraColors.Muted,
-                    )
-                }
-                Surface(
-                    modifier = Modifier.width(112.dp),
-                    shape = RoundedCornerShape(12.dp),
-                    color = if (calmActive) SwaraColors.TealWash else SwaraColors.Paper,
-                ) {
-                    Text(
-                        text = if (calmMetrics.noteName != "—") {
-                            "${calmMetrics.noteName} · ${calmMetrics.swaraName}"
+                        text = if (hasPitch) {
+                            "${calmMetrics.swaraName}  ·  ${calmMetrics.noteName}"
                         } else {
                             calmModeLabel
                         },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 8.dp, vertical = 6.dp),
-                        maxLines = 1,
-                        textAlign = TextAlign.Center,
-                        style = MaterialTheme.typography.titleMedium,
-                        color = if (calmActive) SwaraColors.Teal else SwaraColors.Muted,
+                        style = MaterialTheme.typography.headlineLarge,
+                        color = if (hasPitch) pitchTone else SwaraColors.Muted,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        text = if (hasPitch) {
+                            "$tuningLabel  ·  ${calmMetrics.pitchHz.roundToInt()} Hz  ·  ${calmMetrics.rmsDb.roundToInt()} dB"
+                        } else {
+                            "Sing a held note. Sa and the Western name will sit here."
+                        },
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = SwaraColors.Ink,
                     )
                 }
             }
 
-            Surface(
+            Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(104.dp),
-                shape = RoundedCornerShape(14.dp),
-                color = SwaraColors.Paper,
-                border = BorderStroke(1.dp, SwaraColors.Line),
+                    .height(168.dp),
             ) {
-                PitchAndWaveformCanvas(audioState = audioState)
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    shape = RoundedCornerShape(14.dp),
+                    color = SwaraColors.Paper,
+                    border = BorderStroke(1.dp, SwaraColors.Line),
+                ) {
+                    PitchAndWaveformCanvas(
+                        audioState = audioState,
+                        pitchColor = pitchTone,
+                    )
+                }
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.CenterStart)
+                        .padding(start = 8.dp, top = 8.dp, bottom = 28.dp),
+                    verticalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Text("High", style = MaterialTheme.typography.labelSmall, color = SwaraColors.Muted)
+                    Spacer(Modifier.weight(1f))
+                    Text("Mid", style = MaterialTheme.typography.labelSmall, color = SwaraColors.Muted)
+                    Spacer(Modifier.weight(1f))
+                    Text("Low", style = MaterialTheme.typography.labelSmall, color = SwaraColors.Muted)
+                }
             }
 
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 EqBandRow(
-                    label = "Bass (Warmth)",
+                    label = "Voice",
+                    hint = when {
+                        voiceLevel < 0.22f -> "Closer"
+                        voiceLevel > 0.88f -> "Hot"
+                        else -> "Good"
+                    },
+                    levelProvider = { voiceLevelFromDb(audioState.value.metrics.rmsDb) },
+                    color = voiceTone,
+                )
+                EqBandRow(
+                    label = "Low",
+                    hint = "Warmth",
                     levelProvider = { audioState.value.metrics.bassLevel },
-                    calmPercent = (calmMetrics.bassLevel * 100).roundToInt().coerceIn(0, 100),
                     color = SwaraColors.Teal,
                 )
                 EqBandRow(
-                    label = "Vocal Mid (Clarity)",
+                    label = "Mid",
+                    hint = "Words",
                     levelProvider = { audioState.value.metrics.midLevel },
-                    calmPercent = (calmMetrics.midLevel * 100).roundToInt().coerceIn(0, 100),
                     color = SwaraColors.Gold,
                 )
                 EqBandRow(
-                    label = "Treble (Air & Presence)",
+                    label = "Air",
+                    hint = "Shine",
                     levelProvider = { audioState.value.metrics.trebleLevel },
-                    calmPercent = (calmMetrics.trebleLevel * 100).roundToInt().coerceIn(0, 100),
-                    color = SwaraColors.Ink,
+                    color = SwaraColors.Rose,
                 )
             }
         }
@@ -2223,34 +2296,42 @@ private fun LiveVocalMonitorCard(
 @Composable
 private fun PitchAndWaveformCanvas(
     audioState: State<AudioEngineState>,
+    pitchColor: Color,
 ) {
     val path = remember { Path() }
-    Canvas(modifier = Modifier.fillMaxSize().padding(horizontal = 10.dp, vertical = 10.dp)) {
+    Canvas(modifier = Modifier.fillMaxSize().padding(start = 36.dp, end = 10.dp, top = 10.dp, bottom = 10.dp)) {
         val metrics = audioState.value.metrics
         val width = size.width
         val height = size.height
-        listOf(0.22f, 0.5f, 0.78f).forEach { frac ->
-            val y = height * frac
+        val waveFloor = height * 0.78f
+        val pitchHeight = height * 0.74f
+        listOf(0.08f, 0.5f, 0.92f).forEach { frac ->
+            val y = pitchHeight * frac
             drawLine(
-                color = SwaraColors.Line,
+                color = SwaraColors.Line.copy(alpha = 0.7f),
                 start = Offset(0f, y),
                 end = Offset(width, y),
                 strokeWidth = 1.dp.toPx(),
             )
         }
+        drawRect(
+            color = SwaraColors.Teal.copy(alpha = 0.10f),
+            topLeft = Offset(0f, pitchHeight * 0.38f),
+            size = Size(width, pitchHeight * 0.24f),
+        )
 
         val wave = metrics.waveformHistory
         val pitches = metrics.pitchHistory
-        val slots = 42
-        val stepX = if (slots > 1) width / (slots - 1).toFloat() else width
+        val slots = maxOf(wave.size, pitches.size, 2)
+        val stepX = width / (slots - 1).toFloat()
 
         wave.forEachIndexed { idx, amp ->
             val x = idx * stepX
-            val barHalf = (amp.coerceIn(0.03f, 1f) * height * 0.44f)
+            val bar = (amp.coerceIn(0.04f, 1f) * (height - waveFloor) * 0.9f)
             drawLine(
-                color = SwaraColors.Teal.copy(alpha = 0.35f),
-                start = Offset(x, (height / 2f) - barHalf),
-                end = Offset(x, (height / 2f) + barHalf),
+                color = SwaraColors.Teal.copy(alpha = 0.45f),
+                start = Offset(x, height),
+                end = Offset(x, height - bar),
                 strokeWidth = 3.dp.toPx(),
                 cap = StrokeCap.Round,
             )
@@ -2258,38 +2339,40 @@ private fun PitchAndWaveformCanvas(
 
         path.reset()
         var penDown = false
+        var lastPoint: Offset? = null
         pitches.forEachIndexed { idx, normPitch ->
             val x = idx * stepX
             if (normPitch > 0.01f) {
-                val y = height * (1f - normPitch.coerceIn(0.05f, 0.95f))
+                val y = pitchHeight * (1f - normPitch.coerceIn(0.05f, 0.95f))
+                val point = Offset(x, y)
                 if (!penDown) {
                     path.moveTo(x, y)
                     penDown = true
                 } else {
                     path.lineTo(x, y)
                 }
-                drawCircle(
-                    color = SwaraColors.Gold,
-                    radius = 2.8.dp.toPx(),
-                    center = Offset(x, y),
-                )
+                lastPoint = point
             } else {
                 penDown = false
             }
         }
         drawPath(
             path = path,
-            color = SwaraColors.Gold,
-            style = Stroke(width = 2.5.dp.toPx(), cap = StrokeCap.Round),
+            color = pitchColor,
+            style = Stroke(width = 3.dp.toPx(), cap = StrokeCap.Round),
         )
+        lastPoint?.let { point ->
+            drawCircle(color = pitchColor.copy(alpha = 0.22f), radius = 10.dp.toPx(), center = point)
+            drawCircle(color = pitchColor, radius = 4.5.dp.toPx(), center = point)
+        }
     }
 }
 
 @Composable
 private fun EqBandRow(
     label: String,
+    hint: String,
     levelProvider: () -> Float,
-    calmPercent: Int,
     color: Color,
 ) {
     Row(
@@ -2299,34 +2382,46 @@ private fun EqBandRow(
     ) {
         Text(
             text = label,
-            modifier = Modifier.weight(0.46f),
+            modifier = Modifier.width(52.dp),
             maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
+            softWrap = false,
             style = MaterialTheme.typography.bodyMedium,
-            color = SwaraColors.Muted,
-        )
-        Canvas(
-            modifier = Modifier
-                .weight(0.40f)
-                .height(8.dp)
-                .clip(RoundedCornerShape(4.dp)),
-        ) {
-            drawRect(color = SwaraColors.Line)
-            val fillWidth = size.width * levelProvider().coerceIn(0.03f, 1f)
-            drawRect(
-                color = color,
-                size = Size(fillWidth, size.height),
-            )
-        }
-        Text(
-            text = "$calmPercent%",
-            modifier = Modifier.width(46.dp),
-            maxLines = 1,
-            textAlign = TextAlign.End,
-            style = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
             color = SwaraColors.Ink,
         )
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .height(12.dp)
+                .clip(RoundedCornerShape(6.dp)),
+        ) {
+            Canvas(Modifier.fillMaxSize()) {
+                drawRect(color = SwaraColors.Line.copy(alpha = 0.55f))
+                drawRect(
+                    color = SwaraColors.Teal.copy(alpha = 0.16f),
+                    topLeft = Offset(size.width * 0.28f, 0f),
+                    size = Size(size.width * 0.52f, size.height),
+                )
+                val fillWidth = size.width * levelProvider().coerceIn(0.02f, 1f)
+                drawRect(
+                    color = color,
+                    size = Size(fillWidth, size.height),
+                )
+            }
+        }
+        Text(
+            text = hint,
+            modifier = Modifier.width(58.dp),
+            maxLines = 1,
+            softWrap = false,
+            textAlign = TextAlign.End,
+            style = MaterialTheme.typography.bodyMedium,
+            color = color,
+        )
     }
+}
+
+private fun voiceLevelFromDb(rmsDb: Float): Float {
+    return ((rmsDb + 48f) / 42f).coerceIn(0f, 1f)
 }
 
 private data class ScaleTarget(
@@ -2584,11 +2679,13 @@ private fun StagePitchChip(audioStateFlow: StateFlow<AudioEngineState>) {
         while (true) {
             val metrics = audioStateFlow.value.metrics
             if (metrics.pitchHz > 0f) {
-                note = "${metrics.noteName} · ${metrics.swaraName}"
+                note = "${metrics.swaraName}  ·  ${metrics.noteName}  ·  ${metrics.pitchHz.roundToInt()} Hz"
                 tuning = when {
                     kotlin.math.abs(metrics.centsOffset) <= 12 -> "In tune"
-                    metrics.centsOffset < 0 -> "A little low"
-                    else -> "A little high"
+                    kotlin.math.abs(metrics.centsOffset) <= 35 && metrics.centsOffset < 0 -> "A little low"
+                    kotlin.math.abs(metrics.centsOffset) <= 35 -> "A little high"
+                    metrics.centsOffset < 0 -> "Low · lift the note"
+                    else -> "High · ease the note"
                 }
             }
             delay(380L)
@@ -2600,13 +2697,18 @@ private fun StagePitchChip(audioStateFlow: StateFlow<AudioEngineState>) {
         color = Color(0x990A1214),
         border = BorderStroke(1.dp, SwaraColors.Teal.copy(alpha = 0.4f)),
     ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(text = note, style = MaterialTheme.typography.titleMedium, color = SwaraColors.Teal)
-            Text(text = tuning, style = MaterialTheme.typography.bodyMedium, color = Color.White.copy(alpha = 0.72f))
+        Column(Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) {
+            Text(
+                text = note,
+                style = MaterialTheme.typography.titleLarge,
+                color = SwaraColors.Teal,
+                maxLines = 2,
+            )
+            Text(
+                text = tuning,
+                style = MaterialTheme.typography.bodyLarge,
+                color = Color.White.copy(alpha = 0.84f),
+            )
         }
     }
 }
@@ -3164,12 +3266,23 @@ private fun VocalPreset.label(): String = when (this) {
 }
 
 private fun VocalPreset.description(): String = when (this) {
-    VocalPreset.RAW -> "Your take, cleaned a little. No extra room."
-    VocalPreset.CLOSE -> "Voice sits in front of the track. Small room, presence up."
-    VocalPreset.STAGE -> "A soft hall behind long notes. Gentle, not a cave."
-    VocalPreset.RADIO -> "Phone-speaker clean: noise down, esses tamed, music ducks."
+    VocalPreset.RAW -> "Keep dry: almost the mic. Light rumble only. No hall, no punch."
+    VocalPreset.CLOSE -> "Voice forward: you sit in front. Track ducks. Bright and close."
+    VocalPreset.STAGE -> "Soft hall: long notes bloom in a room. Delay on the tail."
+    VocalPreset.RADIO -> "Phone room clean: hiss and esses down, music steps back, radio punch."
     VocalPreset.CUSTOM -> "Your sliders on Mix & Save. Tap to open them."
 }
+
+private fun VocalPreset.mixHearLabel(): String = label()
+
+private fun VocalPreset.chipColors(): Pair<Color, Color> =
+    when (this) {
+        VocalPreset.CLOSE -> SwaraColors.Teal to SwaraColors.TealWash
+        VocalPreset.STAGE -> SwaraColors.Gold to SwaraColors.GoldWash
+        VocalPreset.RADIO -> SwaraColors.Rose to SwaraColors.RoseWash
+        VocalPreset.RAW -> SwaraColors.Muted to SwaraColors.Card
+        VocalPreset.CUSTOM -> SwaraColors.Ink to SwaraColors.Card
+    }
 
 private fun listeningCopy(output: GearRoute): String = when (output) {
     GearRoute.WIRED -> "Best for singing in time."

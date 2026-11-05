@@ -188,9 +188,13 @@ class SessionReducerTest {
         val voice = VocalChain.preset(VocalPreset.CLOSE)
         val hall = VocalChain.preset(VocalPreset.STAGE)
         val phone = VocalChain.preset(VocalPreset.RADIO)
+        val dry = VocalChain.preset(VocalPreset.RAW)
         assertTrue(voice.eqPresenceDb > hall.eqPresenceDb)
-        assertTrue(hall.reverb > voice.reverb)
+        assertTrue(hall.reverb > voice.reverb * 4f)
+        assertTrue(hall.delay > voice.delay)
         assertTrue(phone.denoise > voice.denoise)
         assertTrue(phone.backingDuckDb > voice.backingDuckDb)
+        assertTrue(dry.denoise < voice.denoise)
+        assertTrue(dry.reverb < 0.02f)
     }
 }
