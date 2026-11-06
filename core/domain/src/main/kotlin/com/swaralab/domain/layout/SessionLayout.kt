@@ -1,14 +1,34 @@
 package com.swaralab.domain.layout
 
+import java.util.Locale
+import kotlin.math.abs
+
 object SessionLayout {
     const val DOCUMENT = "session.json"
     const val TAKES = "media/takes"
     const val BACKING = "media/backing"
+    const val PROCESSED = "media/processed"
     const val VIDEO = "media/video"
     const val MIDI = "media/midi"
     const val EXPORTS = "exports"
 
-    val directories: List<String> = listOf(TAKES, BACKING, VIDEO, MIDI, EXPORTS)
+    val directories: List<String> = listOf(TAKES, BACKING, PROCESSED, VIDEO, MIDI, EXPORTS)
+
+    const val MONITOR_BED = "$PROCESSED/monitor-bed.wav"
+
+    fun processedBacking(trackRelativePath: String, semitones: Int, tempo: Float): String {
+        val id = trackRelativePath
+            .substringAfterLast('/')
+            .substringBeforeLast('.')
+            .replace(Regex("[^A-Za-z0-9_-]"), "_")
+            .take(40)
+            .ifBlank { "track" }
+        val t = "%.2f".format(Locale.US, tempo)
+        return "$PROCESSED/${id}_s${semitones}_t$t.wav"
+    }
+
+    fun usesProcessedBacking(semitones: Int, tempo: Float): Boolean =
+        semitones != 0 || abs(tempo - 1f) >= 0.02f
 
     fun takeWav(takeId: String): String = "$TAKES/$takeId.wav"
 

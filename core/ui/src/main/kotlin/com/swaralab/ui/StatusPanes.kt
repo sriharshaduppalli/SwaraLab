@@ -1,6 +1,12 @@
 package com.swaralab.ui
 
-import androidx.compose.foundation.background
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -8,18 +14,22 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -95,6 +105,16 @@ private fun StatusPane(
     onSecondary: (() -> Unit)? = null,
     fillMax: Boolean = true,
 ) {
+    val float = rememberInfiniteTransition(label = "empty-float")
+    val lift by float.animateFloat(
+        initialValue = -8f,
+        targetValue = 8f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(2_400, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "lift",
+    )
     Column(
         modifier
             .then(if (fillMax) Modifier.fillMaxSize() else Modifier.fillMaxWidth())
@@ -104,10 +124,31 @@ private fun StatusPane(
     ) {
         Box(
             Modifier
-                .size(120.dp)
-                .background(wash, CircleShape),
+                .size(132.dp)
+                .offset(y = lift.dp),
             contentAlignment = Alignment.Center,
         ) {
+            Canvas(Modifier.size(132.dp)) {
+                drawCircle(wash, radius = size.minDimension / 2f)
+                drawCircle(
+                    color = markColor.copy(alpha = 0.22f),
+                    radius = size.minDimension * 0.42f,
+                    style = Stroke(width = 3.dp.toPx()),
+                )
+                drawCircle(
+                    color = markColor.copy(alpha = 0.12f),
+                    radius = size.minDimension * 0.32f,
+                    style = Stroke(width = 2.dp.toPx()),
+                )
+                val cx = size.width / 2f
+                drawLine(
+                    color = markColor.copy(alpha = 0.35f),
+                    start = Offset(cx - 18.dp.toPx(), size.height * 0.72f),
+                    end = Offset(cx + 18.dp.toPx(), size.height * 0.72f),
+                    strokeWidth = 3.dp.toPx(),
+                    cap = StrokeCap.Round,
+                )
+            }
             Text(mark, fontSize = 44.sp, color = markColor)
         }
         Spacer(Modifier.height(24.dp))
@@ -129,8 +170,9 @@ private fun StatusPane(
             Surface(
                 onClick = onAction,
                 modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(16.dp),
+                shape = RoundedCornerShape(20.dp),
                 color = SwaraColors.Teal,
+                shadowElevation = 4.dp,
             ) {
                 Text(
                     actionLabel,

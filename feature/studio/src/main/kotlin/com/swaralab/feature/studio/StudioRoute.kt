@@ -122,14 +122,21 @@ import com.swaralab.domain.port.RenderEngine
 import com.swaralab.domain.port.TakeControl
 import com.swaralab.domain.port.userMessage
 import com.swaralab.domain.usecase.AddVoicePart
+import com.swaralab.domain.usecase.CleanUnusedTakes
 import com.swaralab.domain.usecase.CommitRecordedTake
 import com.swaralab.domain.usecase.DeleteRecordedClip
 import com.swaralab.domain.usecase.ImportBackingTrack
 import com.swaralab.domain.usecase.LoadSession
 import com.swaralab.domain.usecase.PreferRecordedClip
 import com.swaralab.domain.usecase.RenameSession
+import com.swaralab.domain.usecase.RestoreSession
+import com.swaralab.domain.usecase.SessionAutoSave
 import com.swaralab.domain.usecase.SaveTake
+import com.swaralab.domain.usecase.SplitRecordedClip
 import com.swaralab.domain.usecase.TrimRecordedClip
+import com.swaralab.domain.usecase.UpdateRecordedClip
+import com.swaralab.domain.usecase.UpdateTrackChain
+import com.swaralab.domain.usecase.UpdateTrackMix
 import com.swaralab.domain.usecase.UpdateGear
 import com.swaralab.domain.usecase.UpdateLyrics
 import com.swaralab.domain.usecase.UpdateMusicalSettings
@@ -169,6 +176,7 @@ private val studioPresets = listOf(
     VocalPreset.CLOSE,
     VocalPreset.STAGE,
     VocalPreset.RADIO,
+    VocalPreset.BRIGHT,
     VocalPreset.RAW,
 )
 
@@ -197,8 +205,15 @@ fun StudioRoute(
     updatePublish: UpdatePublishSettings,
     updateMusical: UpdateMusicalSettings,
     trimRecordedClip: TrimRecordedClip,
+    splitRecordedClip: SplitRecordedClip,
+    updateRecordedClip: UpdateRecordedClip,
+    updateTrackChain: UpdateTrackChain,
+    updateTrackMix: UpdateTrackMix,
     preferRecordedClip: PreferRecordedClip,
     updatePractice: UpdatePracticeStats,
+    restoreSession: RestoreSession,
+    cleanUnusedTakes: CleanUnusedTakes? = null,
+    sessionAutoSave: SessionAutoSave? = null,
     audio: AudioEngine,
     render: RenderEngine,
     takeCatalog: com.swaralab.domain.port.TakeCatalog? = null,
@@ -226,8 +241,15 @@ fun StudioRoute(
             updatePublish = updatePublish,
             updateMusical = updateMusical,
             trimRecordedClip = trimRecordedClip,
+            splitRecordedClip = splitRecordedClip,
+            updateRecordedClip = updateRecordedClip,
+            updateTrackChain = updateTrackChain,
+            updateTrackMix = updateTrackMix,
             preferRecordedClip = preferRecordedClip,
             updatePractice = updatePractice,
+            restoreSession = restoreSession,
+            cleanUnusedTakes = cleanUnusedTakes,
+            sessionAutoSave = sessionAutoSave,
             audio = audio,
             render = render,
             takeCatalog = takeCatalog,
@@ -240,9 +262,15 @@ fun StudioRoute(
     val stageTake by viewModel.stageTake.collectAsState()
     val recoverableDraft by viewModel.recoverableDraft.collectAsState()
     val liveEffect by viewModel.liveEffect.collectAsState()
+    val backingPrep by viewModel.backingPrep.collectAsState()
+    val practiceLooping by viewModel.practiceLooping.collectAsState()
+    val practiceLoop by viewModel.practiceLoop.collectAsState()
     val playingRelativePath by remember(viewModel.audio) {
         viewModel.audio.state.map { it.playingRelativePath }.distinctUntilChanged()
     }.collectAsState(initial = null)
+    val mixPosition by remember(viewModel.audio) {
+        viewModel.audio.state.map { it.positionMs }.distinctUntilChanged()
+    }.collectAsState(initial = 0L)
     val liveTakeId by remember(viewModel.audio) {
         viewModel.audio.state.map { it.liveTakeId }.distinctUntilChanged()
     }.collectAsState(initial = null)
@@ -276,10 +304,12 @@ fun StudioRoute(
     var showReadRationale by remember { mutableStateOf(false) }
     var recordAfterImport by remember { mutableStateOf(false) }
     var showBackingDesk by remember { mutableStateOf(false) }
+    var karaokePrep by remember { mutableStateOf(false) }
 
     val studioOverlayOpen = editingTitle || editingLyrics || pickingRoute || showMusical
     BackHandler(isCapturing) { confirmLeave = true }
     BackHandler(pendingKeep != null && !isCapturing) { }
+    BackHandler(!isCapturing && pendingKeep == null && karaokePrep) { karaokePrep = false }
     BackHandler(!isCapturing && pendingKeep == null && studioOverlayOpen) {
         editingTitle = false
         editingLyrics = false
@@ -308,6 +338,7 @@ fun StudioRoute(
                         ?: (tenthSec * 100L)
                     viewModel.syncTimedLyric(elapsed)
                     viewModel.followSungLyric(100L)
+                    viewModel.checkPunchEnd(elapsed)
                     if (state.kind == SessionKind.PRACTICE) viewModel.tickPractice()
                 }
             }
@@ -345,6 +376,8 @@ fun StudioRoute(
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
                 viewModel.refreshFromLifecycle()
+            } else if (event == Lifecycle.Event.ON_STOP) {
+                viewModel.flushAutoSave()
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -443,37 +476,45 @@ fun StudioRoute(
     }
 
     var appliedInitialSing by remember { mutableStateOf(false) }
-    LaunchedEffect(state.title, initialSing) {
+    var openedPractice by remember { mutableStateOf(false) }
+    LaunchedEffect(state.kind) {
+        if (state.kind == SessionKind.PRACTICE && !openedPractice) {
+            openedPractice = true
+            karaokePrep = true
+        }
+    }
+    LaunchedEffect(initialSing, state.backing?.relativePath) {
         if (appliedInitialSing || initialSing.isBlank()) return@LaunchedEffect
         val mode = SingMode.entries.firstOrNull { it.name.equals(initialSing, ignoreCase = true) }
             ?: return@LaunchedEffect
-        appliedInitialSing = true
         if (mode == SingMode.FROM_PHONE && state.backing == null) {
             rightsOk = true
             showBackingDesk = true
             recordAfterImport = true
             pickBacking()
-        } else if (mode == SingMode.LYRICS) {
-            editingLyrics = true
-            viewModel.prepareSingMode(
-                mode = mode,
-                onNeedSongFromPhone = { },
-                onNeedLyrics = { editingLyrics = true },
-                onReadyToRecord = { },
-            )
-        } else {
-            viewModel.prepareSingMode(
-                mode = mode,
-                onNeedSongFromPhone = { },
-                onNeedLyrics = { editingLyrics = true },
-                onReadyToRecord = { },
-            )
+            appliedInitialSing = true
+            return@LaunchedEffect
         }
+        appliedInitialSing = true
+        if (mode == SingMode.LYRICS) {
+            editingLyrics = true
+        }
+        viewModel.prepareSingMode(
+            mode = mode,
+            onNeedSongFromPhone = {
+                rightsOk = true
+                showBackingDesk = true
+                recordAfterImport = true
+                pickBacking()
+            },
+            onNeedLyrics = { editingLyrics = true },
+            onReadyToRecord = { karaokePrep = true },
+        )
     }
     LaunchedEffect(state.backing?.relativePath, recordAfterImport) {
         if (recordAfterImport && state.backing != null) {
             recordAfterImport = false
-            requestAndRecord()
+            karaokePrep = true
         }
     }
 
@@ -510,7 +551,8 @@ fun StudioRoute(
             onDiscard = viewModel::discardDraft,
         )
     }
-    val showKaraoke = isCapturing || pendingKeep != null || stageTake is com.swaralab.domain.audio.StageTakeState.Error
+    val showKaraoke = isCapturing || pendingKeep != null || karaokePrep ||
+        stageTake is com.swaralab.domain.audio.StageTakeState.Error
     if (!showKaraoke) pendingKeep?.let { pending ->
         AlertDialog(
             onDismissRequest = { },
@@ -535,7 +577,10 @@ fun StudioRoute(
                 }
             },
             dismissButton = {
-                TextButton(onClick = viewModel::discardPendingTake) { Text(copy.discardTake) }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(onClick = viewModel::retryPendingTake) { Text("Retry") }
+                    TextButton(onClick = viewModel::discardPendingTake) { Text(copy.discardTake) }
+                }
             },
         )
     }
@@ -560,7 +605,41 @@ fun StudioRoute(
     Column(modifier.fillMaxSize().studioAtmosphere(BoothRoom.STAGE, dim = isCapturing)) {
     if (showKaraoke) {
         val engine by viewModel.audio.state.collectAsState()
-        StageTakeScreen(
+        if (state.kind == SessionKind.PRACTICE && stageTake !is StageTakeState.Error) {
+            val lyric = state.lines.getOrNull(state.lyricHighlight.lineIndex.coerceAtLeast(0))?.text
+                ?: state.lines.getOrNull(state.activeLine)?.text
+            PracticeModeScreen(
+                uiState = PracticeUiState(
+                    currentPitch = engine.metrics.livePitch,
+                    currentLyric = lyric,
+                    isLooping = practiceLooping,
+                    loop = practiceLoop,
+                    tempo = state.playbackRate.coerceIn(0.5f, 1f),
+                    isPlaying = engineStatus == EngineStatus.RECORDING,
+                    isPaused = engineStatus == EngineStatus.PAUSED,
+                    backingBusy = backingPrep.busy,
+                    backingProgress = backingPrep.progress,
+                ),
+                onTempoChange = { viewModel.setMusical(playbackRate = it.coerceIn(0.5f, 1f)) },
+                onLoopToggle = viewModel::togglePracticeLoop,
+                onSetLoopPoint = viewModel::setPracticeLoopPoint,
+                onPlayToggle = {
+                    when (engineStatus) {
+                        EngineStatus.PAUSED -> viewModel.resumeTake()
+                        EngineStatus.RECORDING -> viewModel.pauseTake()
+                        else -> {
+                            karaokePrep = false
+                            requestAndRecord()
+                        }
+                    }
+                },
+                onExitPractice = {
+                    viewModel.exitPractice()
+                    karaokePrep = false
+                },
+                modifier = Modifier.weight(1f),
+            )
+        } else StageTakeScreen(
             state = stageTake,
             lyrics = state.lines,
             highlight = state.lyricHighlight,
@@ -570,7 +649,18 @@ fun StudioRoute(
             durationMs = state.backing?.durationMs ?: 0L,
             error = engine.lastError,
             waveform = engine.metrics.waveformHistory,
-            onStart = { requestAndRecord() },
+            livePitch = engine.metrics.livePitch,
+            keyShiftSemitones = state.keyShiftSemitones,
+            playbackRate = state.playbackRate,
+            showBackingShift = state.backing != null,
+            backingBusy = backingPrep.busy,
+            backingProgress = backingPrep.progress,
+            onKeyShift = { viewModel.setMusical(keyShiftSemitones = it) },
+            onPlaybackRate = { viewModel.setMusical(playbackRate = it) },
+            onStart = {
+                karaokePrep = false
+                requestAndRecord()
+            },
             onPause = viewModel::pauseTake,
             onResume = viewModel::resumeTake,
             onStop = { viewModel.toggleRecording() },
@@ -587,9 +677,16 @@ fun StudioRoute(
             },
             onRetry = {
                 viewModel.discardPendingTake()
+                karaokePrep = true
                 viewModel.retryTake()
             },
-            onBack = onBack,
+            onBack = {
+                if (karaokePrep && !isCapturing && pendingKeep == null) {
+                    karaokePrep = false
+                } else {
+                    onBack()
+                }
+            },
             onPickTrack = { pickBacking() },
             onRequestPermission = { recordPermissionLauncher.launch(arrayOf(Manifest.permission.RECORD_AUDIO)) },
             modifier = Modifier.weight(1f),
@@ -673,6 +770,38 @@ fun StudioRoute(
             }
         }
 
+        val canUndo by viewModel.canUndo.collectAsState()
+        val canRedo by viewModel.canRedo.collectAsState()
+        EditorActionBar(
+            copy = copy,
+            canUndo = canUndo,
+            canRedo = canRedo,
+            onUndo = viewModel::undoEdit,
+            onRedo = viewModel::redoEdit,
+            onExport = onPublish,
+        )
+        TimelineOverview(
+            takes = state.takes,
+            durationMs = studioDurationMs(state),
+            positionMs = mixPosition,
+            punchStartMs = state.punchStartMs,
+            punchEndMs = state.punchEndMs,
+        )
+        LayersMixerCard(
+            parts = state.parts,
+            selectedPartId = state.selectedPartId,
+            canAddPart = state.canAddPart,
+            addLayerLabel = copy.addVocalLayer,
+            onSelect = viewModel::selectPart,
+            onMix = { id, gain, pan, mute, solo -> viewModel.setLayerMix(id, gain, pan, mute, solo) },
+            onChain = viewModel::setLayerChain,
+            onAdd = viewModel::addLayer,
+            onRecord = { id ->
+                viewModel.selectPart(id)
+                karaokePrep = true
+            },
+        )
+
         if (pickingRoute) {
             Text(
                 text = "How will you hear the music?",
@@ -731,6 +860,7 @@ fun StudioRoute(
             metronomeEnabled = state.metronomeEnabled,
             headphoneFx = state.headphoneFx,
             punchStartMs = state.punchStartMs,
+            punchEndMs = state.punchEndMs,
             showBackingShift = state.backing != null,
             guidePlaying = playingRelativePath?.endsWith("Guide_Melody.wav") == true,
             onKey = { viewModel.setMusical(keyName = it) },
@@ -1198,6 +1328,18 @@ fun StudioRoute(
 
         if (state.takes.isNotEmpty()) {
             Text(text = "Recorded takes", style = MaterialTheme.typography.titleLarge)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                TextButton(
+                    onClick = viewModel::cleanUnusedTakes,
+                    enabled = state.takes.any { !it.active },
+                ) {
+                    Text(copy.cleanUnusedTakes)
+                }
+            }
             state.takes.forEach { take ->
                 TakeEditCard(
                     take = take,
@@ -1208,34 +1350,33 @@ fun StudioRoute(
                     onPrefer = { viewModel.preferTake(take.id) },
                     onTrim = { start, duration -> viewModel.trimTake(take.id, start, duration) },
                     onPunch = { start -> viewModel.punchFrom(take, start) },
+                    onPunchRegion = { start, end -> viewModel.punchRegion(take, start, end) },
+                    onSplit = { at -> viewModel.splitTake(take.id, at) },
+                    onMove = { at -> viewModel.moveTake(take.id, at) },
+                    onFades = { fadeIn, fadeOut -> viewModel.setTakeFades(take.id, fadeIn, fadeOut) },
+                    onRestore = { viewModel.restoreTake(take.id) },
                 )
             }
         }
         }
 
-        if (state.parts.size > 1) {
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                state.parts.forEach { part ->
-                    FilterChip(
-                        selected = state.selectedPartId == part.id,
-                        onClick = { viewModel.selectPart(part.id) },
-                        label = { Text(part.label) },
-                    )
-                }
-                if (state.canAddPart) {
-                    OutlinedButton(onClick = viewModel::addSecondVoice) {
-                        Text(if (state.parts.size == 1) "+ Duet part" else "+ Harmony")
-                    }
-                }
-            }
-        }
-
     }
     }
-    if (!showKaraoke) RecordingControlBar(
+    if (!showKaraoke) {
+        EditorTransportBar(
+            isPlaying = playingRelativePath != null,
+            positionMs = mixPosition,
+            durationMs = studioDurationMs(state),
+            onPlayPause = {
+                if (playingRelativePath != null) {
+                    viewModel.stopMixPlayback()
+                } else {
+                    viewModel.hearPreferredWithTrack()
+                }
+            },
+            onSeek = viewModel::seekMix,
+        )
+        RecordingControlBar(
         audioStateFlow = viewModel.audio.state,
         stageNote = state.stageNote,
         copy = copy,
@@ -1251,6 +1392,7 @@ fun StudioRoute(
         onPause = viewModel::pauseTake,
         onResume = viewModel::resumeTake,
     )
+    }
     if (showSingChooser) {
         SingChooserSheet(
             copy = copy,
@@ -1266,7 +1408,7 @@ fun StudioRoute(
                         pickBacking()
                     },
                     onNeedLyrics = { editingLyrics = true },
-                    onReadyToRecord = { requestAndRecord() },
+                    onReadyToRecord = { karaokePrep = true },
                 )
             },
         )

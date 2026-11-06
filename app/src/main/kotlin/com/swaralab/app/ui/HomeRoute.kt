@@ -56,13 +56,17 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
-import com.swaralab.ui.BoothRoom
+import com.swaralab.ui.BoothCanvas
+import com.swaralab.ui.BoothSearchBar
 import com.swaralab.ui.EmptyState
+import com.swaralab.ui.GlassCard
+import com.swaralab.ui.GlassSurface
+import com.swaralab.ui.GlassTrackCard
 import com.swaralab.ui.LocalAppCopy
 import com.swaralab.ui.StatusMark
 import com.swaralab.ui.SwaraColors
 import com.swaralab.ui.SwaraWordmark
-import com.swaralab.ui.studioAtmosphere
+import com.swaralab.ui.pressScale
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -80,7 +84,6 @@ import kotlinx.coroutines.launch
 class HomeViewModel(
     private val startSession: StartSession,
     private val listSessions: ListSessions,
-    @Suppress("unused")
     private val appSettings: FileAppSettings,
     private val analytics: Analytics = NoOpAnalytics,
 ) : ViewModel() {
@@ -161,7 +164,9 @@ class HomeViewModel(
 
     private suspend fun refreshLast() {
         val rows = listSessions()
-        lastState.value = rows.firstOrNull()?.let { it.id to it.title }
+        val openedId = appSettings.sessionId()
+        lastState.value = rows.firstOrNull { it.id == openedId }?.let { it.id to it.title }
+            ?: rows.firstOrNull()?.let { it.id to it.title }
         listed.value = rows
     }
 
@@ -211,7 +216,7 @@ fun HomeRoute(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    Box(modifier.fillMaxSize().studioAtmosphere(BoothRoom.HOME)) {
+    BoothCanvas(intensity = 0.6f, modifier = modifier) {
     PullToRefreshBox(
         isRefreshing = isRefreshing,
         onRefresh = viewModel::refreshFromPull,
@@ -224,14 +229,7 @@ fun HomeRoute(
             .padding(horizontal = 20.dp, vertical = 28.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Surface(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(24.dp),
-            color = SwaraColors.Card,
-            tonalElevation = 2.dp,
-            shadowElevation = 2.dp,
-            border = BorderStroke(1.dp, SwaraColors.Line),
-        ) {
+        GlassCard(modifier = Modifier.fillMaxWidth(), padded = false) {
             Box(Modifier.fillMaxWidth()) {
                 Image(
                     painter = painterResource(UiR.drawable.swaralab_mark),
@@ -261,18 +259,14 @@ fun HomeRoute(
             }
         }
         lastSong?.let { (_, title) ->
-            Surface(
+            GlassSurface(
                 onClick = viewModel::continueLast,
                 modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(24.dp),
-                color = SwaraColors.TealWash,
-                tonalElevation = 2.dp,
-                shadowElevation = 3.dp,
-                border = BorderStroke(1.5.dp, SwaraColors.Teal),
+                selected = true,
             ) {
                 Column(Modifier.padding(horizontal = 22.dp, vertical = 22.dp)) {
                     Text(
-                        text = copy.continueLast,
+                        text = copy.continueEditing,
                         style = MaterialTheme.typography.labelLarge,
                         color = SwaraColors.Teal,
                     )
@@ -286,14 +280,10 @@ fun HomeRoute(
                     )
                 }
             }
-        } ?: Surface(
+        } ?: GlassSurface(
             onClick = viewModel::openStage,
             modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(24.dp),
-            color = SwaraColors.TealWash,
-            tonalElevation = 2.dp,
-            shadowElevation = 3.dp,
-            border = BorderStroke(1.5.dp, SwaraColors.Teal),
+            selected = true,
         ) {
             Column(Modifier.padding(horizontal = 22.dp, vertical = 22.dp)) {
                 Text(
@@ -315,7 +305,7 @@ fun HomeRoute(
                 )
             }
         }
-        HomeSearchField(
+        BoothSearchBar(
             query = searchQuery,
             placeholder = copy.searchSongs,
             onQueryChange = viewModel::onSearchQueryChange,
@@ -347,13 +337,12 @@ fun HomeRoute(
                 color = SwaraColors.Teal,
             )
             recent.forEach { row ->
-                HomeTrackRow(
+                GlassTrackCard(
                     title = row.title,
                     detail = boothRowDetail(row),
-                    canListen = row.takeCount > 0,
-                    listenLabel = copy.listenTake,
-                    onOpen = { viewModel.open(row.id) },
-                    onListen = { onListen(row.id) },
+                    onClick = { viewModel.open(row.id) },
+                    actionLabel = copy.listenTake.takeIf { row.takeCount > 0 },
+                    onAction = { onListen(row.id) }.takeIf { row.takeCount > 0 },
                 )
             }
         }
@@ -364,40 +353,20 @@ fun HomeRoute(
             onClick = onImport,
             modifier = Modifier
                 .align(Alignment.BottomEnd)
-                .padding(20.dp),
+                .padding(20.dp)
+                .pressScale(),
             shape = RoundedCornerShape(28.dp),
             color = SwaraColors.Teal,
             shadowElevation = 6.dp,
         ) {
             Text(
-                text = copy.importTrack,
-                modifier = Modifier.padding(horizontal = 18.dp, vertical = 14.dp),
+                text = "+  ${copy.importTrack}",
+                modifier = Modifier.padding(horizontal = 20.dp, vertical = 16.dp),
                 color = SwaraColors.Ink,
-                style = MaterialTheme.typography.labelLarge,
+                style = MaterialTheme.typography.titleMedium,
             )
         }
     }
-}
-
-@Composable
-private fun HomeSearchField(
-    query: String,
-    placeholder: String,
-    onQueryChange: (String) -> Unit,
-) {
-    OutlinedTextField(
-        value = query,
-        onValueChange = onQueryChange,
-        modifier = Modifier.fillMaxWidth(),
-        singleLine = true,
-        shape = RoundedCornerShape(28.dp),
-        placeholder = { Text(placeholder) },
-        trailingIcon = {
-            if (query.isNotEmpty()) {
-                TextButton(onClick = { onQueryChange("") }) { Text("×") }
-            }
-        },
-    )
 }
 
 internal fun sessionMatches(row: SessionSummary, query: String): Boolean {
@@ -405,37 +374,6 @@ internal fun sessionMatches(row: SessionSummary, query: String): Boolean {
     if (needle.isEmpty()) return true
     return row.title.contains(needle, ignoreCase = true) ||
         boothRowDetail(row).contains(needle, ignoreCase = true)
-}
-
-@Composable
-private fun HomeTrackRow(
-    title: String,
-    detail: String,
-    canListen: Boolean,
-    listenLabel: String,
-    onOpen: () -> Unit,
-    onListen: () -> Unit,
-) {
-    Surface(
-        onClick = onOpen,
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
-        color = SwaraColors.Card,
-        border = BorderStroke(1.dp, SwaraColors.Line),
-    ) {
-        Row(
-            Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(Modifier.weight(1f)) {
-                Text(text = title, style = MaterialTheme.typography.titleMedium, color = SwaraColors.Ink)
-                Text(text = detail, style = MaterialTheme.typography.bodyMedium, color = SwaraColors.Muted)
-            }
-            if (canListen) {
-                TextButton(onClick = onListen) { Text(listenLabel) }
-            }
-        }
-    }
 }
 
 internal fun boothRowDetail(row: SessionSummary): String {

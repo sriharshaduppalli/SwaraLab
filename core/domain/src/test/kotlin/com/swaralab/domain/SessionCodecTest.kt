@@ -28,6 +28,7 @@ class SessionCodecTest {
         assertEquals(SessionFormat.VERSION, restored.version)
         assertEquals("Verse", restored.title)
         assertEquals("media/takes/id-9.wav", restored.tracks.first { it.role == TrackRole.LEAD }.clips.single().sourceRelativePath)
+        assertEquals(0L, restored.playheadMs)
     }
 
     @Test

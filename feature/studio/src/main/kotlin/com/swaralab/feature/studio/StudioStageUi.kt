@@ -1103,6 +1103,7 @@ internal fun MusicalSetupCard(
     metronomeEnabled: Boolean,
     headphoneFx: Boolean,
     punchStartMs: Long,
+    punchEndMs: Long = 0L,
     showBackingShift: Boolean,
     guidePlaying: Boolean,
     onKey: (String) -> Unit,
@@ -1207,7 +1208,7 @@ internal fun MusicalSetupCard(
                 Slider(
                     value = playbackRate,
                     onValueChange = onRate,
-                    valueRange = 0.8f..1.2f,
+                    valueRange = 0.5f..1.5f,
                 )
             }
             if (punchStartMs > 0L) {
@@ -1217,7 +1218,11 @@ internal fun MusicalSetupCard(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(
-                        text = "Punch-in armed at ${formatDuration(punchStartMs)}",
+                        text = if (punchEndMs > punchStartMs) {
+                            "Punch-in ${formatDuration(punchStartMs)}–${formatDuration(punchEndMs)}"
+                        } else {
+                            "Punch-in armed at ${formatDuration(punchStartMs)}"
+                        },
                         style = MaterialTheme.typography.bodyMedium,
                         color = SwaraColors.Gold,
                     )
@@ -1294,6 +1299,78 @@ internal fun TakeWaveform(
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
+internal fun LayersMixerCard(
+    parts: List<VoicePartUi>,
+    selectedPartId: String?,
+    canAddPart: Boolean,
+    addLayerLabel: String,
+    onSelect: (String) -> Unit,
+    onMix: (String, Float?, Float?, Boolean?, Boolean?) -> Unit,
+    onChain: (String, VocalPreset?) -> Unit,
+    onAdd: (TrackRole) -> Unit,
+    onRecord: (String) -> Unit,
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        color = SwaraColors.Card,
+        border = BorderStroke(1.dp, SwaraColors.Line),
+    ) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(text = "Vocal layers", style = MaterialTheme.typography.titleLarge)
+            Text(
+                text = "Record Lead, then stack Double, Harmony, and Ad-lib. Mix here before Mix & Save.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = SwaraColors.Muted,
+            )
+            parts.forEach { part ->
+                val selected = selectedPartId == part.id
+                LayerEditorRow(
+                    layer = part,
+                    selected = selected,
+                    onSelect = { onSelect(part.id) },
+                    onVolumeChange = { onMix(part.id, it, null, null, null) },
+                    onMute = { onMix(part.id, null, null, !part.mute, null) },
+                    onSolo = { onMix(part.id, null, null, null, !part.solo) },
+                    onRecord = { onRecord(part.id) },
+                    onChain = { onChain(part.id, it) },
+                )
+                if (selected) {
+                    Text(
+                        text = when {
+                            part.pan < -0.05f -> "Pan L ${(-part.pan * 100).roundToInt()}%"
+                            part.pan > 0.05f -> "Pan R ${(part.pan * 100).roundToInt()}%"
+                            else -> "Pan center"
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = SwaraColors.Muted,
+                    )
+                    Slider(
+                        value = part.pan,
+                        onValueChange = { onMix(part.id, null, it, null, null) },
+                        valueRange = -1f..1f,
+                    )
+                }
+            }
+            if (canAddPart) {
+                TextButton(
+                    onClick = { onAdd(TrackRole.DOUBLE) },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("+ $addLayerLabel")
+                }
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = { onAdd(TrackRole.HARMONY) }) { Text("+ Harmony") }
+                    OutlinedButton(onClick = { onAdd(TrackRole.ADLIB) }) { Text("+ Ad-lib") }
+                    OutlinedButton(onClick = { onAdd(TrackRole.EXTRA) }) { Text("+ Extra") }
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
 internal fun TakeEditCard(
     take: RecordedTakeUi,
     wavFile: File,
@@ -1303,11 +1380,19 @@ internal fun TakeEditCard(
     onPrefer: () -> Unit,
     onTrim: (Long, Long) -> Unit,
     onPunch: (Long) -> Unit,
+    onPunchRegion: (Long, Long) -> Unit = { start, _ -> onPunch(start) },
+    onSplit: (Long) -> Unit = {},
+    onMove: (Long) -> Unit = {},
+    onFades: (Long, Long) -> Unit = { _, _ -> },
+    onRestore: () -> Unit = {},
 ) {
     var startMs by remember(take.id, take.sourceInMs) { mutableStateOf(take.sourceInMs.toFloat()) }
     var endMs by remember(take.id, take.sourceInMs, take.durationMs) {
         mutableStateOf((take.sourceInMs + take.durationMs).toFloat())
     }
+    var placedMs by remember(take.id, take.timelineStartMs) { mutableStateOf(take.timelineStartMs.toFloat()) }
+    var fadeInMs by remember(take.id, take.fadeInMs) { mutableStateOf(take.fadeInMs.toFloat()) }
+    var fadeOutMs by remember(take.id, take.fadeOutMs) { mutableStateOf(take.fadeOutMs.toFloat()) }
     val maxMs = take.sourceDurationMs.toFloat().coerceAtLeast(1f)
     var peaks by remember(take.id, wavFile.path) { mutableStateOf(FloatArray(0)) }
     LaunchedEffect(take.id, wavFile.path) {
@@ -1316,8 +1401,12 @@ internal fun TakeEditCard(
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp),
-        color = if (take.preferred) SwaraColors.TealWash else if (isPlaying) SwaraColors.TealWash else SwaraColors.Card,
-        border = BorderStroke(1.dp, if (take.preferred || isPlaying) SwaraColors.Teal else SwaraColors.Line),
+        color = when {
+            !take.active -> SwaraColors.Card
+            take.preferred || isPlaying -> SwaraColors.TealWash
+            else -> SwaraColors.Card
+        },
+        border = BorderStroke(1.dp, if (take.preferred && take.active || isPlaying) SwaraColors.Teal else SwaraColors.Line),
     ) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(
@@ -1363,6 +1452,34 @@ internal fun TakeEditCard(
                 color = SwaraColors.Gold,
             )
             Slider(value = endMs, onValueChange = { endMs = it.coerceIn(startMs + 250f, maxMs) }, valueRange = 0f..maxMs)
+            Text(
+                text = "Place on timeline ${formatDuration(placedMs.toLong())}",
+                style = MaterialTheme.typography.bodyMedium,
+                color = SwaraColors.Muted,
+            )
+            Slider(
+                value = placedMs,
+                onValueChange = { placedMs = it },
+                onValueChangeFinished = { onMove(placedMs.toLong().coerceAtLeast(0L)) },
+                valueRange = 0f..120_000f,
+            )
+            Text(
+                text = "Fade in ${fadeInMs.roundToInt()} ms · fade out ${fadeOutMs.roundToInt()} ms",
+                style = MaterialTheme.typography.bodyMedium,
+                color = SwaraColors.Muted,
+            )
+            Slider(
+                value = fadeInMs,
+                onValueChange = { fadeInMs = it },
+                onValueChangeFinished = { onFades(fadeInMs.toLong(), fadeOutMs.toLong()) },
+                valueRange = 0f..400f,
+            )
+            Slider(
+                value = fadeOutMs,
+                onValueChange = { fadeOutMs = it },
+                onValueChangeFinished = { onFades(fadeInMs.toLong(), fadeOutMs.toLong()) },
+                valueRange = 0f..400f,
+            )
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(
                     onClick = {
@@ -1372,11 +1489,20 @@ internal fun TakeEditCard(
                     },
                 ) { Text("Keep this section") }
                 OutlinedButton(onClick = { onPunch(startMs.toLong()) }) { Text("Punch from here") }
+                OutlinedButton(
+                    onClick = { onPunchRegion(startMs.toLong(), endMs.toLong()) },
+                ) { Text("Re-record this window") }
+                OutlinedButton(
+                    onClick = { onSplit(((startMs + endMs) / 2f).toLong()) },
+                ) { Text("Split") }
                 FilterChip(
-                    selected = take.preferred,
+                    selected = take.preferred && take.active,
                     onClick = onPrefer,
-                    label = { Text(if (take.preferred) "This take" else "Use this take") },
+                    label = { Text(if (take.preferred && take.active) "This take" else "Use this take") },
                 )
+                if (!take.active) {
+                    OutlinedButton(onClick = onRestore) { Text("Bring back") }
+                }
             }
         }
     }
@@ -1512,18 +1638,20 @@ internal fun GearRoute.label(): String = when (this) {
 }
 
 internal fun VocalPreset.label(): String = when (this) {
-    VocalPreset.RAW -> "Keep dry"
-    VocalPreset.CLOSE -> "Voice forward"
-    VocalPreset.STAGE -> "Soft hall"
-    VocalPreset.RADIO -> "Phone room clean"
+    VocalPreset.RAW -> "Dry"
+    VocalPreset.CLOSE -> "Clean"
+    VocalPreset.STAGE -> "Warm"
+    VocalPreset.RADIO -> "Radio"
+    VocalPreset.BRIGHT -> "Bright"
     VocalPreset.CUSTOM -> "Custom"
 }
 
 internal fun VocalPreset.description(): String = when (this) {
-    VocalPreset.RAW -> "Keep dry: almost the mic. Light rumble only. No hall, no punch."
-    VocalPreset.CLOSE -> "Voice forward: you sit in front, a little air and width. Track ducks."
-    VocalPreset.STAGE -> "Soft hall: warm stereo room behind the notes. Not a cave."
-    VocalPreset.RADIO -> "Phone room clean: hiss down, sparkle up, music steps back."
+    VocalPreset.RAW -> "Dry: almost the mic. Light rumble only. No hall, no punch."
+    VocalPreset.CLOSE -> "Clean: EQ, light compression, a little air. Track ducks."
+    VocalPreset.STAGE -> "Warm: soft hall and body behind the notes."
+    VocalPreset.RADIO -> "Radio: de-esser, compression, sparkle. Music steps back."
+    VocalPreset.BRIGHT -> "Bright: presence and air, tighter hall, less rumble."
     VocalPreset.CUSTOM -> "Your sliders on Mix & Save. Tap to open them."
 }
 
@@ -1534,6 +1662,7 @@ internal fun VocalPreset.chipColors(): Pair<Color, Color> =
         VocalPreset.CLOSE -> SwaraColors.Teal to SwaraColors.TealWash
         VocalPreset.STAGE -> SwaraColors.Gold to SwaraColors.GoldWash
         VocalPreset.RADIO -> SwaraColors.Rose to SwaraColors.RoseWash
+        VocalPreset.BRIGHT -> SwaraColors.Ink to SwaraColors.GoldWash
         VocalPreset.RAW -> SwaraColors.Muted to SwaraColors.Card
         VocalPreset.CUSTOM -> SwaraColors.Ink to SwaraColors.Card
     }

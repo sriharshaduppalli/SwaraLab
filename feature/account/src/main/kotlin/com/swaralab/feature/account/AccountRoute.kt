@@ -3,6 +3,7 @@ package com.swaralab.feature.account
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,7 +15,10 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
@@ -38,7 +42,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -55,7 +63,10 @@ import androidx.lifecycle.viewmodel.viewModelFactory
 import com.swaralab.domain.layout.SessionLayout
 import com.swaralab.domain.model.Account
 import com.swaralab.domain.model.SessionKind
+import com.swaralab.domain.port.BoothEvent
+import com.swaralab.domain.port.BoothProfile
 import com.swaralab.domain.port.SessionSummary
+import com.swaralab.domain.port.TakeCatalog
 import com.swaralab.domain.usecase.AccountReject
 import com.swaralab.domain.usecase.AccountResult
 import com.swaralab.domain.usecase.CurrentAccount
@@ -66,7 +77,6 @@ import com.swaralab.domain.usecase.SignIn
 import com.swaralab.domain.usecase.SignOut
 import com.swaralab.domain.port.InvitePack
 import com.swaralab.ui.AppLanguage
-import com.swaralab.ui.BoothRoom
 import com.swaralab.ui.EmptyState
 import com.swaralab.ui.LocalAppCopy
 import com.swaralab.ui.LocalTakeShare
@@ -75,7 +85,8 @@ import com.swaralab.ui.PageHero
 import com.swaralab.ui.SwaraColors
 import com.swaralab.ui.SwaraThemeId
 import com.swaralab.ui.ThemeSwatchGrid
-import com.swaralab.ui.studioAtmosphere
+import com.swaralab.ui.BoothCanvas
+import com.swaralab.ui.GlassSurface
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -106,8 +117,13 @@ data class BoothStats(
     val songs: Int = 0,
     val takes: Int = 0,
     val inTunePercent: Int = 0,
+    val kept: Int = 0,
     val sessions: List<SessionSummary> = emptyList(),
     val invites: List<String> = emptyList(),
+    val events: List<BoothEvent> = emptyList(),
+    val unread: Int = 0,
+    val singerName: String = "",
+    val singerBio: String = "",
 )
 
 data class AccountForm(
@@ -129,6 +145,8 @@ class AccountViewModel(
     private val deleteSession: DeleteSession,
     private val invitePack: InvitePack,
     private val projectsDir: File,
+    private val takeCatalog: TakeCatalog? = null,
+    private val boothProfile: BoothProfile? = null,
 ) : ViewModel() {
     private val storage = StorageUseCase(projectsDir)
     private val formState = MutableStateFlow(AccountForm())
@@ -153,15 +171,65 @@ class AccountViewModel(
         viewModelScope.launch {
             val listed = listSessions()
             val packs = withContext(Dispatchers.IO) { listInvitePacks(projectsDir) }
+            val events = mutableListOf<BoothEvent>()
+            var kept = 0
+            listed.forEach { session ->
+                val takes = takeCatalog?.listTakes(session.id).orEmpty()
+                kept += takes.count { it.favorite }
+                takes.forEach { take ->
+                    events += BoothEvent(
+                        id = "take-${take.id}",
+                        kind = "take",
+                        body = session.title,
+                        sessionId = session.id,
+                        createdAt = take.createdAt,
+                    )
+                    if (take.favorite) {
+                        events += BoothEvent(
+                            id = "kept-${take.id}",
+                            kind = "favorite",
+                            body = session.title,
+                            sessionId = session.id,
+                            createdAt = take.createdAt,
+                        )
+                    }
+                    take.notes.forEach { note ->
+                        events += BoothEvent(
+                            id = note.id,
+                            kind = "note",
+                            body = note.text,
+                            sessionId = session.id,
+                            createdAt = note.createdAt,
+                        )
+                    }
+                }
+            }
+            events.sortByDescending { it.createdAt }
+            val seen = boothProfile?.activitySeenAt() ?: 0L
             statsState.value = BoothStats(
                 songs = listed.size,
                 takes = listed.sumOf { it.takeCount },
                 inTunePercent = listed.maxOfOrNull { it.lastPracticeScore } ?: 0,
+                kept = kept,
                 sessions = listed,
                 invites = packs,
+                events = events.take(50),
+                unread = events.count { it.createdAt > seen },
+                singerName = boothProfile?.displayName().orEmpty(),
+                singerBio = boothProfile?.bio().orEmpty(),
             )
             usedMbState.value = withContext(Dispatchers.IO) { storage.getTotalUsedMb() }
         }
+    }
+
+    fun saveProfile(name: String, bio: String) {
+        boothProfile?.setProfile(name, bio)
+        refreshBooth()
+    }
+
+    fun markActivitySeen() {
+        boothProfile?.markActivitySeen()
+        refreshBooth()
     }
 
     fun deleteRecording(id: String) {
@@ -275,6 +343,8 @@ class AccountViewModel(
             deleteSession: DeleteSession,
             invitePack: InvitePack,
             projectsDir: File,
+            takeCatalog: TakeCatalog? = null,
+            boothProfile: BoothProfile? = null,
         ): ViewModelProvider.Factory = viewModelFactory {
             initializer {
                 AccountViewModel(
@@ -286,6 +356,8 @@ class AccountViewModel(
                     deleteSession,
                     invitePack,
                     projectsDir,
+                    takeCatalog,
+                    boothProfile,
                 )
             }
         }
@@ -316,6 +388,8 @@ fun AccountRoute(
     onListen: (String) -> Unit = {},
     onStorage: () -> Unit = {},
     onReplayOnboarding: () -> Unit = {},
+    takeCatalog: TakeCatalog? = null,
+    boothProfile: BoothProfile? = null,
     appLanguage: AppLanguage,
     onAppLanguage: (AppLanguage) -> Unit,
     themeId: SwaraThemeId,
@@ -332,6 +406,8 @@ fun AccountRoute(
             deleteSession,
             invitePack,
             projectsDir,
+            takeCatalog,
+            boothProfile,
         ),
     )
     val form by viewModel.form.collectAsState()
@@ -345,6 +421,8 @@ fun AccountRoute(
     val copy = LocalAppCopy.current
     var page by remember { mutableStateOf(YouPageTab.TAKES) }
     var setFilter by remember { mutableStateOf(SessionKind.SONG) }
+    var showActivity by remember { mutableStateOf(false) }
+    var showEdit by remember { mutableStateOf(false) }
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner, viewModel) {
         val observer = LifecycleEventObserver { _, event ->
@@ -371,18 +449,85 @@ fun AccountRoute(
         }
     }
 
+    BoothCanvas(intensity = 0.5f, modifier = modifier) {
     Column(
-        modifier
+        Modifier
             .fillMaxSize()
-            .studioAtmosphere(BoothRoom.PROFILE)
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp, vertical = 28.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        PageHero(
-            title = signedIn?.displayName ?: copy.singerOnPhone,
-            body = copy.singerLine,
-            accent = SwaraColors.Rose,
+        val singerName = booth.singerName.ifBlank { signedIn?.displayName ?: copy.singerOnPhone }
+        if (showActivity) {
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                TextButton(onClick = { showActivity = false }) { Text(copy.back) }
+                TextButton(onClick = viewModel::markActivitySeen) { Text(copy.markAllRead) }
+            }
+            Text(copy.boothActivity, style = MaterialTheme.typography.headlineLarge, color = SwaraColors.Ink)
+            if (booth.events.isEmpty()) {
+                EmptyState(
+                    title = copy.noActivity,
+                    message = copy.noActivityBody,
+                    mark = StatusMark.MIC,
+                    fillMax = false,
+                )
+            } else {
+                booth.events.forEach { event ->
+                    val unread = event.createdAt > (boothProfile?.activitySeenAt() ?: 0L)
+                    GlassSurface(
+                        onClick = {
+                            onListen(event.sessionId)
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        selected = unread,
+                    ) {
+                        Row(
+                            Modifier.padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                when (event.kind) {
+                                    "favorite" -> "♥"
+                                    "note" -> "✎"
+                                    else -> "♪"
+                                },
+                                color = SwaraColors.Teal,
+                                modifier = Modifier.width(28.dp),
+                            )
+                            Column(Modifier.weight(1f)) {
+                                Text(event.body, style = MaterialTheme.typography.bodyLarge, color = SwaraColors.Ink)
+                                Text(
+                                    formatBoothTime(event.createdAt),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = SwaraColors.Muted,
+                                )
+                            }
+                            if (unread) {
+                                Box(
+                                    Modifier
+                                        .size(8.dp)
+                                        .clip(CircleShape)
+                                        .background(SwaraColors.Teal),
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+        SingerHeader(
+            name = singerName,
+            bio = booth.singerBio.ifBlank { copy.singerLine },
+            songs = booth.songs,
+            takes = booth.takes,
+            kept = booth.kept,
+            unread = booth.unread,
+            onEdit = { showEdit = true },
+            onActivity = { showActivity = true },
         )
         Text(
             text = copy.rightsNote,
@@ -611,6 +756,47 @@ fun AccountRoute(
             }
         }
     }
+    }
+    }
+    if (showEdit) {
+        var name by remember(booth.singerName, signedIn) {
+            mutableStateOf(booth.singerName.ifBlank { signedIn?.displayName.orEmpty() })
+        }
+        var bio by remember(booth.singerBio) { mutableStateOf(booth.singerBio) }
+        AlertDialog(
+            onDismissRequest = { showEdit = false },
+            title = { Text(copy.editSinger) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    OutlinedTextField(
+                        value = name,
+                        onValueChange = { name = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text(copy.singer) },
+                        singleLine = true,
+                    )
+                    OutlinedTextField(
+                        value = bio,
+                        onValueChange = { bio = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text(copy.singerBioHint) },
+                        minLines = 3,
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.saveProfile(name, bio)
+                        showEdit = false
+                    },
+                ) { Text(copy.saveProfile) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showEdit = false }) { Text(copy.cancel) }
+            },
+        )
+    }
     if (aboutOpen) {
         val version = remember {
             runCatching {
@@ -662,13 +848,104 @@ fun AccountRoute(
 }
 
 @Composable
+private fun SingerHeader(
+    name: String,
+    bio: String,
+    songs: Int,
+    takes: Int,
+    kept: Int,
+    unread: Int,
+    onEdit: () -> Unit,
+    onActivity: () -> Unit,
+) {
+    val copy = LocalAppCopy.current
+    Column(
+        Modifier.fillMaxWidth().padding(vertical = 8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Box(
+            Modifier
+                .size(96.dp)
+                .clip(CircleShape)
+                .background(SwaraColors.Rose.copy(alpha = 0.25f)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                name.take(1).uppercase(),
+                fontSize = 40.sp,
+                fontWeight = FontWeight.Bold,
+                color = SwaraColors.Rose,
+            )
+        }
+        Spacer(Modifier.height(16.dp))
+        Text(name, style = MaterialTheme.typography.headlineSmall, color = SwaraColors.Ink, textAlign = TextAlign.Center)
+        Text(
+            bio,
+            style = MaterialTheme.typography.bodyMedium,
+            color = SwaraColors.Muted,
+            textAlign = TextAlign.Center,
+        )
+        Spacer(Modifier.height(20.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(32.dp)) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text("$songs", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = SwaraColors.Ink)
+                Text(copy.songs, style = MaterialTheme.typography.bodySmall, color = SwaraColors.Muted)
+            }
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text("$takes", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = SwaraColors.Ink)
+                Text(copy.takes, style = MaterialTheme.typography.bodySmall, color = SwaraColors.Muted)
+            }
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text("$kept", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = SwaraColors.Ink)
+                Text(copy.keptTakes, style = MaterialTheme.typography.bodySmall, color = SwaraColors.Muted)
+            }
+        }
+        Spacer(Modifier.height(16.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            OutlinedButton(onClick = onEdit) { Text(copy.editSinger) }
+            GlassSurface(onClick = onActivity) {
+                Row(
+                    Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(copy.boothActivity, color = SwaraColors.Ink)
+                    if (unread > 0) {
+                        Spacer(Modifier.width(8.dp))
+                        Box(
+                            Modifier
+                                .clip(CircleShape)
+                                .background(SwaraColors.Teal)
+                                .padding(horizontal = 8.dp, vertical = 2.dp),
+                        ) {
+                            Text(
+                                unread.coerceAtMost(99).toString(),
+                                color = SwaraColors.Ink,
+                                style = MaterialTheme.typography.labelLarge,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun formatBoothTime(timestamp: Long): String {
+    val diff = System.currentTimeMillis() - timestamp
+    return when {
+        diff < 60_000 -> "now"
+        diff < 3_600_000 -> "${diff / 60_000}m"
+        diff < 86_400_000 -> "${diff / 3_600_000}h"
+        else -> "${diff / 86_400_000}d"
+    }
+}
+
+@Composable
 private fun SettingsRow(label: String, subtitle: String? = null, onClick: () -> Unit) {
-    Surface(
+    GlassSurface(
         onClick = onClick,
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(14.dp),
-        color = SwaraColors.Card,
-        border = BorderStroke(1.dp, SwaraColors.Line),
+        shape = RoundedCornerShape(16.dp),
     ) {
         Column(Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) {
             Text(
@@ -721,12 +998,9 @@ private fun SessionCard(
         SessionKind.SONG -> "Song"
         SessionKind.VIDEO -> "Video"
     }
-    Surface(
+    GlassSurface(
         onClick = { onOpen(row.id) },
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
-        color = SwaraColors.Card,
-        border = BorderStroke(1.dp, SwaraColors.Line),
     ) {
         Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
             Text(text = row.title, style = MaterialTheme.typography.titleMedium, color = SwaraColors.Ink)

@@ -96,6 +96,8 @@ struct MixerState {
     std::atomic<int32_t> backingLen{0};
     std::atomic<int32_t> playHead{0};
     std::atomic<bool> loop{true};
+    std::atomic<int32_t> loopStart{0};
+    std::atomic<int32_t> loopEnd{0};
     std::atomic<float> reverb{0.f};
     std::atomic<float> delayAmt{0.f};
     std::atomic<float> voiceGain{1.f};
@@ -224,11 +226,19 @@ void MixerState::render(void *audioData, int32_t numFrames, oboe::AudioFormat fo
         float wet = std::tanh(dryS + delayed * delayMix + rev * reverbMix);
         float bed = 0.f;
         if (bedPtr != nullptr && bedLen > 0) {
-            if (head >= bedLen) {
-                head = doLoop ? 0 : bedLen - 1;
+            int32_t a = loopStart.load(std::memory_order_relaxed);
+            int32_t b = loopEnd.load(std::memory_order_relaxed);
+            if (a < 0) a = 0;
+            if (b <= a) b = bedLen;
+            if (b > bedLen) b = bedLen;
+            if (head >= b || head >= bedLen) {
+                head = doLoop ? a : std::max(0, bedLen - 1);
             }
             bed = bedPtr[head] / 32768.f;
-            if (head < bedLen - 1 || doLoop) head++;
+            if (head < b - 1 || doLoop) {
+                head++;
+                if (head >= b) head = doLoop ? a : b - 1;
+            }
         }
         float out = std::clamp(wet * vg + bed * tg, -1.f, 1.f);
         if (format == oboe::AudioFormat::Float) {
@@ -354,8 +364,34 @@ Java_com_swaralab_engine_audio_OboeMic_nativeSetBacking(
     gEngine.mix.backingPtr.store(gEngine.mix.backingHold.data(), std::memory_order_release);
     gEngine.mix.backingLen.store(n, std::memory_order_release);
     gEngine.mix.loop.store(loop == JNI_TRUE);
+    gEngine.mix.loopStart.store(0);
+    gEngine.mix.loopEnd.store(0);
     int32_t start = std::clamp(startFrame, 0, std::max(0, n - 1));
     gEngine.mix.playHead.store(start);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_swaralab_engine_audio_OboeMic_nativeSetLoopRegion(
+    JNIEnv *,
+    jclass,
+    jint startFrame,
+    jint endFrame,
+    jboolean enabled
+) {
+    int32_t len = gEngine.mix.backingLen.load(std::memory_order_acquire);
+    int32_t a = std::clamp(startFrame, 0, std::max(0, len - 1));
+    int32_t b = endFrame <= 0 ? 0 : std::clamp(endFrame, a + 1, std::max(a + 1, len));
+    gEngine.mix.loopStart.store(a);
+    gEngine.mix.loopEnd.store(enabled == JNI_TRUE ? b : 0);
+    gEngine.mix.loop.store(enabled == JNI_TRUE || gEngine.mix.loop.load());
+    if (enabled == JNI_TRUE) {
+        gEngine.mix.loop.store(true);
+    }
+}
+
+extern "C" JNIEXPORT jint JNICALL
+Java_com_swaralab_engine_audio_OboeMic_nativePlayHead(JNIEnv *, jclass) {
+    return gEngine.mix.playHead.load(std::memory_order_relaxed);
 }
 
 extern "C" JNIEXPORT void JNICALL

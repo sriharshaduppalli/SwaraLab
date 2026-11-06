@@ -171,6 +171,8 @@ class UpdateTrackMix(
         trackId: String,
         gainDb: Float,
         mute: Boolean,
+        solo: Boolean? = null,
+        pan: Float? = null,
     ): SessionEdit {
         val document = sessions.load(sessionId) ?: return SessionEdit.Rejected(RejectReason.UNKNOWN_SESSION)
         val track = document.tracks.firstOrNull { it.id == trackId }
@@ -184,7 +186,8 @@ class UpdateTrackMix(
                 gainDb = gainDb.coerceIn(-24f, 12f),
                 monitorGainDb = track.monitorGainDb,
                 mute = mute,
-                solo = track.solo,
+                solo = solo ?: track.solo,
+                pan = (pan ?: track.pan).coerceIn(-1f, 1f),
             ),
         )
     }
@@ -254,6 +257,7 @@ class CommitRecordedTake(
         trackId: String?,
         take: FinishedTake,
         timelineStartMs: Long = 0L,
+        punchEndMs: Long = 0L,
     ): SessionEdit {
         val document = sessions.load(sessionId) ?: return SessionEdit.Rejected(RejectReason.UNKNOWN_SESSION)
         val voiceTracks = document.tracks.filter { it.role != TrackRole.BACKING }
@@ -262,26 +266,55 @@ class CommitRecordedTake(
             ?: return SessionEdit.Rejected(RejectReason.UNKNOWN_TRACK)
         val takeNumber = targetTrack.clips.size + 1
         val punchMs = timelineStartMs.coerceAtLeast(0L)
+        val windowEnd = punchEndMs.takeIf { it > punchMs } ?: 0L
         val punchLabel = if (punchMs > 0L) " · punch" else ""
         var working = document
-        val previous = targetTrack.clips.lastOrNull { it.preferred } ?: targetTrack.clips.lastOrNull()
+        val previous = targetTrack.clips.lastOrNull { it.preferred && it.active }
+            ?: targetTrack.clips.lastOrNull { it.active }
+        var tail: Triple<String, Long, Long>? = null
+        var tailSourceDuration = 0L
         if (punchMs > 0L && previous != null) {
-            val keepMs = (punchMs - previous.timelineStartMs).coerceAtLeast(1L)
-            val trimmed = applyAndSave(
+            val keepMs = (punchMs - previous.timelineStartMs).coerceAtLeast(0L)
+            val originalEnd = previous.timelineStartMs + previous.durationMs
+            if (windowEnd > punchMs && originalEnd > windowEnd) {
+                tailSourceDuration = previous.usableSourceDurationMs
+                tail = Triple(
+                    previous.sourceRelativePath,
+                    previous.sourceInMs + (windowEnd - previous.timelineStartMs).coerceAtLeast(0L),
+                    originalEnd - windowEnd,
+                )
+            }
+            val parked = applyAndSave(
                 reducer,
                 sessions,
                 working,
-                SessionCommand.TrimClip(
-                    clipId = previous.id,
-                    sourceInMs = previous.sourceInMs,
-                    durationMs = keepMs.coerceAtMost(previous.durationMs.coerceAtLeast(1L)),
-                ),
+                SessionCommand.UpdateClip(clipId = previous.id, active = false, preferred = false),
             )
-            if (trimmed is SessionEdit.Applied) {
-                working = trimmed.document
+            if (parked is SessionEdit.Applied) {
+                working = parked.document
+            }
+            if (keepMs >= 250L) {
+                val head = applyAndSave(
+                    reducer,
+                    sessions,
+                    working,
+                    SessionCommand.CommitTake(
+                        trackId = targetTrack.id,
+                        relativePath = previous.sourceRelativePath,
+                        durationMs = keepMs.coerceAtMost(previous.durationMs),
+                        timelineStartMs = previous.timelineStartMs,
+                        label = "${targetTrack.name} · kept head",
+                        keepPreviousPreferred = true,
+                        sourceInMs = previous.sourceInMs,
+                        sourceDurationMs = previous.usableSourceDurationMs,
+                    ),
+                )
+                if (head is SessionEdit.Applied) {
+                    working = head.document
+                }
             }
         }
-        return applyAndSave(
+        val punched = applyAndSave(
             reducer,
             sessions,
             working,
@@ -293,6 +326,25 @@ class CommitRecordedTake(
                 label = "${targetTrack.name} · Take $takeNumber$punchLabel",
                 keepPreviousPreferred = punchMs > 0L,
                 videoRelativePath = take.videoRelativePath,
+            ),
+        )
+        if (punched !is SessionEdit.Applied) return punched
+        working = punched.document
+        val leftover = tail ?: return punched
+        if (leftover.third < 250L) return punched
+        return applyAndSave(
+            reducer,
+            sessions,
+            working,
+            SessionCommand.CommitTake(
+                trackId = targetTrack.id,
+                relativePath = leftover.first,
+                durationMs = leftover.third,
+                timelineStartMs = windowEnd,
+                label = "${targetTrack.name} · kept tail",
+                keepPreviousPreferred = true,
+                sourceInMs = leftover.second,
+                sourceDurationMs = tailSourceDuration,
             ),
         )
     }
@@ -315,6 +367,60 @@ class TrimRecordedClip(
             document,
             SessionCommand.TrimClip(clipId, sourceInMs, durationMs),
         )
+    }
+}
+
+class UpdateRecordedClip(
+    private val reducer: SessionReducer,
+    private val sessions: SessionRepository,
+) {
+    suspend operator fun invoke(
+        sessionId: String,
+        clipId: String,
+        timelineStartMs: Long? = null,
+        fadeInMs: Long? = null,
+        fadeOutMs: Long? = null,
+        active: Boolean? = null,
+        preferred: Boolean? = null,
+        sourceInMs: Long? = null,
+        durationMs: Long? = null,
+    ): SessionEdit {
+        val document = sessions.load(sessionId) ?: return SessionEdit.Rejected(RejectReason.UNKNOWN_SESSION)
+        return applyAndSave(
+            reducer,
+            sessions,
+            document,
+            SessionCommand.UpdateClip(
+                clipId = clipId,
+                timelineStartMs = timelineStartMs,
+                sourceInMs = sourceInMs,
+                durationMs = durationMs,
+                fadeInMs = fadeInMs,
+                fadeOutMs = fadeOutMs,
+                active = active,
+                preferred = preferred,
+            ),
+        )
+    }
+}
+
+class UpdateTrackChain(
+    private val reducer: SessionReducer,
+    private val sessions: SessionRepository,
+) {
+    suspend operator fun invoke(sessionId: String, trackId: String, chain: VocalChain?): SessionEdit {
+        val document = sessions.load(sessionId) ?: return SessionEdit.Rejected(RejectReason.UNKNOWN_SESSION)
+        return applyAndSave(reducer, sessions, document, SessionCommand.SetTrackChain(trackId, chain))
+    }
+}
+
+class SplitRecordedClip(
+    private val reducer: SessionReducer,
+    private val sessions: SessionRepository,
+) {
+    suspend operator fun invoke(sessionId: String, clipId: String, atSourceMs: Long): SessionEdit {
+        val document = sessions.load(sessionId) ?: return SessionEdit.Rejected(RejectReason.UNKNOWN_SESSION)
+        return applyAndSave(reducer, sessions, document, SessionCommand.SplitClip(clipId, atSourceMs))
     }
 }
 
@@ -367,6 +473,52 @@ class DeleteRecordedClip(
     suspend operator fun invoke(sessionId: String, clipId: String): SessionEdit {
         val document = sessions.load(sessionId) ?: return SessionEdit.Rejected(RejectReason.UNKNOWN_SESSION)
         return applyAndSave(reducer, sessions, document, SessionCommand.DeleteClip(clipId))
+    }
+}
+
+class RestoreSession(
+    private val sessions: SessionRepository,
+) {
+    suspend operator fun invoke(document: SessionDocument) {
+        sessions.save(document)
+    }
+}
+
+data class CleanTakesResult(
+    val removedFiles: Int,
+    val removedClips: Int,
+)
+
+/** Drop parked clips whose WAV is unused by any live clip, then delete those files. */
+class CleanUnusedTakes(
+    private val sessions: SessionRepository,
+    private val catalog: com.swaralab.domain.port.TakeCatalog? = null,
+) {
+    suspend operator fun invoke(sessionId: String): CleanTakesResult {
+        val document = sessions.load(sessionId) ?: return CleanTakesResult(0, 0)
+        val liveSources = document.tracks
+            .flatMap { it.clips }
+            .filter { it.active }
+            .map { it.sourceRelativePath }
+            .toSet()
+        var removedClips = 0
+        val compacted = document.copy(
+            tracks = document.tracks.map { track ->
+                track.copy(
+                    clips = track.clips.filter { clip ->
+                        if (clip.active || clip.sourceRelativePath in liveSources) {
+                            true
+                        } else {
+                            removedClips += 1
+                            false
+                        }
+                    },
+                )
+            },
+        )
+        sessions.save(compacted)
+        val removedFiles = catalog?.pruneTakes(sessionId, liveSources) ?: 0
+        return CleanTakesResult(removedFiles = removedFiles, removedClips = removedClips)
     }
 }
 

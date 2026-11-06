@@ -3,6 +3,7 @@ package com.swaralab.engine.render
 import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
+import com.swaralab.domain.audio.PcmWarp
 import com.swaralab.domain.audio.VocalCancel
 import com.swaralab.domain.audio.WavPcm
 import com.swaralab.domain.audio.VocalMixProcessor
@@ -37,15 +38,21 @@ import kotlin.math.pow
 class WavMixRenderEngine(
     private val projectsRoot: File,
 ) : RenderEngine {
-    override suspend fun export(document: SessionDocument, request: ExportRequest): ExportResult =
+    override suspend fun export(
+        document: SessionDocument,
+        request: ExportRequest,
+        onProgress: (Float) -> Unit,
+    ): ExportResult =
         withContext(Dispatchers.IO) {
             val sessionFolder = File(projectsRoot, document.id)
             val targetSampleRate = 48_000
+            onProgress(0.05f)
 
             val stereo = renderStereo(document, sessionFolder, targetSampleRate)
                 ?: return@withContext ExportResult.Waiting(
                     "Record at least one vocal take on the Sing stage before mixing.",
                 )
+            onProgress(0.45f)
 
             val safeTitle = document.title
                 .lowercase()
@@ -142,7 +149,65 @@ class WavMixRenderEngine(
                     writePcm16StereoWav(outFile, targetSampleRate, stereo.left, stereo.right)
                     ExportResult.Written(relativePath = relativePath, durationMs = durationMs)
                 }
-            }
+                ExportKind.STEMS -> {
+                    val stems = request.stems
+                    val mixRel = SessionLayout.exportFile("$safeTitle-mix.wav")
+                    if (stems.mix) {
+                        writePcm16StereoWav(
+                            File(sessionFolder, mixRel).also { it.parentFile?.mkdirs() },
+                            targetSampleRate,
+                            stereo.left,
+                            stereo.right,
+                        )
+                    }
+                    if (stems.vocals) {
+                        writePcm16StereoWav(
+                            File(sessionFolder, SessionLayout.exportFile("$safeTitle-vocals.wav")),
+                            targetSampleRate,
+                            stereo.vocalLeft,
+                            stereo.vocalRight,
+                        )
+                    }
+                    if (stems.backing && stereo.backingLeft != null) {
+                        writePcm16StereoWav(
+                            File(sessionFolder, SessionLayout.exportFile("$safeTitle-backing.wav")),
+                            targetSampleRate,
+                            stereo.backingLeft,
+                            stereo.backingRight ?: stereo.backingLeft,
+                        )
+                    }
+                    if (stems.leadDry) {
+                        val lead = document.tracks.firstOrNull { it.role == TrackRole.LEAD }
+                        if (lead != null) {
+                            val dry = mixVocalTracks(
+                                document,
+                                sessionFolder,
+                                targetSampleRate,
+                                onlyTrackId = lead.id,
+                                dry = true,
+                            )
+                            if (dry != null) {
+                                writePcm16StereoWav(
+                                    File(sessionFolder, SessionLayout.exportFile("$safeTitle-lead-dry.wav")),
+                                    targetSampleRate,
+                                    dry.first,
+                                    dry.second,
+                                )
+                            }
+                        }
+                    }
+                    if (stems.layers) {
+                        writeLayerStems(document, sessionFolder, targetSampleRate, safeTitle)
+                    }
+                    val primary = when {
+                        stems.mix -> mixRel
+                        stems.vocals -> SessionLayout.exportFile("$safeTitle-vocals.wav")
+                        stems.leadDry -> SessionLayout.exportFile("$safeTitle-lead-dry.wav")
+                        else -> mixRel
+                    }
+                    ExportResult.Written(relativePath = primary, durationMs = durationMs)
+                }
+            }.also { onProgress(1f) }
         }
 
     override suspend fun preview(document: SessionDocument, maxDurationMs: Long): MixPreview? =
@@ -150,6 +215,15 @@ class WavMixRenderEngine(
             val sessionFolder = File(projectsRoot, document.id)
             val stereo = renderStereo(document, sessionFolder, 48_000, maxDurationMs) ?: return@withContext null
             MixPreview(left = stereo.left, right = stereo.right, sampleRate = 48_000)
+        }
+
+    override suspend fun writeMonitorBed(document: SessionDocument, destination: File): Boolean =
+        withContext(Dispatchers.IO) {
+            val sessionFolder = File(projectsRoot, document.id)
+            val stereo = renderStereo(document, sessionFolder, 48_000, monitor = true) ?: return@withContext false
+            destination.parentFile?.mkdirs()
+            writePcm16StereoWav(destination, 48_000, stereo.left, stereo.right)
+            destination.isFile && destination.length() > 44L
         }
 
     override suspend fun writeInstrumental(source: File, destination: File): InstrumentalResult =
@@ -177,24 +251,33 @@ class WavMixRenderEngine(
         sessionFolder: File,
         targetSampleRate: Int,
         maxDurationMs: Long = 0L,
+        monitor: Boolean = false,
     ): StereoMix? {
-        val vocalMix = mixVocalTracks(document, sessionFolder, targetSampleRate) ?: FloatArray(0)
-        val limited = if (maxDurationMs > 0L) {
+        val mixed = mixVocalTracks(document, sessionFolder, targetSampleRate)
+        var vocalL = mixed?.first ?: FloatArray(0)
+        var vocalR = mixed?.second ?: FloatArray(0)
+        if (maxDurationMs > 0L) {
             val frames = ((maxDurationMs * targetSampleRate) / 1000L).toInt().coerceAtLeast(1)
-            if (vocalMix.size > frames) vocalMix.copyOf(frames) else vocalMix
-        } else {
-            vocalMix
+            if (vocalL.size > frames) vocalL = vocalL.copyOf(frames)
+            if (vocalR.size > frames) vocalR = vocalR.copyOf(frames)
         }
-        VocalMixProcessor.applyChain(
-            limited,
-            targetSampleRate,
-            document.chain,
-            keyName = document.musical.keyName,
-            mode = document.musical.mode,
-        )
-        val imaged = VocalMixProcessor.spreadStereo(limited, targetSampleRate, document.chain)
-        val vocalL = imaged.first
-        val vocalR = imaged.second
+        val layeredChains = document.tracks.any { it.role != TrackRole.BACKING && it.chain != null }
+        if (vocalL.isNotEmpty() && !layeredChains) {
+            VocalMixProcessor.applyChain(
+                vocalL,
+                targetSampleRate,
+                document.chain,
+                keyName = document.musical.keyName,
+                mode = document.musical.mode,
+            )
+            VocalMixProcessor.applyChain(
+                vocalR,
+                targetSampleRate,
+                document.chain,
+                keyName = document.musical.keyName,
+                mode = document.musical.mode,
+            )
+        }
 
         val backingTrack = document.tracks.firstOrNull { it.role == TrackRole.BACKING && !it.mute }
         val backingClip = backingTrack?.clips?.lastOrNull()
@@ -205,11 +288,13 @@ class WavMixRenderEngine(
             if (backingFile.isFile) {
                 val decoded = decodeAudioFileToStereo48k(backingFile, targetSampleRate)
                 if (decoded != null) {
-                    val rate = document.musical.playbackRate.coerceIn(0.7f, 1.35f)
-                    val pitch = 2.0.pow(document.musical.keyShiftSemitones / 12.0).toFloat()
+                    val semitones = document.musical.keyShiftSemitones
+                    val tempo = document.musical.playbackRate.coerceIn(0.5f, 1.5f)
                     val gain = dbToLinear(backingTrack.gainDb)
-                    backingL = resample(decoded.first, rate * pitch).also { highPassInPlace(it, targetSampleRate) }
-                    backingR = resample(decoded.second, rate * pitch).also { highPassInPlace(it, targetSampleRate) }
+                    backingL = PcmWarp.shiftAndStretch(decoded.first, semitones, tempo)
+                        .also { highPassInPlace(it, targetSampleRate) }
+                    backingR = PcmWarp.shiftAndStretch(decoded.second, semitones, tempo)
+                        .also { highPassInPlace(it, targetSampleRate) }
                     for (i in backingL.indices) backingL[i] *= gain
                     for (i in backingR.indices) backingR[i] *= gain
                     if (maxDurationMs > 0L) {
@@ -249,12 +334,19 @@ class WavMixRenderEngine(
                 masterR[i] = vR
             }
         }
-        VocalMixProcessor.finishMasterStereo(
-            masterL,
-            masterR,
-            targetLufs = document.publish.loudnessLufs,
-            truePeakDbtp = document.publish.truePeakDbtp,
-        )
+        if (!monitor) {
+            VocalMixProcessor.finishMasterStereo(
+                masterL,
+                masterR,
+                targetLufs = document.publish.loudnessLufs,
+                truePeakDbtp = document.publish.truePeakDbtp,
+            )
+        } else {
+            for (i in masterL.indices) {
+                masterL[i] = masterL[i].coerceIn(-1f, 1f)
+                masterR[i] = masterR[i].coerceIn(-1f, 1f)
+            }
+        }
         return StereoMix(masterL, masterR, vocalL, vocalR, backingL, backingR)
     }
 
@@ -277,12 +369,24 @@ class WavMixRenderEngine(
         document: SessionDocument,
         sessionFolder: File,
         sampleRate: Int,
-    ): FloatArray? {
-        val placed = mutableListOf<Pair<Int, FloatArray>>()
+        onlyTrackId: String? = null,
+        dry: Boolean = false,
+    ): Pair<FloatArray, FloatArray>? {
+        val anySolo = document.tracks.any { it.role != TrackRole.BACKING && it.solo && !it.mute }
+        val placed = mutableListOf<Triple<Int, FloatArray, Pair<Float, Float>>>()
         var latestEnd = 0
         for (track in document.tracks) {
-            if (track.role == TrackRole.BACKING || track.mute) continue
-            val trackGain = dbToLinear(track.gainDb)
+            if (onlyTrackId != null) {
+                if (track.id != onlyTrackId) continue
+            } else {
+                if (track.role == TrackRole.BACKING || track.mute) continue
+                if (anySolo && !track.solo) continue
+            }
+            if (track.role == TrackRole.BACKING) continue
+            val trackGain = if (dry) 1f else dbToLinear(track.gainDb)
+            val pan = if (dry) 0f else track.pan.coerceIn(-1f, 1f)
+            val gL = trackGain * if (pan <= 0f) 1f else 1f - pan
+            val gR = trackGain * if (pan >= 0f) 1f else 1f + pan
             val chosen = clipsForMix(track.clips)
             for (clip in chosen) {
                 val file = File(sessionFolder, clip.sourceRelativePath)
@@ -291,27 +395,64 @@ class WavMixRenderEngine(
                 if (pcm.isEmpty()) continue
                 val cropped = cropClip(pcm, sampleRate, clip)
                 if (cropped.isEmpty()) continue
-                val floats = FloatArray(cropped.size) { idx -> (cropped[idx] / 32768f) * trackGain }
+                val floats = FloatArray(cropped.size) { idx -> cropped[idx] / 32768f }
+                if (!dry) {
+                    val chain = track.chain ?: document.chain
+                    if (track.chain != null) {
+                        VocalMixProcessor.applyChain(
+                            floats,
+                            sampleRate,
+                            chain,
+                            keyName = document.musical.keyName,
+                            mode = document.musical.mode,
+                        )
+                    }
+                }
                 val start = ((clip.timelineStartMs * sampleRate) / 1000L).toInt().coerceAtLeast(0)
-                placed += start to floats
+                placed += Triple(start, floats, gL to gR)
                 latestEnd = max(latestEnd, start + floats.size)
             }
         }
         if (placed.isEmpty()) return null
         val shiftSamples = ((document.latency.compensationMs / 1000.0) * sampleRate).toInt()
-        val vocalMix = FloatArray((latestEnd + max(0, shiftSamples)).coerceAtLeast(1))
-        for ((start, buf) in placed) {
+        val n = (latestEnd + max(0, shiftSamples)).coerceAtLeast(1)
+        val left = FloatArray(n)
+        val right = FloatArray(n)
+        for ((start, buf, gains) in placed) {
             for (i in buf.indices) {
                 val destIdx = i + start + shiftSamples
-                if (destIdx in vocalMix.indices) vocalMix[destIdx] += buf[i]
+                if (destIdx in left.indices) {
+                    left[destIdx] += buf[i] * gains.first
+                    right[destIdx] += buf[i] * gains.second
+                }
             }
         }
-        return vocalMix
+        return left to right
+    }
+
+    private fun writeLayerStems(
+        document: SessionDocument,
+        sessionFolder: File,
+        sampleRate: Int,
+        safeTitle: String,
+    ) {
+        for (track in document.tracks) {
+            if (track.role == TrackRole.BACKING || track.clips.isEmpty()) continue
+            val layer = mixVocalTracks(document, sessionFolder, sampleRate, onlyTrackId = track.id) ?: continue
+            val slug = track.name.lowercase().replace(Regex("[^a-z0-9]+"), "-").trim('-').ifBlank { track.role.name.lowercase() }
+            writePcm16StereoWav(
+                File(sessionFolder, SessionLayout.exportFile("$safeTitle-$slug.wav")),
+                sampleRate,
+                layer.first,
+                layer.second,
+            )
+        }
     }
 
     private fun clipsForMix(clips: List<ClipState>): List<ClipState> {
-        val preferred = clips.filter { it.preferred }
-        return preferred.ifEmpty { clips.takeLast(1) }
+        val live = clips.filter { it.active }
+        val preferred = live.filter { it.preferred }
+        return preferred.ifEmpty { live }
     }
 
     private fun cameraFileForMix(document: SessionDocument, sessionFolder: File): File {
@@ -337,10 +478,13 @@ class WavMixRenderEngine(
         val end = (start + wanted).coerceAtMost(pcm.size)
         if (end <= start) return ShortArray(0)
         val cropped = pcm.copyOfRange(start, end)
-        val fade = ((sampleRate * 0.045).toInt()).coerceIn(1, cropped.size / 3)
-        for (i in 0 until fade) {
-            val g = i / fade.toFloat()
-            cropped[i] = (cropped[i] * g).toInt().toShort()
+        val fadeIn = ((sampleRate * clip.fadeInMs) / 1000L).toInt().coerceIn(1, (cropped.size / 3).coerceAtLeast(1))
+        val fadeOut = ((sampleRate * clip.fadeOutMs) / 1000L).toInt().coerceIn(1, (cropped.size / 3).coerceAtLeast(1))
+        for (i in 0 until fadeIn) {
+            cropped[i] = (cropped[i] * (i / fadeIn.toFloat())).toInt().toShort()
+        }
+        for (i in 0 until fadeOut) {
+            val g = i / fadeOut.toFloat()
             cropped[cropped.lastIndex - i] = (cropped[cropped.lastIndex - i] * g).toInt().toShort()
         }
         return cropped

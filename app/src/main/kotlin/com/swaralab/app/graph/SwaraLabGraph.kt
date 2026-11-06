@@ -9,6 +9,7 @@ import com.swaralab.domain.port.RenderEngine
 import com.swaralab.domain.port.SessionRepository
 import com.swaralab.domain.time.SystemClock
 import com.swaralab.domain.usecase.AddVoicePart
+import com.swaralab.domain.usecase.CleanUnusedTakes
 import com.swaralab.domain.usecase.CommitRecordedTake
 import com.swaralab.domain.usecase.CreateSession
 import com.swaralab.domain.usecase.CurrentAccount
@@ -18,13 +19,18 @@ import com.swaralab.domain.usecase.ImportBackingTrack
 import com.swaralab.domain.usecase.ListSessions
 import com.swaralab.domain.usecase.LoadSession
 import com.swaralab.domain.usecase.PreferRecordedClip
+import com.swaralab.domain.usecase.RestoreSession
+import com.swaralab.domain.usecase.SessionAutoSave
 import com.swaralab.domain.usecase.SaveTake
+import com.swaralab.domain.usecase.SplitRecordedClip
 import com.swaralab.domain.usecase.RegisterAccount
 import com.swaralab.domain.usecase.RenameSession
 import com.swaralab.domain.usecase.SignIn
 import com.swaralab.domain.usecase.StartSession
 import com.swaralab.domain.usecase.SignOut
 import com.swaralab.domain.usecase.TrimRecordedClip
+import com.swaralab.domain.usecase.UpdateRecordedClip
+import com.swaralab.domain.usecase.UpdateTrackChain
 import com.swaralab.domain.usecase.UpdateGear
 import com.swaralab.domain.usecase.UpdateLyrics
 import com.swaralab.domain.usecase.UpdateMusicalSettings
@@ -90,8 +96,14 @@ class SwaraLabGraph(context: Context) {
     val updatePublish = UpdatePublishSettings(reducer, sessions)
     val updateMusical = UpdateMusicalSettings(reducer, sessions)
     val trimRecordedClip = TrimRecordedClip(reducer, sessions)
+    val splitRecordedClip = SplitRecordedClip(reducer, sessions)
+    val updateRecordedClip = UpdateRecordedClip(reducer, sessions)
+    val updateTrackChain = UpdateTrackChain(reducer, sessions)
     val preferRecordedClip = PreferRecordedClip(reducer, sessions)
     val updatePractice = UpdatePracticeStats(reducer, sessions)
+    val restoreSession = RestoreSession(sessions)
+    val cleanUnusedTakes = CleanUnusedTakes(sessions, takeCatalog)
+    val sessionAutoSave = SessionAutoSave(sessions, appSettings)
     val invitePack = SessionInvitePack(projectsDir, SessionCodec(), ids, clock)
     val registerAccount = RegisterAccount(accounts, ids)
     val signIn = SignIn(accounts)

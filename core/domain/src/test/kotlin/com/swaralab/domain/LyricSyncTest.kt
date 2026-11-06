@@ -49,6 +49,19 @@ class LyricSyncTest {
     }
 
     @Test
+    fun detailedScoreBreaksOutPitchTimingAndSections() {
+        val file = File.createTempFile("score-detail", ".wav")
+        writeSineWav(file, hz = 220.0, seconds = 0.8)
+        val detailed = PitchScorer.detailed(file)
+        file.delete()
+        assertTrue("overall was ${detailed.overall}", detailed.overall >= 40f)
+        assertTrue(detailed.pitchAccuracy in 0f..100f)
+        assertTrue(detailed.timing in 0f..100f)
+        assertTrue(detailed.stability in 0f..100f)
+        assertTrue(detailed.sections.isNotEmpty())
+    }
+
+    @Test
     fun wavPcmReadsMono() {
         val file = File.createTempFile("pcm", ".wav")
         writeSineWav(file, hz = 440.0, seconds = 0.1)

@@ -77,9 +77,11 @@ data class VocalMetrics(
     val candidateCount: Int = 0,
     val waveformHistory: List<Float> = emptyList(),
     val pitchHistory: List<Float> = emptyList(),
+    val livePitch: PitchSample? = null,
 )
 
 object VocalSignalAnalyzer {
+    private val detector: PitchDetector = AutocorrelationPitchDetector()
     private val noteNames = arrayOf("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
     private val swaraNames = arrayOf("Sa", "Re♭", "Re", "Ga♭", "Ga", "Ma", "Ma♯", "Pa", "Dha♭", "Dha", "Ni♭", "Ni")
     private const val HISTORY_SIZE = 42
@@ -146,11 +148,12 @@ object VocalSignalAnalyzer {
         val midLevel = if (hasPreviousHistory) (previous.midLevel * 0.78f + rawMid * 0.22f) else rawMid
         val trebleLevel = if (hasPreviousHistory) (previous.trebleLevel * 0.78f + rawTreble * 0.22f) else rawTreble
 
-        val rawDetectedHz = if (rms >= 0.0025f) {
-            detectPitchHz(normalized, length, sampleRate)
+        val detected = if (rms >= 0.0025f) {
+            detector.process(normalized, sampleRate)
         } else {
-            0f
+            null
         }
+        val rawDetectedHz = detected?.frequencyHz ?: 0f
 
         val isValidPitch = rawDetectedHz in MIN_VOCAL_HZ..MAX_VOCAL_HZ
         val effectiveHz: Float
@@ -241,54 +244,20 @@ object VocalSignalAnalyzer {
             candidateCount = nextCandidateCount,
             waveformHistory = nextWave,
             pitchHistory = nextPitch,
+            livePitch = if (isValidPitch && (detected?.confidence ?: 0f) >= 0.45f) {
+                detected?.copy(
+                    frequencyHz = effectiveHz,
+                    centsOffset = cents.toFloat(),
+                )
+            } else {
+                null
+            },
         )
     }
 
     internal fun detectPitchHz(samples: FloatArray, length: Int, sampleRate: Int): Float {
-        val decimation = if (sampleRate >= 32_000) 2 else 1
-        val effRate = sampleRate / decimation
-        val n = length / decimation
-        if (n < 64) return 0f
-        val x = FloatArray(n)
-        var mean = 0f
-        for (i in 0 until n) {
-            val v = samples[i * decimation]
-            x[i] = v
-            mean += v
-        }
-        mean /= n
-        var energy0 = 0f
-        for (i in 0 until n) {
-            x[i] -= mean
-            energy0 += x[i] * x[i]
-        }
-        if (energy0 <= 1e-8f) return 0f
-
-        val minLag = (effRate / MAX_VOCAL_HZ).toInt().coerceAtLeast(4)
-        val maxLag = (effRate / MIN_VOCAL_HZ).toInt().coerceAtMost(n - 2)
-        if (minLag >= maxLag) return 0f
-
-        var bestLag = -1
-        var bestCorr = 0f
-        var passedFirstDip = false
-
-        for (lag in minLag..maxLag) {
-            var sum = 0f
-            val limit = n - lag
-            for (i in 0 until limit) {
-                sum += x[i] * x[i + lag]
-            }
-            val normCorr = sum / energy0
-            if (!passedFirstDip) {
-                if (normCorr < 0.25f) passedFirstDip = true
-            } else if (normCorr > bestCorr) {
-                bestCorr = normCorr
-                bestLag = lag
-            }
-        }
-
-        if (bestLag <= 0 || bestCorr < 0.35f) return 0f
-        return effRate.toFloat() / bestLag.toFloat()
+        val slice = if (length == samples.size) samples else samples.copyOf(length)
+        return detector.process(slice, sampleRate)?.frequencyHz ?: 0f
     }
 
     fun pitchToNoteAndSwara(hz: Float, rootSemitone: Int = 0): Triple<String, String, Int> {

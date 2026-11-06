@@ -141,8 +141,31 @@ internal object BackingPcm {
         cap48k(resample(mono, sourceRate, targetRate), targetRate)
     }.getOrNull()
 
+    fun writeWavMono(file: File, samples: ShortArray, sampleRate: Int = 48_000): Boolean = runCatching {
+        file.parentFile?.mkdirs()
+        val dataBytes = samples.size * 2
+        val out = ByteArray(44 + dataBytes)
+        val buf = ByteBuffer.wrap(out).order(ByteOrder.LITTLE_ENDIAN)
+        buf.put("RIFF".toByteArray(Charsets.US_ASCII))
+        buf.putInt(36 + dataBytes)
+        buf.put("WAVE".toByteArray(Charsets.US_ASCII))
+        buf.put("fmt ".toByteArray(Charsets.US_ASCII))
+        buf.putInt(16)
+        buf.putShort(1)
+        buf.putShort(1)
+        buf.putInt(sampleRate)
+        buf.putInt(sampleRate * 2)
+        buf.putShort(2)
+        buf.putShort(16)
+        buf.put("data".toByteArray(Charsets.US_ASCII))
+        buf.putInt(dataBytes)
+        samples.forEach { buf.putShort(it) }
+        file.writeBytes(out)
+        file.length() > 44L
+    }.getOrDefault(false)
+
     fun stretch(samples: ShortArray, rate: Float): ShortArray {
-        val factor = rate.coerceIn(0.7f, 1.35f)
+        val factor = rate.coerceIn(0.5f, 1.5f)
         if (kotlin.math.abs(factor - 1f) < 0.01f) return samples
         val dest = ShortArray((samples.size / factor).toInt().coerceAtLeast(1))
         val step = factor.toDouble()

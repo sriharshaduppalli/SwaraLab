@@ -1,6 +1,5 @@
 package com.swaralab.feature.library
 
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -51,13 +50,13 @@ import androidx.lifecycle.viewmodel.viewModelFactory
 import com.swaralab.domain.model.SessionKind
 import com.swaralab.domain.usecase.DeleteSession
 import com.swaralab.domain.usecase.ListSessions
-import com.swaralab.ui.BoothRoom
+import com.swaralab.ui.BoothCanvas
 import com.swaralab.ui.EmptyState
+import com.swaralab.ui.GlassSurface
 import com.swaralab.ui.LocalAppCopy
 import com.swaralab.ui.StatusMark
 import com.swaralab.ui.PageHero
 import com.swaralab.ui.SwaraColors
-import com.swaralab.ui.studioAtmosphere
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -170,10 +169,11 @@ fun LibraryRoute(
     var menuFor by remember { mutableStateOf<String?>(null) }
     val visible = if (kindFilter == null) rows else rows.filter { it.kind == kindFilter }
 
+    BoothCanvas(intensity = 0.5f, modifier = modifier) {
     PullToRefreshBox(
         isRefreshing = isRefreshing,
         onRefresh = { viewModel.refresh(fromPull = true) },
-        modifier = modifier.fillMaxSize().studioAtmosphere(BoothRoom.SONGS),
+        modifier = Modifier.fillMaxSize(),
     ) {
     Column(
         Modifier
@@ -237,14 +237,10 @@ fun LibraryRoute(
                     SessionKind.VIDEO -> SwaraColors.Rose
                     SessionKind.PRACTICE -> SwaraColors.Gold
                 }
-                Surface(
+                GlassSurface(
                     onClick = { onOpen(row.id) },
                     modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(18.dp),
-                    color = SwaraColors.Card,
-                    tonalElevation = 1.dp,
-                    shadowElevation = 1.dp,
-                    border = BorderStroke(1.dp, SwaraColors.Line),
+                    accentBorder = SwaraColors.Line,
                 ) {
                     Row(
                         modifier = Modifier
@@ -325,6 +321,7 @@ fun LibraryRoute(
                 }
             }
         }
+    }
     }
     }
     pendingDelete?.let { row ->

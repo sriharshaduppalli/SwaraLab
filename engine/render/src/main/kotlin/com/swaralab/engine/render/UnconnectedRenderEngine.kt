@@ -10,7 +10,11 @@ import com.swaralab.domain.port.RenderEngine
  * Review playback and export will both call that graph, so the file matches what the singer heard.
  */
 class UnconnectedRenderEngine : RenderEngine {
-    override suspend fun export(document: SessionDocument, request: ExportRequest): ExportResult {
+    override suspend fun export(
+        document: SessionDocument,
+        request: ExportRequest,
+        onProgress: (Float) -> Unit,
+    ): ExportResult {
         return ExportResult.Waiting(
             "Sharing is not ready in this version. The session stays on this phone.",
         )

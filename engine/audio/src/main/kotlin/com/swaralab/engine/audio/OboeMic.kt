@@ -32,6 +32,12 @@ internal object OboeMic {
         if (available) runCatching { nativeSeek(startFrame) }
     }
 
+    fun setLoopRegion(startFrame: Int, endFrame: Int, enabled: Boolean) {
+        if (available) runCatching { nativeSetLoopRegion(startFrame, endFrame, enabled) }
+    }
+
+    fun playHeadFrames(): Int = if (available) runCatching { nativePlayHead() }.getOrDefault(-1) else -1
+
     fun setEffect(type: Int, params: FloatArray) {
         if (available) runCatching { nativeSetEffect(type, params) }
     }
@@ -61,6 +67,12 @@ internal object OboeMic {
 
     @JvmStatic
     private external fun nativeSeek(startFrame: Int)
+
+    @JvmStatic
+    private external fun nativeSetLoopRegion(startFrame: Int, endFrame: Int, enabled: Boolean)
+
+    @JvmStatic
+    private external fun nativePlayHead(): Int
 
     @JvmStatic
     private external fun nativeSetEffect(type: Int, params: FloatArray)

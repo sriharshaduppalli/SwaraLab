@@ -30,13 +30,22 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.composed
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -112,11 +121,11 @@ data class SwaraPalette(
         val scheme = if (isDark) {
             darkColorScheme(
                 primary = teal,
-                onPrimary = Color(0xFF061014),
-                primaryContainer = tealWash,
-                onPrimaryContainer = ink,
+                onPrimary = Color(0xFF00363A),
+                primaryContainer = Color(0xFF004F54),
+                onPrimaryContainer = Color(0xFFB2EBF2),
                 secondary = gold,
-                onSecondary = Color(0xFF1A1206),
+                onSecondary = Color.Black,
                 secondaryContainer = goldWash,
                 onSecondaryContainer = gold,
                 tertiary = rose,
@@ -127,11 +136,11 @@ data class SwaraPalette(
                 onBackground = ink,
                 surface = card,
                 onSurface = ink,
-                surfaceVariant = tealWash,
+                surfaceVariant = Color(0xFF1E1E2A),
                 onSurfaceVariant = muted,
                 surfaceTint = teal,
                 outline = line,
-                outlineVariant = line.copy(alpha = 0.7f),
+                outlineVariant = Color(0xFF2A2A38),
                 error = clay,
             )
         } else {
@@ -182,19 +191,19 @@ data class SwaraPalette(
         )
 
         val MidnightStage = SwaraPalette(
-            ink = Color(0xFFE0E0E0),
+            ink = Color(0xFFE8E8F0),
             teal = Color(0xFF00E5FF),
-            tealWash = Color(0xFF00363A),
+            tealWash = Color(0xFF004F54),
             gold = Color(0xFFBB86FC),
-            goldWash = Color(0xFF2A2140),
-            rose = Color(0xFFFF8FB3),
+            goldWash = Color(0xFF4A148C),
+            rose = Color(0xFFFF80AB),
             roseWash = Color(0xFF3A1C2A),
-            paper = Color(0xFF0F0F0F),
-            card = Color(0xFF1A1A1A),
-            line = Color(0xFF3A3A3A),
-            muted = Color(0xFFB0B0B0),
+            paper = Color(0xFF0A0A0F),
+            card = Color(0xFF14141C),
+            line = Color(0xFF3A3A4A),
+            muted = Color(0xFFB0B0C0),
             clay = Color(0xFFCF6679),
-            glow = Color(0x3300E5FF),
+            glow = Color(0x5500E5FF),
             isDark = true,
         )
 
@@ -293,6 +302,7 @@ object SwaraColors {
     val Muted get() = ActiveSwaraPalette.muted
     val Clay get() = ActiveSwaraPalette.clay
     val Glow get() = ActiveSwaraPalette.glow
+    val Dark get() = ActiveSwaraPalette.isDark
 }
 
 enum class SwaraMark {
@@ -346,13 +356,19 @@ fun SwaraLabTheme(
     MaterialTheme(
         colorScheme = palette.colorScheme(),
         shapes = androidx.compose.material3.Shapes(
-            extraSmall = RoundedCornerShape(8.dp),
-            small = RoundedCornerShape(12.dp),
-            medium = RoundedCornerShape(16.dp),
-            large = RoundedCornerShape(20.dp),
+            extraSmall = RoundedCornerShape(10.dp),
+            small = RoundedCornerShape(14.dp),
+            medium = RoundedCornerShape(20.dp),
+            large = RoundedCornerShape(24.dp),
             extraLarge = RoundedCornerShape(28.dp),
         ),
         typography = Typography(
+            displayLarge = base.displayLarge.copy(
+                fontWeight = FontWeight.Bold,
+                fontSize = 40.sp,
+                letterSpacing = (-1).sp,
+                lineHeight = 44.sp,
+            ),
             displayMedium = base.displayMedium.copy(
                 fontWeight = FontWeight.SemiBold,
                 fontSize = 40.sp,
@@ -364,10 +380,32 @@ fun SwaraLabTheme(
                 fontSize = 32.sp,
                 letterSpacing = (-0.5).sp,
             ),
-            titleLarge = base.titleLarge.copy(fontWeight = FontWeight.SemiBold, letterSpacing = (-0.2).sp),
-            titleMedium = base.titleMedium.copy(fontWeight = FontWeight.SemiBold, fontSize = 18.sp),
-            bodyLarge = base.bodyLarge.copy(fontSize = 16.sp, lineHeight = 24.sp),
-            labelLarge = base.labelLarge.copy(fontWeight = FontWeight.Medium, fontSize = 14.sp),
+            headlineMedium = base.headlineMedium.copy(
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 26.sp,
+            ),
+            titleLarge = base.titleLarge.copy(
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 22.sp,
+            ),
+            titleMedium = base.titleMedium.copy(
+                fontWeight = FontWeight.Medium,
+                fontSize = 18.sp,
+            ),
+            bodyLarge = base.bodyLarge.copy(
+                fontSize = 16.sp,
+                lineHeight = 24.sp,
+                letterSpacing = 0.15.sp,
+            ),
+            bodyMedium = base.bodyMedium.copy(
+                fontSize = 14.sp,
+                lineHeight = 20.sp,
+            ),
+            labelLarge = base.labelLarge.copy(
+                fontWeight = FontWeight.Medium,
+                fontSize = 14.sp,
+                letterSpacing = 0.1.sp,
+            ),
         ),
         content = content,
     )
@@ -490,14 +528,27 @@ fun ChoiceCard(
     accent: Color = SwaraColors.Teal,
     accentWash: Color = SwaraColors.TealWash,
 ) {
+    val interaction = remember { MutableInteractionSource() }
+    val scale = rememberPressScale(interaction)
+    val view = LocalView.current
     Surface(
-        onClick = onClick,
-        modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(18.dp),
-        color = if (selected) accentWash else SwaraColors.Card,
-        tonalElevation = if (selected) 2.dp else 1.dp,
-        shadowElevation = if (selected) 3.dp else 1.dp,
-        border = BorderStroke(if (selected) 1.5.dp else 1.dp, if (selected) accent else SwaraColors.Line),
+        onClick = {
+            view.boothHaptic()
+            onClick()
+        },
+        modifier = modifier.fillMaxWidth().graphicsLayer { scaleX = scale; scaleY = scale },
+        shape = RoundedCornerShape(22.dp),
+        color = if (selected) {
+            accentWash.copy(alpha = 0.9f)
+        } else if (SwaraColors.Dark) {
+            Color.White.copy(alpha = 0.08f)
+        } else {
+            SwaraColors.Card.copy(alpha = 0.88f)
+        },
+        tonalElevation = if (selected) 3.dp else 1.dp,
+        shadowElevation = if (selected) 6.dp else 2.dp,
+        border = BorderStroke(if (selected) 1.5.dp else 1.dp, if (selected) accent else SwaraColors.Line.copy(alpha = 0.7f)),
+        interactionSource = interaction,
     ) {
         Row(Modifier.height(IntrinsicSize.Min)) {
             Box(
@@ -658,16 +709,23 @@ fun CompactChoiceCard(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     accent: Color = SwaraColors.Teal,
-    accentWash: Color = SwaraColors.TealWash,
+    @Suppress("UNUSED_PARAMETER") accentWash: Color = SwaraColors.TealWash,
 ) {
+    val interaction = remember { MutableInteractionSource() }
+    val scale = rememberPressScale(interaction)
+    val view = LocalView.current
     Surface(
-        onClick = onClick,
-        modifier = modifier,
-        shape = RoundedCornerShape(18.dp),
-        color = SwaraColors.Card,
+        onClick = {
+            view.boothHaptic()
+            onClick()
+        },
+        modifier = modifier.graphicsLayer { scaleX = scale; scaleY = scale },
+        shape = RoundedCornerShape(20.dp),
+        color = if (SwaraColors.Dark) Color.White.copy(alpha = 0.08f) else SwaraColors.Card.copy(alpha = 0.88f),
         tonalElevation = 1.dp,
-        shadowElevation = 1.dp,
+        shadowElevation = 3.dp,
         border = BorderStroke(1.dp, accent.copy(alpha = 0.55f)),
+        interactionSource = interaction,
     ) {
         Column(Modifier.padding(horizontal = 14.dp, vertical = 14.dp)) {
             Box(
@@ -701,6 +759,16 @@ fun Modifier.studioAtmosphere(
     val roseWash = SwaraColors.RoseWash
     val resources = LocalContext.current.resources
     val mark = remember { ImageBitmap.imageResource(resources, R.drawable.swaralab_mark) }
+    val infinite = rememberInfiniteTransition(label = "booth-air")
+    val drift by infinite.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(18_000, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "booth-drift",
+    )
     drawBehind {
         drawRect(paper)
         val wash = when (room) {
@@ -737,13 +805,13 @@ fun Modifier.studioAtmosphere(
         drawCircle(
             color = glow.copy(alpha = glow.alpha * glowAlpha),
             radius = size.minDimension * if (room == BoothRoom.STAGE) 0.48f else 0.62f,
-            center = Offset(size.width * 0.94f, size.height * -0.02f),
+            center = Offset(size.width * (0.90f + drift * 0.06f), size.height * (-0.04f + drift * 0.05f)),
         )
         if (room != BoothRoom.MIX) {
             drawCircle(
                 color = roseWash.copy(alpha = if (dim) 0.12f else 0.35f),
                 radius = size.minDimension * 0.34f,
-                center = Offset(size.width * 0.08f, size.height * 0.18f),
+                center = Offset(size.width * (0.06f + drift * 0.05f), size.height * (0.16f + drift * 0.04f)),
             )
         }
         if (dim) {
@@ -780,15 +848,8 @@ fun PageHero(
     modifier: Modifier = Modifier,
     accent: Color = SwaraColors.Teal,
 ) {
-    Surface(
-        modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(24.dp),
-        color = SwaraColors.Card,
-        tonalElevation = 2.dp,
-        shadowElevation = 2.dp,
-        border = BorderStroke(1.dp, SwaraColors.Line),
-    ) {
-        Column(Modifier.padding(horizontal = 20.dp, vertical = 18.dp)) {
+    GlassCard(modifier = modifier.fillMaxWidth()) {
+        Column {
             Box(
                 Modifier
                     .padding(bottom = 10.dp)

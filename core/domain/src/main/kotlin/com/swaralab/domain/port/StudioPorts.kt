@@ -1,6 +1,8 @@
 package com.swaralab.domain.port
 
 import com.swaralab.domain.audio.LiveMonitorEffect
+import com.swaralab.domain.audio.LoopRegion
+import com.swaralab.domain.audio.TrackProcessingConfig
 import com.swaralab.domain.audio.VocalMetrics
 import com.swaralab.domain.model.GearRoute
 import com.swaralab.domain.model.PublishTarget
@@ -112,6 +114,8 @@ data class ArmRequest(
     val countInEnabled: Boolean = true,
     val metronomeEnabled: Boolean = false,
     val punchStartMs: Long = 0L,
+    val punchEndMs: Long = 0L,
+    val preRollMs: Long = 0L,
     val playbackRate: Float = 1f,
     val keyShiftSemitones: Int = 0,
     val monitorEnabled: Boolean = false,
@@ -163,8 +167,10 @@ interface AudioEngine {
         disarm()
     }
 
-    /** Seek backing playhead. Ignored while counting or recording. */
+    /** Seek backing playhead. Ignored while counting. */
     fun seekTake(positionMs: Long) {}
+
+    fun setLoopRegion(region: LoopRegion?, enabled: Boolean) {}
 
     /** Seek take playback (listen-back). */
     fun seekPlayback(positionMs: Long) {}
@@ -211,6 +217,17 @@ interface AudioEngine {
     fun stopPlayback() {}
 
     fun disarm()
+
+    /**
+     * Offline key/tempo cache. Returns false if decode or write fails.
+     * Live dry vocal is never rewritten here.
+     */
+    suspend fun prepareProcessedTrack(
+        originalAbsolutePath: String,
+        outputAbsolutePath: String,
+        config: TrackProcessingConfig,
+        onProgress: (Float) -> Unit = {},
+    ): Boolean = false
 }
 
 enum class ExportKind {
@@ -220,11 +237,21 @@ enum class ExportKind {
     COMPACT,
     VIDEO,
     LYRIC_VIDEO,
+    STEMS,
 }
+
+data class StemSelection(
+    val mix: Boolean = true,
+    val vocals: Boolean = true,
+    val backing: Boolean = true,
+    val leadDry: Boolean = true,
+    val layers: Boolean = true,
+)
 
 data class ExportRequest(
     val target: PublishTarget,
     val kind: ExportKind = ExportKind.MIX,
+    val stems: StemSelection = StemSelection(),
 )
 
 sealed interface ExportResult {
@@ -252,9 +279,19 @@ sealed interface InstrumentalResult {
 }
 
 interface RenderEngine {
-    suspend fun export(document: SessionDocument, request: ExportRequest): ExportResult
+    suspend fun export(
+        document: SessionDocument,
+        request: ExportRequest,
+        onProgress: (Float) -> Unit = {},
+    ): ExportResult
 
     suspend fun preview(document: SessionDocument, maxDurationMs: Long = 12_000L): MixPreview? = null
+
+    /** Backing plus other layers for punch-in / live monitor. Excludes muted tracks. */
+    suspend fun writeMonitorBed(
+        document: SessionDocument,
+        destination: java.io.File,
+    ): Boolean = false
 
     suspend fun writeInstrumental(
         source: java.io.File,

@@ -14,7 +14,12 @@ import com.swaralab.domain.model.VocalPreset
 import com.swaralab.domain.audio.LiveCaptureCleaner
 import com.swaralab.domain.audio.LiveMonitorChain
 import com.swaralab.domain.audio.LiveMonitorEffect
+import com.swaralab.domain.audio.LoopPlayback
+import com.swaralab.domain.audio.LoopRegion
+import com.swaralab.domain.audio.PunchWindow
 import com.swaralab.domain.audio.MusicalKeys
+import com.swaralab.domain.audio.PcmWarp
+import com.swaralab.domain.audio.TrackProcessingConfig
 import com.swaralab.domain.audio.VocalMetrics
 import com.swaralab.domain.audio.VocalSignalAnalyzer
 import com.swaralab.domain.identity.IdGenerator
@@ -69,6 +74,10 @@ class AndroidAudioEngine(
     private val projectsRoot: File,
     private val ids: IdGenerator = UuidIdGenerator(),
 ) : AudioEngine {
+    private val trackProcessor = FfmpegTrackProcessor()
+    private val pitchPipeline = PitchAnalysisPipeline()
+    @Volatile
+    private var activeLoop: LoopRegion? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val states = MutableStateFlow(AudioEngineState(transportConnected = true))
     private val errorEvents = MutableSharedFlow<AudioEngineError>(extraBufferCapacity = 8)
@@ -335,11 +344,25 @@ class AndroidAudioEngine(
 
     override fun seekTake(positionMs: Long) {
         val status = states.value.status
-        if (status == EngineStatus.RECORDING || status == EngineStatus.COUNTING) return
+        if (status == EngineStatus.COUNTING) return
         val ms = positionMs.coerceAtLeast(0L)
-        armedRequest = armedRequest?.copy(punchStartMs = ms)
+        if (status != EngineStatus.RECORDING && status != EngineStatus.PAUSED) {
+            armedRequest = armedRequest?.copy(punchStartMs = ms)
+        }
         states.update { it.copy(positionMs = ms) }
         OboeMic.seek(((ms * 48_000L) / 1000L).toInt())
+        runCatching { mediaPlayer?.seekTo(ms.toInt()) }
+    }
+
+    override fun setLoopRegion(region: LoopRegion?, enabled: Boolean) {
+        activeLoop = if (enabled) region else null
+        if (region != null && enabled) {
+            val start = ((region.startMs * 48_000L) / 1000L).toInt()
+            val end = ((region.endMs * 48_000L) / 1000L).toInt()
+            OboeMic.setLoopRegion(start, end, true)
+        } else {
+            OboeMic.setLoopRegion(0, 0, false)
+        }
     }
 
     override fun seekPlayback(positionMs: Long) {
@@ -383,13 +406,33 @@ class AndroidAudioEngine(
         OboeMic.setMonitor(liveChain.reverb, liveChain.delay, liveChain.voiceGain, liveChain.trackGain)
     }
 
+    override suspend fun prepareProcessedTrack(
+        originalAbsolutePath: String,
+        outputAbsolutePath: String,
+        config: TrackProcessingConfig,
+        onProgress: (Float) -> Unit,
+    ): Boolean {
+        val output = File(outputAbsolutePath)
+        if (output.isFile && output.length() > 44L) {
+            onProgress(1f)
+            return true
+        }
+        return trackProcessor.process(File(originalAbsolutePath), output, config, onProgress)
+    }
+
     private fun loadBackingBed(request: ArmRequest?, sessionId: String, sampleRate: Int): ShortArray? {
         val relative = request?.backingRelativePath ?: return null
         val file = File(File(projectsRoot, sessionId), relative)
         if (!file.isFile) return null
-        val pitch = Math.pow(2.0, (request.keyShiftSemitones) / 12.0).toFloat()
-        val speed = request.playbackRate.coerceIn(0.7f, 1.35f)
-        return BackingPcm.loadMono48k(file, sampleRate)?.let { BackingPcm.stretch(it, speed * pitch) }
+        val pcm = BackingPcm.loadMono48k(file, sampleRate) ?: return null
+        val alreadyWarped = relative.startsWith(SessionLayout.PROCESSED)
+        if (alreadyWarped) return pcm
+        val config = TrackProcessingConfig(
+            semitones = request.keyShiftSemitones,
+            tempo = request.playbackRate,
+        )
+        if (config.isIdentity()) return pcm
+        return PcmWarp.toShort(PcmWarp.shiftAndStretch(PcmWarp.toFloat(pcm), config.semitones, config.tempo))
     }
 
     private fun wantsVoicePerformance(request: ArmRequest?): Boolean =
@@ -502,7 +545,9 @@ class AndroidAudioEngine(
                 null
             }
             if (bed != null) {
-                val startFrame = ((request?.punchStartMs ?: 0L) * active.sampleRate / 1000L)
+                val punch = request?.punchStartMs ?: 0L
+                val preRoll = if (punch > 0L) (request?.preRollMs ?: 0L).coerceAtLeast(0L) else 0L
+                val startFrame = (((punch - preRoll).coerceAtLeast(0L)) * active.sampleRate / 1000L)
                     .toInt()
                     .coerceAtLeast(0)
                 OboeMic.setBacking(bed, request?.loopBacking == true, startFrame)
@@ -519,11 +564,13 @@ class AndroidAudioEngine(
                     prepare()
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                         val pitch = Math.pow(2.0, (request?.keyShiftSemitones ?: 0) / 12.0).toFloat()
-                        val speed = (request?.playbackRate ?: 1f).coerceIn(0.7f, 1.35f)
+                        val speed = (request?.playbackRate ?: 1f).coerceIn(0.5f, 1.5f)
                         playbackParams = playbackParams.setPitch(pitch).setSpeed(speed)
                     }
-                    val punch = (request?.punchStartMs ?: 0L).toInt().coerceAtLeast(0)
-                    if (punch > 0) seekTo(punch)
+                    val punch = request?.punchStartMs ?: 0L
+                    val preRoll = if (punch > 0L) (request?.preRollMs ?: 0L).coerceAtLeast(0L) else 0L
+                    val bedStart = (punch - preRoll).coerceAtLeast(0L).toInt()
+                    if (bedStart > 0) seekTo(bedStart)
                     start()
                 }
             }
@@ -553,6 +600,8 @@ class AndroidAudioEngine(
         val tempoBpm = (request?.tempoBpm ?: 80.0).coerceIn(40.0, 200.0)
         val beatSamples = ((active.sampleRate * 60.0) / tempoBpm).toInt().coerceAtLeast(1)
         val rootSemi = MusicalKeys.semitoneOf(request?.rootKeyName)
+        pitchPipeline.setRootSemitone(rootSemi)
+        pitchPipeline.start(scope)
         val sampleRate = active.sampleRate
         val wavFile = active.wavFile
         val monitorEnabled = request?.monitorEnabled == true
@@ -561,12 +610,14 @@ class AndroidAudioEngine(
             VocalPreset.STAGE -> 0.28f
             VocalPreset.CLOSE -> 0.10f
             VocalPreset.RADIO -> 0.08f
+            VocalPreset.BRIGHT -> 0.10f
             else -> 0f
         }).coerceIn(0f, 1f)
         val monitorDelay = ((request?.monitorDelay ?: 0f) + when (monitorPreset) {
             VocalPreset.STAGE -> 0.18f
             VocalPreset.CLOSE -> 0.06f
             VocalPreset.RADIO -> 0.04f
+            VocalPreset.BRIGHT -> 0.04f
             else -> 0f
         }).coerceIn(0f, 1f)
         liveChain = liveChain.copy(
@@ -591,7 +642,7 @@ class AndroidAudioEngine(
                 else -> 1f
             },
             eqHigh = when (monitorPreset) {
-                VocalPreset.STAGE, VocalPreset.RADIO -> 1.25f
+                VocalPreset.STAGE, VocalPreset.RADIO, VocalPreset.BRIGHT -> 1.25f
                 else -> 1f
             },
         )
@@ -627,7 +678,24 @@ class AndroidAudioEngine(
                 var lastHeaderMs = 0L
                 var emptyReads = 0
                 var restartedOnce = false
+                val punchStartMs = request?.punchStartMs ?: 0L
+                val punchEndMs = request?.punchEndMs ?: 0L
+                val preRollMs = if (punchStartMs > 0L) (request?.preRollMs ?: 0L).coerceAtLeast(0L) else 0L
+                val punchStartFrame = PunchWindow.frames(punchStartMs, sampleRate)
+                val punchEndFrame = PunchWindow.frames(punchEndMs, sampleRate)
+                val bedStartFrame = PunchWindow.frames((punchStartMs - preRollMs).coerceAtLeast(0L), sampleRate)
+                var captureFrames = 0L
+                var recordingStarted = punchStartMs <= 0L
                 try {
+                    if (preRollMs > 0L) {
+                        states.update {
+                            it.copy(
+                                status = EngineStatus.COUNTING,
+                                countInBeat = ((preRollMs + 999L) / 1000L).toInt().coerceAtLeast(1),
+                                positionMs = (punchStartMs - preRollMs).coerceAtLeast(0L),
+                            )
+                        }
+                    }
                     while (isActive) {
                         val read = capture.read(shorts, shorts.size)
                         if (read <= 0 && capture.liveMix && !OboeMic.isRunning() && !restartedOnce) {
@@ -668,6 +736,7 @@ class AndroidAudioEngine(
                                 peakSample = 14_500
                             }
                             liveCleaner.process(shorts, read)
+                            pitchPipeline.submitBuffer(shorts, read)
                             val previousCursor = sampleCursor
                             sampleCursor += read.toLong()
                             if (
@@ -677,19 +746,45 @@ class AndroidAudioEngine(
                             ) {
                                 playClick(sampleRate, accent = (sampleCursor / beatSamples) % 4L == 0L)
                             }
-                            for (i in 0 until read) {
+                            val head = OboeMic.playHeadFrames()
+                            val timelineFrame = if (head >= 0) {
+                                (head.toLong() - read).coerceAtLeast(0L)
+                            } else {
+                                bedStartFrame + captureFrames
+                            }
+                            val slice = PunchWindow.slice(timelineFrame, read, punchStartFrame, punchEndFrame)
+                            byteBuffer.clear()
+                            for (i in slice.writeFrom until slice.writeTo) {
                                 val sample = shorts[i]
                                 byteBuffer.putShort(sample)
                                 val magnitude = abs(sample.toInt())
                                 if (magnitude > peakSample) peakSample = magnitude
                             }
-                            try {
-                                raf.write(byteBuffer.array(), 0, read * 2)
-                            } catch (io: IOException) {
-                                emitError(AudioEngineError.DiskFull)
+                            val writeBytes = slice.writeFrames * 2
+                            if (writeBytes > 0) {
+                                if (!recordingStarted) {
+                                    recordingStarted = true
+                                    active.startedAtMs = System.currentTimeMillis()
+                                }
+                                try {
+                                    raf.write(byteBuffer.array(), 0, writeBytes)
+                                } catch (io: IOException) {
+                                    emitError(AudioEngineError.DiskFull)
+                                    break
+                                }
+                                active.totalAudioBytes += writeBytes.toLong()
+                            }
+                            captureFrames += read.toLong()
+                            if (slice.finished) {
+                                states.update { state ->
+                                    state.copy(
+                                        status = EngineStatus.RECORDING,
+                                        countInBeat = 0,
+                                        positionMs = punchEndMs.takeIf { it > punchStartMs } ?: state.positionMs,
+                                    )
+                                }
                                 break
                             }
-                            active.totalAudioBytes += (read * 2).toLong()
                             if (monitorEnabled && !liveMix) {
                                 writeMonitor(
                                     shorts = shorts,
@@ -719,22 +814,40 @@ class AndroidAudioEngine(
                                 } else {
                                     0L
                                 }
-                                val elapsed = (nowMs - active.startedAtMs - pauseAccumMs - extraPause).coerceAtLeast(0L)
-                                val positionMs = (request?.punchStartMs ?: 0L) + elapsed
-                                val updatedMetrics = VocalSignalAnalyzer.analyzeFrame(
-                                    samples = shorts,
-                                    length = read,
-                                    sampleRate = sampleRate,
-                                    previous = states.value.metrics,
-                                    rootSemitone = rootSemi,
-                                )
+                                val elapsed = if (recordingStarted) {
+                                    (nowMs - active.startedAtMs - pauseAccumMs - extraPause).coerceAtLeast(0L)
+                                } else {
+                                    0L
+                                }
+                                val head = OboeMic.playHeadFrames()
+                                var positionMs = if (head >= 0) {
+                                    (head.toLong() * 1000L) / sampleRate
+                                } else {
+                                    ((bedStartFrame + captureFrames) * 1000L) / sampleRate
+                                }
+                                runCatching {
+                                    val player = mediaPlayer
+                                    if (player != null && player.isPlaying) {
+                                        val wrapped = LoopPlayback.checkLoop(player.currentPosition.toLong(), activeLoop)
+                                        if (wrapped != player.currentPosition.toLong()) {
+                                            player.seekTo(wrapped.toInt())
+                                        }
+                                        positionMs = wrapped
+                                    }
+                                }
+                                val remainingPre = ((punchStartMs - positionMs + 999L) / 1000L).toInt()
                                 states.update { state ->
                                     state.copy(
-                                        status = EngineStatus.RECORDING,
+                                        status = if (slice.preroll && !recordingStarted) {
+                                            EngineStatus.COUNTING
+                                        } else {
+                                            EngineStatus.RECORDING
+                                        },
+                                        countInBeat = if (slice.preroll) remainingPre.coerceAtLeast(1) else 0,
                                         peak = normalizedPeak,
                                         elapsedMs = elapsed,
                                         positionMs = positionMs,
-                                        metrics = updatedMetrics,
+                                        metrics = pitchPipeline.metrics.value,
                                         liveTakeId = active.takeId,
                                         maxPeak = active.maxPeak,
                                     )
@@ -743,6 +856,7 @@ class AndroidAudioEngine(
                         }
                     }
                 } finally {
+                    pitchPipeline.stop()
                     capture.release()
                     releaseCaptureEffects()
                     writeWavHeader(raf, sampleRate, active.totalAudioBytes)

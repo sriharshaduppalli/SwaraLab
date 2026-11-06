@@ -54,6 +54,7 @@ import com.swaralab.domain.model.withTarget
 import com.swaralab.domain.port.AudioEngine
 import com.swaralab.domain.layout.SessionLayout
 import com.swaralab.domain.port.ExportKind
+import com.swaralab.domain.port.StemSelection
 import com.swaralab.domain.port.ExportRequest
 import com.swaralab.domain.port.ExportResult
 import com.swaralab.domain.port.RenderEngine
@@ -63,12 +64,11 @@ import com.swaralab.domain.usecase.UpdatePublishSettings
 import com.swaralab.domain.usecase.UpdateTrackMix
 import com.swaralab.domain.usecase.UpdateVocalChain
 import com.swaralab.domain.usecase.UpdateVocalSyncOffset
-import com.swaralab.ui.BoothRoom
+import com.swaralab.ui.BoothCanvas
 import com.swaralab.ui.ChoiceCard
 import com.swaralab.ui.LocalAppCopy
 import com.swaralab.ui.PageHero
 import com.swaralab.ui.SwaraColors
-import com.swaralab.ui.studioAtmosphere
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -86,6 +86,8 @@ data class TrackMixRowUi(
     val clipCount: Int,
     val gainDb: Float,
     val mute: Boolean,
+    val solo: Boolean = false,
+    val pan: Float = 0f,
 )
 
 data class PublishUi(
@@ -105,6 +107,8 @@ data class PublishUi(
     val vocalStartMs: Long = 0L,
     val vocalDurationMs: Long = 0L,
     val backingPath: String? = null,
+    val stems: StemSelection = StemSelection(),
+    val exportProgress: Float = 0f,
 )
 
 class PublishViewModel(
@@ -144,6 +148,26 @@ class PublishViewModel(
         val current = uiState.value ?: return
         val updatedTracks = current.tracks.map {
             if (it.id == trackId) it.copy(gainDb = gainDb) else it
+        }
+        uiState.value = current.copy(tracks = updatedTracks)
+        scheduleSliderSave()
+    }
+
+    fun setTrackPan(trackId: String, pan: Float) {
+        val current = uiState.value ?: return
+        val updatedTracks = current.tracks.map {
+            if (it.id == trackId) it.copy(pan = pan.coerceIn(-1f, 1f)) else it
+        }
+        uiState.value = current.copy(tracks = updatedTracks)
+        scheduleSliderSave()
+    }
+
+    fun toggleTrackSolo(trackId: String) {
+        val current = uiState.value ?: return
+        val row = current.tracks.firstOrNull { it.id == trackId } ?: return
+        val nextSolo = !row.solo
+        val updatedTracks = current.tracks.map {
+            if (it.id == trackId) it.copy(solo = nextSolo) else it
         }
         uiState.value = current.copy(tracks = updatedTracks)
         scheduleSliderSave()
@@ -218,7 +242,7 @@ class PublishViewModel(
     private suspend fun flushSlidersToDisk() {
         val snap = uiState.value ?: return
         for (row in snap.tracks) {
-            updateTrackMix(sessionId, row.id, row.gainDb, row.mute)
+            updateTrackMix(sessionId, row.id, row.gainDb, row.mute, solo = row.solo, pan = row.pan)
         }
         updateVocalSyncOffset(sessionId, snap.syncOffsetMs.toDouble())
         if (snap.chain.preset == VocalPreset.CUSTOM) {
@@ -321,9 +345,14 @@ class PublishViewModel(
             sliderSaveJob?.cancel()
             flushSlidersToDisk()
             audio.stopPlayback()
-            uiState.value = current.copy(busy = true, status = "Mixing backing music & vocal tracks...")
+            uiState.value = current.copy(busy = true, status = "Mixing backing music & vocal tracks...", exportProgress = 0.02f)
             val document = loadSession(sessionId) ?: return@launch
-            when (val result = render.export(document, ExportRequest(document.publish.target, ExportKind.MIX))) {
+            when (val result = render.export(
+                document,
+                ExportRequest(document.publish.target, ExportKind.MIX),
+            ) { progress ->
+                uiState.value = uiState.value?.copy(exportProgress = progress)
+            }) {
                 is ExportResult.Written -> {
                     exportedRelativePath = result.relativePath
                     exportedMime = mimeFor(result.relativePath)
@@ -335,6 +364,25 @@ class PublishViewModel(
             }
             refresh()
         }
+    }
+
+    fun setStemFlag(
+        mix: Boolean? = null,
+        vocals: Boolean? = null,
+        backing: Boolean? = null,
+        leadDry: Boolean? = null,
+        layers: Boolean? = null,
+    ) {
+        val current = uiState.value ?: return
+        uiState.value = current.copy(
+            stems = current.stems.copy(
+                mix = mix ?: current.stems.mix,
+                vocals = vocals ?: current.stems.vocals,
+                backing = backing ?: current.stems.backing,
+                leadDry = leadDry ?: current.stems.leadDry,
+                layers = layers ?: current.stems.layers,
+            ),
+        )
     }
 
     fun exportKind(kind: ExportKind) {
@@ -351,10 +399,16 @@ class PublishViewModel(
                 ExportKind.VIDEO -> "Mixing your camera take..."
                 ExportKind.LYRIC_VIDEO -> "Rendering lyric card..."
                 ExportKind.MIX -> "Mixing backing music & vocal tracks..."
+                ExportKind.STEMS -> "Exporting mix, vocals, backing, and each layer..."
             }
-            uiState.value = current.copy(busy = true, status = label)
+            uiState.value = current.copy(busy = true, status = label, exportProgress = 0.02f)
             val document = loadSession(sessionId) ?: return@launch
-            when (val result = render.export(document, ExportRequest(document.publish.target, kind))) {
+            when (val result = render.export(
+                document,
+                ExportRequest(document.publish.target, kind, stems = current.stems),
+            ) { progress ->
+                uiState.value = uiState.value?.copy(exportProgress = progress)
+            }) {
                 is ExportResult.Written -> {
                     exportedRelativePath = result.relativePath
                     exportedMime = mimeFor(result.relativePath)
@@ -365,6 +419,7 @@ class PublishViewModel(
                         ExportKind.VIDEO -> "Camera take ready. Share the MP4 to Reels or Shorts."
                         ExportKind.LYRIC_VIDEO -> "Lyric card ready. Share the MP4."
                         ExportKind.MIX -> "Master mix ready. Tap Play, Share, or Save."
+                        ExportKind.STEMS -> "Stems ready: mix, dry lead, all vocals, and each layer."
                     }
                 }
                 is ExportResult.Waiting -> status = result.message
@@ -537,6 +592,8 @@ class PublishViewModel(
                         clipCount = track.clips.size,
                         gainDb = track.gainDb,
                         mute = track.mute,
+                        solo = track.solo,
+                        pan = track.pan,
                     )
                 }
             uiState.value = PublishUi(
@@ -552,6 +609,7 @@ class PublishViewModel(
                 status = status,
                 busy = false,
                 previewDry = uiState.value?.previewDry ?: true,
+                stems = uiState.value?.stems ?: StemSelection(),
                 vocalPath = document.tracks
                     .filter { it.role != TrackRole.BACKING }
                     .flatMap { it.clips }
@@ -672,7 +730,8 @@ fun PublishRoute(
     }
 
     val copy = LocalAppCopy.current
-    Column(modifier.fillMaxSize().studioAtmosphere(BoothRoom.MIX)) {
+    BoothCanvas(intensity = 0.5f, modifier = modifier) {
+    Column(Modifier.fillMaxSize()) {
     Column(
         Modifier
             .weight(1f)
@@ -749,6 +808,7 @@ fun PublishRoute(
                 )
             }
         }
+    }
     }
 }
 

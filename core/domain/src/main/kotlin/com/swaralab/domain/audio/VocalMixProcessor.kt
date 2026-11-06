@@ -74,6 +74,7 @@ object VocalMixProcessor {
             VocalPreset.CLOSE -> 0.40f
             VocalPreset.STAGE -> 0.62f
             VocalPreset.RADIO -> 0.44f
+            VocalPreset.BRIGHT -> 0.48f
             VocalPreset.CUSTOM -> 0.38f
         } * chain.effectAmount.coerceIn(0.35f, 1f)
         val haas = ((sampleRate * 0.012).toInt()).coerceAtLeast(1)
@@ -345,6 +346,11 @@ object VocalMixProcessor {
                 if (low == 0f) low = -2.0f
                 if (presence == 0f) presence = 2.4f
                 if (air == 0f) air = 1.8f
+            }
+            VocalPreset.BRIGHT -> {
+                if (low == 0f) low = -2.2f
+                if (presence == 0f) presence = 2.6f
+                if (air == 0f) air = 3.0f
             }
             else -> Unit
         }

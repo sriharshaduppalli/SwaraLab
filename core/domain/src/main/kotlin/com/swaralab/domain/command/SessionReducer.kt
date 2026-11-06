@@ -50,6 +50,9 @@ class SessionReducer(
             is SessionCommand.PreferClip -> preferClip(document, command)
             is SessionCommand.SetPractice -> SessionEdit.Applied(document.copy(practice = command.stats))
             is SessionCommand.SetTrackMix -> setTrackMix(document, command)
+            is SessionCommand.SplitClip -> splitClip(document, command)
+            is SessionCommand.UpdateClip -> updateClip(document, command)
+            is SessionCommand.SetTrackChain -> setTrackChain(document, command)
             is SessionCommand.AddTrack -> addTrack(document, command)
             is SessionCommand.SetVocalChain -> SessionEdit.Applied(document.copy(chain = command.chain))
             is SessionCommand.SetLyrics -> SessionEdit.Applied(document.copy(lyrics = command.sheet))
@@ -125,11 +128,12 @@ class SessionReducer(
             id = ids.newId(),
             sourceRelativePath = command.relativePath,
             timelineStartMs = command.timelineStartMs,
-            sourceInMs = 0,
+            sourceInMs = command.sourceInMs.coerceAtLeast(0L),
             durationMs = command.durationMs,
             label = command.label,
             preferred = true,
-            sourceDurationMs = command.durationMs,
+            sourceDurationMs = command.sourceDurationMs.takeIf { it > 0L }
+                ?: (command.sourceInMs + command.durationMs).coerceAtLeast(command.durationMs),
             videoRelativePath = command.videoRelativePath,
         )
         val existing = track.clips.map { clip ->
@@ -143,9 +147,20 @@ class SessionReducer(
     }
 
     private fun deleteClip(document: SessionDocument, command: SessionCommand.DeleteClip): SessionEdit {
+        var found = false
         val updatedTracks = document.tracks.map { track ->
-            track.copy(clips = track.clips.filterNot { it.id == command.clipId })
+            track.copy(
+                clips = track.clips.map { clip ->
+                    if (clip.id != command.clipId) {
+                        clip
+                    } else {
+                        found = true
+                        clip.copy(active = false, preferred = false)
+                    }
+                },
+            )
         }
+        if (!found) return SessionEdit.Rejected(RejectReason.EMPTY_CLIP)
         return SessionEdit.Applied(document.copy(tracks = updatedTracks))
     }
 
@@ -193,7 +208,7 @@ class SessionReducer(
     }
 
     private fun setTrackMix(document: SessionDocument, command: SessionCommand.SetTrackMix): SessionEdit {
-        if (!command.gainDb.isFinite() || !command.monitorGainDb.isFinite()) {
+        if (!command.gainDb.isFinite() || !command.monitorGainDb.isFinite() || !command.pan.isFinite()) {
             return SessionEdit.Rejected(RejectReason.INVALID_RANGE)
         }
         val index = document.tracks.indexOfFirst { it.id == command.trackId }
@@ -208,9 +223,79 @@ class SessionReducer(
                         monitorGainDb = command.monitorGainDb,
                         mute = command.mute,
                         solo = command.solo,
+                        pan = command.pan.coerceIn(-1f, 1f),
                     ),
                 ),
             ),
+        )
+    }
+
+    private fun splitClip(document: SessionDocument, command: SessionCommand.SplitClip): SessionEdit {
+        var found = false
+        val updatedTracks = document.tracks.map { track ->
+            val index = track.clips.indexOfFirst { it.id == command.clipId }
+            if (index < 0) return@map track
+            val clip = track.clips[index]
+            val minAt = clip.sourceInMs + 250L
+            val maxAt = clip.sourceInMs + clip.durationMs - 250L
+            if (maxAt <= minAt) return SessionEdit.Rejected(RejectReason.INVALID_RANGE)
+            val at = command.atSourceMs.coerceIn(minAt, maxAt)
+            found = true
+            val firstDur = at - clip.sourceInMs
+            val second = clip.copy(
+                id = ids.newId(),
+                sourceInMs = at,
+                durationMs = clip.durationMs - firstDur,
+                timelineStartMs = clip.timelineStartMs + firstDur,
+                label = clip.label.ifBlank { "Take" }.let { if (" · B" in it) it else "$it · B" },
+            )
+            val first = clip.copy(durationMs = firstDur, label = clip.label.ifBlank { "Take" }.let { if (" · A" in it) it else "$it · A" })
+            val clips = track.clips.toMutableList()
+            clips[index] = first
+            clips.add(index + 1, second)
+            track.copy(clips = clips)
+        }
+        if (!found) return SessionEdit.Rejected(RejectReason.EMPTY_CLIP)
+        return SessionEdit.Applied(document.copy(tracks = updatedTracks))
+    }
+
+    private fun updateClip(document: SessionDocument, command: SessionCommand.UpdateClip): SessionEdit {
+        var found = false
+        val updatedTracks = document.tracks.map { track ->
+            track.copy(
+                clips = track.clips.map { clip ->
+                    if (clip.id != command.clipId) {
+                        clip
+                    } else {
+                        found = true
+                        val start = (command.timelineStartMs ?: clip.timelineStartMs).coerceAtLeast(0L)
+                        val sourceIn = (command.sourceInMs ?: clip.sourceInMs).coerceAtLeast(0L)
+                        val duration = (command.durationMs ?: clip.durationMs).coerceAtLeast(1L)
+                        val fadeIn = (command.fadeInMs ?: clip.fadeInMs).coerceIn(0L, duration / 2)
+                        val fadeOut = (command.fadeOutMs ?: clip.fadeOutMs).coerceIn(0L, duration / 2)
+                        clip.copy(
+                            timelineStartMs = start,
+                            sourceInMs = sourceIn,
+                            durationMs = duration,
+                            fadeInMs = fadeIn,
+                            fadeOutMs = fadeOut,
+                            active = command.active ?: clip.active,
+                            preferred = command.preferred ?: clip.preferred,
+                        )
+                    }
+                },
+            )
+        }
+        if (!found) return SessionEdit.Rejected(RejectReason.EMPTY_CLIP)
+        return SessionEdit.Applied(document.copy(tracks = updatedTracks))
+    }
+
+    private fun setTrackChain(document: SessionDocument, command: SessionCommand.SetTrackChain): SessionEdit {
+        val index = document.tracks.indexOfFirst { it.id == command.trackId }
+        if (index < 0) return SessionEdit.Rejected(RejectReason.UNKNOWN_TRACK)
+        val track = document.tracks[index]
+        return SessionEdit.Applied(
+            document.copy(tracks = document.tracks.replaceAt(index, track.copy(chain = command.chain))),
         )
     }
 
@@ -240,7 +325,7 @@ class SessionReducer(
             return SessionEdit.Rejected(RejectReason.INVALID_RANGE)
         }
         val rate = command.settings.playbackRate
-        if (!rate.isFinite() || rate < 0.7f || rate > 1.35f) {
+        if (!rate.isFinite() || rate < 0.5f || rate > 1.5f) {
             return SessionEdit.Rejected(RejectReason.INVALID_RANGE)
         }
         val shift = command.settings.keyShiftSemitones

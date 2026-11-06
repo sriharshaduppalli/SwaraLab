@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -78,12 +79,31 @@ internal fun MixDeskSections(
                                     onClick = { viewModel.toggleTrackMute(track.id) },
                                     label = { Text(if (track.mute) "Muted" else "Mute") },
                                 )
+                                FilterChip(
+                                    selected = track.solo,
+                                    onClick = { viewModel.toggleTrackSolo(track.id) },
+                                    label = { Text("Solo") },
+                                )
                             }
                         }
                         Slider(
                             value = track.gainDb,
                             onValueChange = { viewModel.setTrackGain(track.id, it) },
                             valueRange = -18f..6f,
+                        )
+                        Text(
+                            text = when {
+                                track.pan < -0.05f -> "Pan L ${(-track.pan * 100).roundToInt()}%"
+                                track.pan > 0.05f -> "Pan R ${(track.pan * 100).roundToInt()}%"
+                                else -> "Pan center"
+                            },
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = SwaraColors.Muted,
+                        )
+                        Slider(
+                            value = track.pan,
+                            onValueChange = { viewModel.setTrackPan(track.id, it) },
+                            valueRange = -1f..1f,
                         )
                     }
                 }
@@ -253,6 +273,12 @@ internal fun MixDeskSections(
                 modifier = Modifier.padding(18.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
+                if (state.busy) {
+                    LinearProgressIndicator(
+                        progress = { state.exportProgress.coerceIn(0f, 1f) },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
                 Button(
                     onClick = viewModel::prepare,
                     enabled = !state.busy,
@@ -298,6 +324,47 @@ internal fun MixDeskSections(
                     enabled = !state.busy,
                     modifier = Modifier.fillMaxWidth(),
                 ) { Text(copy.lyricCard) }
+                Text(text = "Stem export", style = MaterialTheme.typography.titleMedium)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    FilterChip(
+                        selected = state.stems.mix,
+                        onClick = { viewModel.setStemFlag(mix = !state.stems.mix) },
+                        label = { Text("Final mix") },
+                    )
+                    FilterChip(
+                        selected = state.stems.leadDry,
+                        onClick = { viewModel.setStemFlag(leadDry = !state.stems.leadDry) },
+                        label = { Text("Lead dry") },
+                    )
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    FilterChip(
+                        selected = state.stems.vocals,
+                        onClick = { viewModel.setStemFlag(vocals = !state.stems.vocals) },
+                        label = { Text("All vocals") },
+                    )
+                    FilterChip(
+                        selected = state.stems.layers,
+                        onClick = { viewModel.setStemFlag(layers = !state.stems.layers) },
+                        label = { Text("Layers") },
+                    )
+                    FilterChip(
+                        selected = state.stems.backing,
+                        onClick = { viewModel.setStemFlag(backing = !state.stems.backing) },
+                        label = { Text("Backing") },
+                    )
+                }
+                OutlinedButton(
+                    onClick = { viewModel.exportKind(ExportKind.STEMS) },
+                    enabled = !state.busy,
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("Export stems") }
                 OutlinedButton(
                     onClick = { viewModel.shareInvite(context) },
                     enabled = !state.busy,

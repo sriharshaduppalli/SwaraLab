@@ -82,6 +82,8 @@ sealed interface StageTakeState {
         val dryVocalPath: String,
         val durationMs: Long,
         val score: Float? = null,
+        val detailed: DetailedScore? = null,
+        val analyzing: Boolean = false,
     ) : StageTakeState
     data class Error(val message: String) : StageTakeState
 }

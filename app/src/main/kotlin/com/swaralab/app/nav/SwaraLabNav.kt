@@ -24,6 +24,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.NavType
@@ -142,7 +143,7 @@ fun SwaraLabNav(graph: SwaraLabGraph) {
         return@CompositionLocalProvider
     }
     Scaffold(
-        containerColor = MaterialTheme.colorScheme.background,
+        containerColor = Color.Transparent,
         contentWindowInsets = WindowInsets.safeDrawing,
         bottomBar = {
             if (showTabs) {
@@ -154,7 +155,7 @@ fun SwaraLabNav(graph: SwaraLabGraph) {
                         .background(SwaraColors.Line),
                 )
                 NavigationBar(
-                    containerColor = SwaraColors.Card,
+                    containerColor = SwaraColors.Card.copy(alpha = 0.92f),
                     tonalElevation = 3.dp,
                     windowInsets = WindowInsets.safeDrawing.only(
                         WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom,
@@ -329,6 +330,8 @@ fun SwaraLabNav(graph: SwaraLabGraph) {
                     onListen = { id -> nav.navigate(Routes.listen(id)) },
                     onStorage = { nav.navigate(Screen.Storage.route) },
                     onReplayOnboarding = { showOnboarding = true },
+                    takeCatalog = graph.takeCatalog,
+                    boothProfile = graph.appSettings,
                     appLanguage = appLanguage,
                     onAppLanguage = { language ->
                         graph.appSettings.setUiLanguage(language.tag)
@@ -370,8 +373,15 @@ fun SwaraLabNav(graph: SwaraLabGraph) {
                     updatePublish = graph.updatePublish,
                     updateMusical = graph.updateMusical,
                     trimRecordedClip = graph.trimRecordedClip,
+                    splitRecordedClip = graph.splitRecordedClip,
+                    updateRecordedClip = graph.updateRecordedClip,
+                    updateTrackChain = graph.updateTrackChain,
+                    updateTrackMix = graph.updateTrackMix,
                     preferRecordedClip = graph.preferRecordedClip,
                     updatePractice = graph.updatePractice,
+                    restoreSession = graph.restoreSession,
+                    cleanUnusedTakes = graph.cleanUnusedTakes,
+                    sessionAutoSave = graph.sessionAutoSave,
                     audio = graph.audio,
                     render = graph.render,
                     takeCatalog = graph.takeCatalog,

@@ -21,7 +21,7 @@ class MixPresetDifferentiationTest {
         val mid = FloatArray(min(leftIn.size, rightIn.size)) { i -> (leftIn[i] + rightIn[i]) * 0.5f }
         val outDir = raw.parentFile
         val reports = linkedMapOf<VocalPreset, MixStat>()
-        for (preset in listOf(VocalPreset.RAW, VocalPreset.CLOSE, VocalPreset.STAGE, VocalPreset.RADIO)) {
+        for (preset in listOf(VocalPreset.RAW, VocalPreset.CLOSE, VocalPreset.STAGE, VocalPreset.RADIO, VocalPreset.BRIGHT)) {
             val voice = mid.copyOf()
             val chain = VocalChain.preset(preset)
             VocalMixProcessor.applyChain(voice, rate, chain)

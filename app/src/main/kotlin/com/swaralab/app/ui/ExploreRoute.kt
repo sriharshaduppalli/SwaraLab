@@ -14,12 +14,11 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.swaralab.domain.model.SessionKind
 import com.swaralab.domain.usecase.StartSession
-import com.swaralab.ui.BoothRoom
+import com.swaralab.ui.BoothCanvas
 import com.swaralab.ui.CompactChoiceCard
 import com.swaralab.ui.LocalAppCopy
 import com.swaralab.ui.PageHero
 import com.swaralab.ui.SwaraColors
-import com.swaralab.ui.studioAtmosphere
 
 @Composable
 fun ExploreRoute(
@@ -34,10 +33,10 @@ fun ExploreRoute(
         viewModel.opened.collect { opened -> onOpen(opened.id, opened.sing) }
     }
 
+    BoothCanvas(intensity = 0.55f, modifier = modifier) {
     Column(
-        modifier
+        Modifier
             .fillMaxSize()
-            .studioAtmosphere(BoothRoom.HOME)
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp, vertical = 28.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -79,5 +78,6 @@ fun ExploreRoute(
                 accentWash = SwaraColors.GoldWash,
             )
         }
+    }
     }
 }

@@ -18,10 +18,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.swaralab.domain.port.SessionSummary
-import com.swaralab.ui.BoothRoom
+import com.swaralab.ui.BoothCanvas
+import com.swaralab.ui.GlassTrackCard
 import com.swaralab.ui.LocalAppCopy
 import com.swaralab.ui.SwaraColors
-import com.swaralab.ui.studioAtmosphere
 import java.io.File
 
 @Composable
@@ -35,10 +35,10 @@ fun StorageScreen(
 ) {
     val copy = LocalAppCopy.current
     BackHandler(onBack = onBack)
+    BoothCanvas(intensity = 0.45f, modifier = modifier) {
     Column(
-        modifier
+        Modifier
             .fillMaxSize()
-            .studioAtmosphere(BoothRoom.PROFILE)
             .padding(horizontal = 20.dp, vertical = 20.dp),
     ) {
         TextButton(onClick = onBack, modifier = Modifier.align(Alignment.Start)) {
@@ -60,29 +60,18 @@ fun StorageScreen(
             color = SwaraColors.Muted,
             modifier = Modifier.padding(top = 8.dp, bottom = 16.dp),
         )
-        LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             items(recordings, key = { it.id }) { rec ->
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 10.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(Modifier.weight(1f)) {
-                        Text(rec.title.ifBlank { "Untitled" }, style = MaterialTheme.typography.titleMedium)
-                        Text(
-                            "${rec.takeCount} ${copy.takes}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = SwaraColors.Muted,
-                        )
-                    }
-                    TextButton(onClick = { onDelete(rec.id) }) {
-                        Text(copy.delete)
-                    }
-                }
+                GlassTrackCard(
+                    title = rec.title.ifBlank { "Untitled" },
+                    detail = "${rec.takeCount} ${copy.takes}",
+                    onClick = { },
+                    actionLabel = copy.delete,
+                    onAction = { onDelete(rec.id) },
+                )
             }
         }
+    }
     }
 }
 

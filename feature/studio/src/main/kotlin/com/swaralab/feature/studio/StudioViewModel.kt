@@ -101,7 +101,10 @@ import com.swaralab.domain.audio.ImportedTrack
 import com.swaralab.domain.audio.LiveMonitorEffect
 import com.swaralab.domain.audio.LyricHighlight
 import com.swaralab.domain.audio.LyricSync
+import com.swaralab.domain.audio.DetailedScore
+import com.swaralab.domain.audio.LoopRegion
 import com.swaralab.domain.audio.PitchScorer
+import com.swaralab.domain.audio.TrackProcessingConfig
 import com.swaralab.domain.audio.RecoverableDraft
 import com.swaralab.domain.audio.RecordingDraft
 import com.swaralab.domain.audio.StageTake
@@ -136,15 +139,25 @@ import com.swaralab.domain.port.TakeConversion
 import com.swaralab.domain.port.isLive
 import com.swaralab.domain.port.userMessage
 import kotlinx.coroutines.flow.combine
+import com.swaralab.domain.edit.SnapshotEditCommand
+import com.swaralab.domain.edit.UndoManager
 import com.swaralab.domain.usecase.AddVoicePart
+import com.swaralab.domain.usecase.CleanUnusedTakes
 import com.swaralab.domain.usecase.CommitRecordedTake
 import com.swaralab.domain.usecase.DeleteRecordedClip
 import com.swaralab.domain.usecase.ImportBackingTrack
 import com.swaralab.domain.usecase.LoadSession
 import com.swaralab.domain.usecase.PreferRecordedClip
+import com.swaralab.domain.usecase.RestoreSession
 import com.swaralab.domain.usecase.SaveTake
+import com.swaralab.domain.usecase.SessionAutoSave
 import com.swaralab.domain.usecase.RenameSession
+import com.swaralab.domain.usecase.SplitRecordedClip
 import com.swaralab.domain.usecase.TrimRecordedClip
+import com.swaralab.domain.usecase.UpdateRecordedClip
+import com.swaralab.domain.usecase.UpdateTrackChain
+import com.swaralab.domain.usecase.UpdateTrackMix
+import com.swaralab.domain.model.VocalChain
 import com.swaralab.domain.usecase.UpdateGear
 import com.swaralab.domain.usecase.UpdateLyrics
 import com.swaralab.domain.usecase.UpdateMusicalSettings
@@ -158,6 +171,7 @@ import com.swaralab.ui.LocalAppCopy
 import com.swaralab.ui.SwaraColors
 import com.swaralab.ui.studioAtmosphere
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -179,7 +193,26 @@ import kotlin.math.sin
 data class VoicePartUi(
     val id: String,
     val label: String,
+    val role: TrackRole = TrackRole.LEAD,
+    val gainDb: Float = 0f,
+    val pan: Float = 0f,
+    val mute: Boolean = false,
+    val solo: Boolean = false,
+    val clipCount: Int = 0,
+    val chainPreset: VocalPreset? = null,
 )
+
+internal fun TrackRole.laneLabel(): String = when (this) {
+    TrackRole.LEAD -> "Lead"
+    TrackRole.DOUBLE -> "Double"
+    TrackRole.HARMONY -> "Harmony"
+    TrackRole.ADLIB -> "Ad-lib"
+    TrackRole.EXTRA -> "Extra"
+    TrackRole.BACKING -> "Backing"
+    TrackRole.GUIDE -> "Guide"
+    TrackRole.MIDI_SKETCH -> "Sketch"
+    TrackRole.METRONOME -> "Click"
+}
 
 data class RecordedTakeUi(
     val id: String,
@@ -191,6 +224,9 @@ data class RecordedTakeUi(
     val sourceDurationMs: Long,
     val timelineStartMs: Long,
     val preferred: Boolean,
+    val active: Boolean = true,
+    val fadeInMs: Long = 45L,
+    val fadeOutMs: Long = 45L,
 )
 
 data class BackingTrackUi(
@@ -206,8 +242,16 @@ data class BackingTrackUi(
 data class PendingKeepTake(
     val finished: FinishedTake,
     val punchStartMs: Long,
+    val punchEndMs: Long = 0L,
     val silent: Boolean,
     val score: Float? = null,
+    val detailed: DetailedScore? = null,
+    val analyzing: Boolean = false,
+)
+
+data class BackingPrepUi(
+    val busy: Boolean = false,
+    val progress: Float = 0f,
 )
 
 data class StudioUi(
@@ -232,6 +276,7 @@ data class StudioUi(
     val countInEnabled: Boolean,
     val metronomeEnabled: Boolean,
     val punchStartMs: Long,
+    val punchEndMs: Long = 0L,
     val practice: PracticeStats,
     val lyricLanguage: String,
     val scaleMode: ScaleMode,
@@ -260,8 +305,15 @@ class StudioViewModel(
     private val updatePublish: UpdatePublishSettings,
     private val updateMusical: UpdateMusicalSettings,
     private val trimRecordedClip: TrimRecordedClip,
+    private val splitRecordedClip: SplitRecordedClip? = null,
+    private val updateRecordedClip: UpdateRecordedClip? = null,
+    private val updateTrackChain: UpdateTrackChain? = null,
+    private val updateTrackMix: UpdateTrackMix? = null,
     private val preferRecordedClip: PreferRecordedClip,
     private val updatePractice: UpdatePracticeStats,
+    private val restoreSession: RestoreSession,
+    private val cleanUnusedTakes: CleanUnusedTakes? = null,
+    private val sessionAutoSave: SessionAutoSave? = null,
     val audio: AudioEngine,
     private val render: RenderEngine,
     private val takeCatalog: TakeCatalog? = null,
@@ -279,10 +331,20 @@ class StudioViewModel(
     val recoverableDraft: StateFlow<RecoverableDraft?> = recoverableDraftState.asStateFlow()
     private val liveEffectState = MutableStateFlow<LiveMonitorEffect>(LiveMonitorEffect.None)
     val liveEffect: StateFlow<LiveMonitorEffect> = liveEffectState.asStateFlow()
+    private val backingPrepState = MutableStateFlow(BackingPrepUi())
+    val backingPrep: StateFlow<BackingPrepUi> = backingPrepState.asStateFlow()
+    private val practiceLoopingState = MutableStateFlow(false)
+    val practiceLooping: StateFlow<Boolean> = practiceLoopingState.asStateFlow()
+    private val practiceLoopState = MutableStateFlow<LoopRegion?>(null)
+    val practiceLoop: StateFlow<LoopRegion?> = practiceLoopState.asStateFlow()
+    private var practiceLoopMark: Long? = null
+    private var processJob: Job? = null
     private var activeLine = 0
     private var selectedPartId: String? = null
     private var stageNote: String? = null
     private var punchStartMs: Long = 0L
+    private var punchEndMs: Long = 0L
+    private var punchAutoStopped: Boolean = false
     private var instrumentalBusy = false
     private var lyricFollow = LiveLyricFollower.State()
     private var heardLyric: String? = null
@@ -293,6 +355,26 @@ class StudioViewModel(
     private var liveAttempts = 0
     private var liveLowHz = 0f
     private var liveHighHz = 0f
+    private val undoManager = UndoManager()
+    val canUndo = undoManager.canUndo
+    val canRedo = undoManager.canRedo
+    private var restoredPlayhead = false
+    private var playheadJob: Job? = null
+
+    private suspend fun captureEdit(description: String, block: suspend () -> Unit) {
+        val before = loadSession(sessionId) ?: return
+        block()
+        val after = loadSession(sessionId) ?: return
+        if (after == before) return
+        undoManager.record(
+            SnapshotEditCommand(
+                description = description,
+                before = before,
+                after = after,
+                restore = restoreSession::invoke,
+            ),
+        )
+    }
 
     init {
         refresh()
@@ -337,6 +419,8 @@ class StudioViewModel(
                             dryVocalPath = pending.finished.relativePath,
                             durationMs = pending.finished.durationMs,
                             score = pending.score,
+                            detailed = pending.detailed,
+                            analyzing = pending.analyzing,
                         )
                     } else {
                         take
@@ -471,9 +555,10 @@ class StudioViewModel(
             }
             pendingKeepState.value = null
             punchStartMs = 0L
+            punchEndMs = 0L
             audio.recover()
             stageNote = null
-            uiState.value = uiState.value?.copy(punchStartMs = 0L, stageNote = null)
+            uiState.value = uiState.value?.copy(punchStartMs = 0L, punchEndMs = 0L, stageNote = null)
         }
     }
 
@@ -532,8 +617,53 @@ class StudioViewModel(
     }
 
     fun addSecondVoice() {
+        addLayer(TrackRole.HARMONY)
+    }
+
+    fun addLayer(role: TrackRole) {
         viewModelScope.launch {
-            ensureVoiceParts(2)
+            val document = loadSession(sessionId) ?: return@launch
+            val count = document.tracks.count { it.role == role }
+            val name = when (role) {
+                TrackRole.DOUBLE -> if (count == 0) "Double" else "Double ${count + 1}"
+                TrackRole.HARMONY -> if (count == 0) "Harmony" else "Harmony ${count + 1}"
+                TrackRole.ADLIB -> if (count == 0) "Ad-lib" else "Ad-lib ${count + 1}"
+                TrackRole.EXTRA -> if (count == 0) "Extra" else "Extra ${count + 1}"
+                else -> "Part ${document.tracks.count { it.role != TrackRole.BACKING } + 1}"
+            }
+            captureEdit("Add layer") {
+                addVoicePart(sessionId, role, name)
+            }
+            val updated = loadSession(sessionId)
+            selectedPartId = updated?.tracks?.lastOrNull { it.role == role }?.id ?: selectedPartId
+            stageNote = "Recording into $name. Sing, then Mix & Save."
+            refresh()
+        }
+    }
+
+    fun setLayerChain(partId: String, preset: VocalPreset?) {
+        viewModelScope.launch {
+            captureEdit("Layer chain") {
+                updateTrackChain?.invoke(sessionId, partId, preset?.let { VocalChain.preset(it) })
+            }
+            refresh()
+        }
+    }
+
+    fun setLayerMix(partId: String, gainDb: Float? = null, pan: Float? = null, mute: Boolean? = null, solo: Boolean? = null) {
+        val part = uiState.value?.parts?.firstOrNull { it.id == partId } ?: return
+        viewModelScope.launch {
+            captureEdit("Layer mix") {
+                updateTrackMix?.invoke(
+                    sessionId,
+                    partId,
+                    gainDb ?: part.gainDb,
+                    mute ?: part.mute,
+                    solo = solo ?: part.solo,
+                    pan = pan ?: part.pan,
+                )
+            }
+            refresh()
         }
     }
 
@@ -541,13 +671,14 @@ class StudioViewModel(
         repeat(3) {
             val document = loadSession(sessionId) ?: return
             val voices = document.tracks.count { it.role != TrackRole.BACKING }
-            if (voices >= minimum.coerceAtMost(3)) {
+            if (voices >= minimum.coerceAtMost(5)) {
                 refresh()
                 return
             }
             val (role, name) = when (voices) {
-                1 -> TrackRole.HARMONY to "Part 2 · Duet"
-                else -> TrackRole.DOUBLE to "Part 3 · Group"
+                1 -> TrackRole.DOUBLE to "Double"
+                2 -> TrackRole.HARMONY to "Harmony"
+                else -> TrackRole.ADLIB to "Ad-lib"
             }
             addVoicePart(sessionId, role, name)
         }
@@ -616,14 +747,17 @@ class StudioViewModel(
             } else {
                 pending.finished
             }
-            saveTake(
-                sessionId = sessionId,
-                trackId = current.selectedPartId,
-                take = take,
-                timelineStartMs = pending.punchStartMs,
-                backingRelativePath = current.backing?.relativePath,
-                title = current.title,
-            )
+            captureEdit(if (pending.punchStartMs > 0L) "Punch-in" else "Keep take") {
+                saveTake(
+                    sessionId = sessionId,
+                    trackId = current.selectedPartId,
+                    take = take,
+                    timelineStartMs = pending.punchStartMs,
+                    punchEndMs = pending.punchEndMs,
+                    backingRelativePath = current.backing?.relativePath,
+                    title = current.title,
+                )
+            }
             analytics.log(
                 AnalyticsEvent.RECORDING_SAVED,
                 mapOf(
@@ -632,7 +766,11 @@ class StudioViewModel(
                 ),
             )
             val punchNote = if (pending.punchStartMs > 0L) {
-                " First half stayed in the mix."
+                if (pending.punchEndMs > pending.punchStartMs) {
+                    " That window was replaced. The rest of the take stayed."
+                } else {
+                    " First half stayed in the mix."
+                }
             } else {
                 ""
             }
@@ -643,6 +781,7 @@ class StudioViewModel(
             }
             stageNote = "Saved take (${formatDuration(take.durationMs)}).$punchNote$cameraNote Mix & Save is next."
             punchStartMs = 0L
+            punchEndMs = 0L
             pendingKeepState.value = null
             refresh()
             then?.invoke()
@@ -684,37 +823,166 @@ class StudioViewModel(
             )
             stageNote = null
             refresh()
+            scheduleBackingProcess(
+                keyShiftSemitones = keyShiftSemitones ?: current.keyShiftSemitones,
+                playbackRate = playbackRate ?: current.playbackRate,
+            )
+        }
+    }
+
+    private fun scheduleBackingProcess(keyShiftSemitones: Int, playbackRate: Float) {
+        processJob?.cancel()
+        processJob = viewModelScope.launch {
+            delay(400)
+            prepareBackingCache(keyShiftSemitones, playbackRate)
+        }
+    }
+
+    private suspend fun prepareBackingCache(keyShiftSemitones: Int, playbackRate: Float): String? {
+        val backing = uiState.value?.backing ?: return null
+        val config = TrackProcessingConfig(keyShiftSemitones, playbackRate)
+        if (config.isIdentity()) {
+            backingPrepState.value = BackingPrepUi()
+            return backing.relativePath
+        }
+        val original = File(File(projectsDir, sessionId), backing.relativePath)
+        if (!original.isFile) return backing.relativePath
+        val relative = SessionLayout.processedBacking(backing.relativePath, config.semitones, config.tempo)
+        val output = File(File(projectsDir, sessionId), relative)
+        if (output.isFile && output.length() > 44L) {
+            backingPrepState.value = BackingPrepUi()
+            return relative
+        }
+        backingPrepState.value = BackingPrepUi(busy = true, progress = 0.05f)
+        val ok = audio.prepareProcessedTrack(original.absolutePath, output.absolutePath, config) { progress ->
+            backingPrepState.value = BackingPrepUi(busy = true, progress = progress)
+        }
+        backingPrepState.value = BackingPrepUi()
+        return if (ok) relative else backing.relativePath
+    }
+
+    private suspend fun prepareMonitorBed(current: StudioUi, backingRelative: String?): String? {
+        val document = loadSession(sessionId) ?: return backingRelative
+        val exclude = current.selectedPartId
+        val others = document.tracks.any { track ->
+            track.role != TrackRole.BACKING &&
+                track.id != exclude &&
+                !track.mute &&
+                track.clips.any { it.active }
+        }
+        if (!others && punchStartMs <= 0L) return backingRelative
+        val relative = SessionLayout.MONITOR_BED
+        val destination = File(File(projectsDir, sessionId), relative)
+        val aimed = document.copy(
+            tracks = document.tracks.map { track ->
+                if (track.id == exclude) track.copy(mute = true) else track
+            },
+        )
+        return if (render.writeMonitorBed(aimed, destination)) relative else backingRelative
+    }
+
+    private fun armBacking(relativePath: String?, keyShiftSemitones: Int, playbackRate: Float): Triple<String?, Int, Float> {
+        if (relativePath == null) return Triple(null, 0, 1f)
+        val config = TrackProcessingConfig(keyShiftSemitones, playbackRate)
+        if (config.isIdentity()) return Triple(relativePath, 0, 1f)
+        val processed = SessionLayout.processedBacking(relativePath, config.semitones, config.tempo)
+        val file = File(File(projectsDir, sessionId), processed)
+        return if (file.isFile && file.length() > 44L) {
+            Triple(processed, 0, 1f)
+        } else {
+            Triple(relativePath, keyShiftSemitones, playbackRate)
         }
     }
 
     fun trimTake(clipId: String, sourceInMs: Long, durationMs: Long) {
         viewModelScope.launch {
-            trimRecordedClip(sessionId, clipId, sourceInMs, durationMs)
+            captureEdit("Trim clip") {
+                trimRecordedClip(sessionId, clipId, sourceInMs, durationMs)
+            }
             stageNote = "Take trimmed. The mix will use only this window."
+            refresh()
+        }
+    }
+
+    fun moveTake(clipId: String, timelineStartMs: Long) {
+        viewModelScope.launch {
+            captureEdit("Move clip") {
+                updateRecordedClip?.invoke(sessionId, clipId, timelineStartMs = timelineStartMs.coerceAtLeast(0L))
+            }
+            stageNote = "Clip moved on the timeline."
+            refresh()
+        }
+    }
+
+    fun setTakeFades(clipId: String, fadeInMs: Long, fadeOutMs: Long) {
+        viewModelScope.launch {
+            captureEdit("Clip fades") {
+                updateRecordedClip?.invoke(sessionId, clipId, fadeInMs = fadeInMs, fadeOutMs = fadeOutMs)
+            }
+            refresh()
+        }
+    }
+
+    fun restoreTake(clipId: String) {
+        viewModelScope.launch {
+            captureEdit("Bring back clip") {
+                updateRecordedClip?.invoke(sessionId, clipId, active = true, preferred = true)
+            }
+            stageNote = "Original take is back in the mix."
+            refresh()
+        }
+    }
+
+    fun splitTake(clipId: String, atSourceMs: Long) {
+        viewModelScope.launch {
+            captureEdit("Split clip") {
+                splitRecordedClip?.invoke(sessionId, clipId, atSourceMs)
+            }
+            stageNote = "Clip split. Trim or punch each half separately."
             refresh()
         }
     }
 
     fun preferTake(clipId: String) {
         viewModelScope.launch {
-            preferRecordedClip(sessionId, clipId, preferred = true)
+            captureEdit("Choose take") {
+                preferRecordedClip(sessionId, clipId, preferred = true)
+            }
             stageNote = "This take is now the one used in Mix & Save."
             refresh()
         }
     }
 
     fun punchFrom(take: RecordedTakeUi, startMs: Long) {
+        punchRegion(take, startMs, take.sourceInMs + take.durationMs)
+    }
+
+    fun punchRegion(take: RecordedTakeUi, startMs: Long, endMs: Long) {
         val fromSource = (startMs - take.sourceInMs).coerceAtLeast(0L)
         punchStartMs = (take.timelineStartMs + fromSource).coerceAtLeast(0L)
+        val endSource = (endMs - take.sourceInMs).coerceAtLeast(fromSource + 250L)
+        punchEndMs = (take.timelineStartMs + endSource).coerceAtLeast(punchStartMs + 250L)
+        punchAutoStopped = false
         audio.seekTake(punchStartMs)
-        stageNote = "Punch-in armed at ${formatDuration(punchStartMs)}. The first half stays. Tap Sing to replace from there."
-        uiState.value = uiState.value?.copy(punchStartMs = punchStartMs, stageNote = stageNote)
+        stageNote = "Punch-in ${formatDuration(punchStartMs)}–${formatDuration(punchEndMs)}. Tap Sing to replace only that line."
+        uiState.value = uiState.value?.copy(punchStartMs = punchStartMs, punchEndMs = punchEndMs, stageNote = stageNote)
     }
 
     fun clearPunch() {
         punchStartMs = 0L
+        punchEndMs = 0L
         audio.seekTake(0L)
-        uiState.value = uiState.value?.copy(punchStartMs = 0L)
+        uiState.value = uiState.value?.copy(punchStartMs = 0L, punchEndMs = 0L)
+    }
+
+    fun checkPunchEnd(positionMs: Long) {
+        if (punchAutoStopped) return
+        if (punchEndMs <= punchStartMs) return
+        if (!audio.state.value.status.isLive()) return
+        if (positionMs >= punchEndMs) {
+            punchAutoStopped = true
+            toggleRecording()
+        }
     }
 
     fun tickPractice() {
@@ -895,14 +1163,78 @@ class StudioViewModel(
         saveLyrics(sampleLrc, note = "Sample synced lyrics loaded. Tap Sing to try them out.")
     }
 
+    fun togglePracticeLoop() {
+        val on = !practiceLoopingState.value
+        practiceLoopingState.value = on
+        audio.setLoopRegion(practiceLoopState.value, on)
+    }
+
+    fun setPracticeLoopPoint() {
+        val pos = audio.state.value.positionMs.coerceAtLeast(0L)
+        val mark = practiceLoopMark
+        val region = if (mark == null) {
+            practiceLoopMark = pos
+            LoopRegion(startMs = pos, endMs = pos + 12_000L)
+        } else {
+            val start = minOf(mark, pos)
+            val end = maxOf(mark, pos).coerceAtLeast(start + 1_000L)
+            practiceLoopMark = null
+            LoopRegion(startMs = start, endMs = end)
+        }
+        practiceLoopState.value = region
+        practiceLoopingState.value = true
+        audio.setLoopRegion(region, true)
+    }
+
+    fun exitPractice() {
+        viewModelScope.launch {
+            if (audio.state.value.status.isLive()) {
+                audio.stopTake()
+            }
+            pendingKeepState.value = null
+            audio.setLoopRegion(null, false)
+            stageNote = "Practice ended. No score on this pass."
+            refresh()
+        }
+    }
+
     fun toggleRecording() {
         viewModelScope.launch {
             val current = uiState.value ?: return@launch
             if (audio.state.value.status.isLive()) {
                 val finished = audio.stopTake()
+                if (current.kind == SessionKind.PRACTICE) {
+                    if (liveAttempts > 0) {
+                        val merged = PracticeStats(
+                            hits = current.practice.hits + liveHits,
+                            attempts = current.practice.attempts + liveAttempts,
+                            lowestHz = listOf(current.practice.lowestHz, liveLowHz).filter { it > 0f }.minOrNull() ?: 0f,
+                            highestHz = maxOf(current.practice.highestHz, liveHighHz),
+                            lastScore = ((liveHits * 100f) / liveAttempts).toInt().coerceIn(0, 100),
+                        )
+                        updatePractice(sessionId, merged)
+                        liveHits = 0
+                        liveAttempts = 0
+                    }
+                    pendingKeepState.value = null
+                    stageNote = "Practice pass saved locally as dry audio only — no score."
+                    refresh()
+                    return@launch
+                }
                 if (finished != null) {
                     val wav = File(File(projectsDir, sessionId), finished.relativePath)
-                    val score = withContext(Dispatchers.IO) { PitchScorer.score(wav, current.lines, punchStartMs) }
+                    val silent = finished.peak < 0.012f || finished.durationMs < 400L
+                    pendingKeepState.value = PendingKeepTake(
+                        finished = finished.copy(aacRelativePath = SessionLayout.takeAac(finished.takeId)),
+                        punchStartMs = punchStartMs,
+                        punchEndMs = punchEndMs,
+                        silent = silent,
+                        analyzing = true,
+                    )
+                    val detailed = withContext(Dispatchers.IO) {
+                        PitchScorer.detailed(wav, current.lines, punchStartMs)
+                    }
+                    val score = detailed.overall
                     analytics.log(
                         AnalyticsEvent.KARAOKE_COMPLETED,
                         mapOf(
@@ -913,8 +1245,11 @@ class StudioViewModel(
                     pendingKeepState.value = PendingKeepTake(
                         finished = finished.copy(score = score, aacRelativePath = SessionLayout.takeAac(finished.takeId)),
                         punchStartMs = punchStartMs,
-                        silent = finished.peak < 0.012f || finished.durationMs < 400L,
+                        punchEndMs = punchEndMs,
+                        silent = silent,
                         score = score,
+                        detailed = detailed,
+                        analyzing = false,
                     )
                     stageNote = if (finished.peak < 0.012f) {
                         "That pass was almost silent. Keep it only if you meant to."
@@ -924,18 +1259,6 @@ class StudioViewModel(
                 } else {
                     stageNote = "Take stopped."
                 }
-                if (current.kind == SessionKind.PRACTICE && liveAttempts > 0) {
-                    val merged = PracticeStats(
-                        hits = current.practice.hits + liveHits,
-                        attempts = current.practice.attempts + liveAttempts,
-                        lowestHz = listOf(current.practice.lowestHz, liveLowHz).filter { it > 0f }.minOrNull() ?: 0f,
-                        highestHz = maxOf(current.practice.highestHz, liveHighHz),
-                        lastScore = ((liveHits * 100f) / liveAttempts).toInt().coerceIn(0, 100),
-                    )
-                    updatePractice(sessionId, merged)
-                    liveHits = 0
-                    liveAttempts = 0
-                }
                 refresh()
             } else {
                 if (recoverableDraftState.value != null) return@launch
@@ -943,26 +1266,40 @@ class StudioViewModel(
                 liveAttempts = 0
                 liveLowHz = 0f
                 liveHighHz = 0f
+                prepareBackingCache(current.keyShiftSemitones, current.playbackRate)
+                val bed = armBacking(
+                    current.backing?.relativePath,
+                    current.keyShiftSemitones,
+                    current.playbackRate,
+                )
+                val monitor = prepareMonitorBed(current, bed.first)
+                val mixedBed = monitor == SessionLayout.MONITOR_BED
                 audio.arm(
                     ArmRequest(
                         sessionId = sessionId,
                         output = current.route,
-                        backingRelativePath = current.backing?.relativePath,
+                        backingRelativePath = monitor,
                         rootKeyName = current.keyName,
                         tempoBpm = current.tempoBpm.toDouble(),
-                        countInEnabled = current.countInEnabled,
+                        countInEnabled = if (punchStartMs > 0L || current.kind == SessionKind.PRACTICE) {
+                            false
+                        } else {
+                            current.countInEnabled
+                        },
                         metronomeEnabled = current.metronomeEnabled,
                         punchStartMs = punchStartMs,
-                        playbackRate = current.playbackRate,
-                        keyShiftSemitones = current.keyShiftSemitones,
+                        punchEndMs = punchEndMs,
+                        preRollMs = if (punchStartMs > 0L) 2_000L else 0L,
+                        playbackRate = if (mixedBed) 1f else bed.third,
+                        keyShiftSemitones = if (mixedBed) 0 else bed.second,
                         monitorEnabled = headphoneFx &&
                             (current.route == GearRoute.WIRED || current.route == GearRoute.USB),
                         monitorReverb = if (headphoneFx) current.monitorReverb else 0f,
                         monitorDelay = if (headphoneFx) current.monitorDelay else 0f,
                         monitorPreset = if (headphoneFx) current.preset else null,
-                        loopBacking = current.backing?.loops == true,
+                        loopBacking = practiceLoopingState.value || current.backing?.loops == true,
                         voiceGain = voiceGain,
-                        trackGain = trackGain,
+                        trackGain = if (current.kind == SessionKind.PRACTICE) minOf(trackGain, 0.5f) else trackGain,
                     ),
                 )
                 val armed = audio.state.value.decision
@@ -970,6 +1307,10 @@ class StudioViewModel(
                     is TakeControl.Started -> {
                         analytics.log(AnalyticsEvent.KARAOKE_STARTED, mapOf("kind" to current.kind.name))
                         audio.setLiveEffect(liveEffectState.value)
+                        if (current.kind == SessionKind.PRACTICE) {
+                            audio.setLoopRegion(practiceLoopState.value, practiceLoopingState.value)
+                            audio.setTrackGain(minOf(trackGain, 0.5f))
+                        }
                         beginLyricFollow()
                         val followsVoice = current.lines.isNotEmpty() && current.lines.none { it.startMs != null }
                         val bluetooth = if (armed == MonitorDecision.WARN) {
@@ -978,6 +1319,10 @@ class StudioViewModel(
                             ""
                         }
                         when {
+                            punchStartMs > 0L && punchEndMs > punchStartMs ->
+                                "Hear the song for 2 seconds, then sing ${formatDuration(punchStartMs)}–${formatDuration(punchEndMs)}.$bluetooth"
+                            punchStartMs > 0L ->
+                                "Hear the song for 2 seconds, then sing from ${formatDuration(punchStartMs)}.$bluetooth"
                             current.countInEnabled && followsVoice ->
                                 "Count-in started. After 4, lyrics will follow the lines you sing.$bluetooth"
                             current.countInEnabled ->
@@ -1005,11 +1350,37 @@ class StudioViewModel(
             if (take != null && audio.state.value.playingRelativePath == take.relativePath) {
                 audio.stopPlayback()
             }
-            deleteRecordedClip(sessionId, clipId)
-            if (take != null) {
-                withContext(Dispatchers.IO) {
-                    runCatching { File(File(projectsDir, sessionId), take.relativePath).delete() }
-                }
+            captureEdit("Delete clip") {
+                deleteRecordedClip(sessionId, clipId)
+            }
+            stageNote = "Clip parked. The WAV stays until you clean unused takes."
+            refresh()
+        }
+    }
+
+    fun undoEdit() {
+        viewModelScope.launch {
+            undoManager.undo()
+            refresh()
+        }
+    }
+
+    fun redoEdit() {
+        viewModelScope.launch {
+            undoManager.redo()
+            refresh()
+        }
+    }
+
+    fun cleanUnusedTakes() {
+        viewModelScope.launch {
+            val cleaner = cleanUnusedTakes ?: return@launch
+            val result = cleaner(sessionId)
+            undoManager.clear()
+            stageNote = if (result.removedFiles > 0 || result.removedClips > 0) {
+                "Removed ${result.removedClips} parked clips and ${result.removedFiles} unused files."
+            } else {
+                "No unused takes to clean."
             }
             refresh()
         }
@@ -1017,6 +1388,32 @@ class StudioViewModel(
 
     fun refreshFromLifecycle() {
         refresh()
+    }
+
+    fun seekMix(positionMs: Long) {
+        val clamped = positionMs.coerceAtLeast(0L)
+        audio.seekTake(clamped)
+        schedulePlayhead(clamped)
+    }
+
+    fun stopMixPlayback() {
+        audio.stopPlayback()
+        schedulePlayhead(audio.state.value.positionMs)
+    }
+
+    fun flushAutoSave() {
+        playheadJob?.cancel()
+        viewModelScope.launch {
+            sessionAutoSave?.persistPlayhead(sessionId, audio.state.value.positionMs)
+        }
+    }
+
+    private fun schedulePlayhead(positionMs: Long) {
+        playheadJob?.cancel()
+        playheadJob = viewModelScope.launch {
+            delay(800)
+            sessionAutoSave?.persistPlayhead(sessionId, positionMs)
+        }
     }
 
     fun onPermissionDenied(message: String) {
@@ -1072,6 +1469,32 @@ class StudioViewModel(
         return true
     }
 
+    fun retryPendingTake() {
+        viewModelScope.launch {
+            val pending = pendingKeepState.value ?: return@launch
+            val start = pending.punchStartMs
+            val end = pending.punchEndMs
+            withContext(Dispatchers.IO) {
+                runCatching { File(File(projectsDir, sessionId), pending.finished.relativePath).delete() }
+            }
+            pendingKeepState.value = null
+            punchStartMs = start
+            punchEndMs = end
+            punchAutoStopped = false
+            stageNote = if (end > start) {
+                "Retry punch ${formatDuration(start)}–${formatDuration(end)}."
+            } else {
+                "Sing again."
+            }
+            uiState.value = uiState.value?.copy(
+                punchStartMs = start,
+                punchEndMs = end,
+                stageNote = stageNote,
+            )
+            toggleRecording()
+        }
+    }
+
     fun discardPendingTake() {
         viewModelScope.launch {
             val pending = pendingKeepState.value ?: return@launch
@@ -1100,6 +1523,7 @@ class StudioViewModel(
             }
             if (finished != null && current != null) {
                 val punch = pendingKeepState.value?.punchStartMs ?: punchStartMs
+                val punchEnd = pendingKeepState.value?.punchEndMs ?: punchEndMs
                 val videoPath = SessionLayout.performanceVideo(finished.takeId)
                 val videoFile = File(File(projectsDir, sessionId), videoPath)
                 saveTake(
@@ -1107,12 +1531,14 @@ class StudioViewModel(
                     trackId = current.selectedPartId,
                     take = if (videoFile.isFile) finished.copy(videoRelativePath = videoPath) else finished,
                     timelineStartMs = punch,
+                    punchEndMs = punchEnd,
                     backingRelativePath = current.backing?.relativePath,
                     title = current.title,
                 )
             }
             pendingKeepState.value = null
             punchStartMs = 0L
+            punchEndMs = 0L
             audio.disarm()
             onLeft()
         }
@@ -1153,7 +1579,13 @@ class StudioViewModel(
         uiState.value = uiState.value?.copy(stageNote = stageNote)
     }
 
+    override fun onCleared() {
+        sessionAutoSave?.rememberOpened(sessionId, audio.state.value.positionMs)
+        super.onCleared()
+    }
+
     fun stopAudioOnExit() {
+        sessionAutoSave?.rememberOpened(sessionId, audio.state.value.positionMs)
         val live = audio.state.value.status.isLive()
         if (!live) {
             audio.disarm()
@@ -1168,6 +1600,7 @@ class StudioViewModel(
                     current.selectedPartId,
                     finished,
                     timelineStartMs = punchStartMs,
+                    punchEndMs = punchEndMs,
                 )
             }
             audio.disarm()
@@ -1177,6 +1610,14 @@ class StudioViewModel(
     private fun refresh() {
         viewModelScope.launch {
             val document = loadSession(sessionId) ?: return@launch
+            if (!restoredPlayhead) {
+                restoredPlayhead = true
+                val playhead = document.playheadMs.takeIf { it > 0L }
+                    ?: sessionAutoSave?.lastPlayheadMs()?.takeIf { it > 0L }
+                    ?: 0L
+                sessionAutoSave?.rememberOpened(sessionId, playhead)
+                if (playhead > 0L) audio.seekTake(playhead)
+            }
             val route = document.gear.output.takeUnless { it == GearRoute.UNKNOWN } ?: GearRoute.WIRED
             if (document.gear.output == GearRoute.UNKNOWN) {
                 updateGear(sessionId, GearRoute.WIRED)
@@ -1197,26 +1638,39 @@ class StudioViewModel(
                     isInstrumental = isMusicOnlyBacking(displayName, clip.sourceRelativePath),
                 )
             }
+            val bed = armBacking(
+                backingClip?.sourceRelativePath,
+                document.musical.keyShiftSemitones,
+                document.musical.playbackRate,
+            )
             audio.arm(
                 ArmRequest(
                     sessionId = document.id,
                     output = route,
-                    backingRelativePath = backingClip?.sourceRelativePath,
+                    backingRelativePath = bed.first,
                     rootKeyName = document.musical.keyName ?: "C",
                     tempoBpm = document.musical.tempoBpm ?: 80.0,
                     countInEnabled = document.musical.countInEnabled,
                     metronomeEnabled = document.musical.metronomeEnabled,
                     punchStartMs = punchStartMs,
-                    playbackRate = document.musical.playbackRate,
-                    keyShiftSemitones = document.musical.keyShiftSemitones,
+                    punchEndMs = punchEndMs,
+                    playbackRate = bed.third,
+                    keyShiftSemitones = bed.second,
                 ),
             )
             val lines = document.lyrics.lines
             val voiceTracks = document.tracks.filter { it.role != TrackRole.BACKING }
-            val parts = voiceTracks.mapIndexed { index, track ->
+            val parts = voiceTracks.map { track ->
                 VoicePartUi(
                     id = track.id,
-                    label = if (index == 0) "Part 1 · Lead" else track.name,
+                    label = track.name.ifBlank { track.role.laneLabel() },
+                    role = track.role,
+                    gainDb = track.gainDb,
+                    pan = track.pan,
+                    mute = track.mute,
+                    solo = track.solo,
+                    clipCount = track.clips.count { it.active },
+                    chainPreset = track.chain?.preset,
                 )
             }
             val activePartId = selectedPartId?.takeIf { id -> parts.any { it.id == id } }
@@ -1230,7 +1684,8 @@ class StudioViewModel(
                         durationText = buildString {
                             append(formatDuration(clip.durationMs))
                             if (clip.timelineStartMs > 0L) append(" · from ${formatDuration(clip.timelineStartMs)}")
-                            if (clip.preferred) append(" · this take")
+                            if (clip.preferred && clip.active) append(" · this take")
+                            if (!clip.active) append(" · parked")
                         },
                         relativePath = clip.sourceRelativePath,
                         sourceInMs = clip.sourceInMs,
@@ -1238,6 +1693,9 @@ class StudioViewModel(
                         sourceDurationMs = clip.usableSourceDurationMs,
                         timelineStartMs = clip.timelineStartMs,
                         preferred = clip.preferred,
+                        active = clip.active,
+                        fadeInMs = clip.fadeInMs,
+                        fadeOutMs = clip.fadeOutMs,
                     )
                 }
             }.reversed()
@@ -1254,7 +1712,7 @@ class StudioViewModel(
                 activeLine = clampedLine,
                 parts = parts,
                 selectedPartId = activePartId,
-                canAddPart = voiceTracks.size < 3,
+                canAddPart = voiceTracks.size < 6,
                 takes = takes,
                 route = route,
                 stageNote = stageNote,
@@ -1265,6 +1723,7 @@ class StudioViewModel(
                 countInEnabled = document.musical.countInEnabled,
                 metronomeEnabled = document.musical.metronomeEnabled,
                 punchStartMs = punchStartMs,
+                punchEndMs = punchEndMs,
                 practice = document.practice,
                 lyricLanguage = document.musical.lyricLanguage,
                 scaleMode = document.musical.mode ?: ScaleMode.MAJOR,
@@ -1296,8 +1755,15 @@ class StudioViewModel(
             updatePublish: UpdatePublishSettings,
             updateMusical: UpdateMusicalSettings,
             trimRecordedClip: TrimRecordedClip,
+            splitRecordedClip: SplitRecordedClip,
+            updateRecordedClip: UpdateRecordedClip,
+            updateTrackChain: UpdateTrackChain,
+            updateTrackMix: UpdateTrackMix,
             preferRecordedClip: PreferRecordedClip,
             updatePractice: UpdatePracticeStats,
+            restoreSession: RestoreSession,
+            cleanUnusedTakes: CleanUnusedTakes? = null,
+            sessionAutoSave: SessionAutoSave? = null,
             audio: AudioEngine,
             render: RenderEngine,
             takeCatalog: TakeCatalog? = null,
@@ -1321,8 +1787,15 @@ class StudioViewModel(
                     updatePublish = updatePublish,
                     updateMusical = updateMusical,
                     trimRecordedClip = trimRecordedClip,
+                    splitRecordedClip = splitRecordedClip,
+                    updateRecordedClip = updateRecordedClip,
+                    updateTrackChain = updateTrackChain,
+                    updateTrackMix = updateTrackMix,
                     preferRecordedClip = preferRecordedClip,
                     updatePractice = updatePractice,
+                    restoreSession = restoreSession,
+                    cleanUnusedTakes = cleanUnusedTakes,
+                    sessionAutoSave = sessionAutoSave,
                     audio = audio,
                     render = render,
                     takeCatalog = takeCatalog,

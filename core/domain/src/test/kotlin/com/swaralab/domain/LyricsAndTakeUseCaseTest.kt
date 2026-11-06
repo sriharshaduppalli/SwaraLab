@@ -14,6 +14,7 @@ import com.swaralab.domain.usecase.ImportBackingTrack
 import com.swaralab.domain.usecase.SaveTake
 import com.swaralab.domain.usecase.LoadSession
 import com.swaralab.domain.usecase.PreferRecordedClip
+import com.swaralab.domain.usecase.SplitRecordedClip
 import com.swaralab.domain.usecase.TrimRecordedClip
 import com.swaralab.domain.usecase.UpdateLyrics
 import com.swaralab.domain.usecase.encodeLyricLines
@@ -88,10 +89,13 @@ class LyricsAndTakeUseCaseTest {
             timelineStartMs = 8_000L,
         )
         val clips = LoadSession(store)(created.id)!!.tracks.first { it.id == leadTrackId }.clips
-        assertEquals(8_000L, clips.first().durationMs)
+        assertEquals(3, clips.size)
+        assertTrue(clips.first().active.not())
+        assertEquals(20_000L, clips.first().durationMs)
+        assertEquals(8_000L, clips[1].durationMs)
         assertEquals(8_000L, clips.last().timelineStartMs)
-        assertTrue(clips.first().preferred)
-        assertTrue(clips.last().preferred)
+        assertTrue(clips[1].preferred && clips[1].active)
+        assertTrue(clips.last().preferred && clips.last().active)
         assertEquals("media/video/take-2.mp4", clips.last().videoRelativePath)
     }
 
@@ -117,6 +121,52 @@ class LyricsAndTakeUseCaseTest {
         assertEquals(2_500L, clips.first().durationMs)
         assertTrue(clips.first().preferred)
         assertTrue(clips.last().preferred.not())
+    }
+
+    @Test
+    fun punchWindowKeepsHeadAndTailAroundTheNewTake() = runBlocking {
+        val (_, reducer) = testReducer()
+        val store = InMemorySessions()
+        val created = CreateSession(reducer, store)(SessionKind.SONG, "My Song")
+        val leadId = created.tracks.first { it.role == TrackRole.LEAD }.id
+        val commit = CommitRecordedTake(reducer, store)
+        commit(created.id, leadId, FinishedTake("media/takes/take-1.wav", 8_000L, 0.5f))
+        commit(
+            created.id,
+            leadId,
+            FinishedTake("media/takes/punch.wav", 2_000L, 0.5f),
+            timelineStartMs = 2_000L,
+            punchEndMs = 4_000L,
+        )
+        val clips = LoadSession(store)(created.id)!!.tracks.first { it.id == leadId }.clips
+        assertEquals(4, clips.size)
+        assertTrue(clips[0].active.not())
+        assertTrue(clips[0].preferred.not())
+        assertEquals(8_000L, clips[0].durationMs)
+        assertEquals(2_000L, clips[1].durationMs)
+        assertEquals(0L, clips[1].timelineStartMs)
+        assertEquals(2_000L, clips[2].timelineStartMs)
+        assertEquals("media/takes/punch.wav", clips[2].sourceRelativePath)
+        assertEquals(4_000L, clips[3].timelineStartMs)
+        assertEquals("media/takes/take-1.wav", clips[3].sourceRelativePath)
+        assertEquals(4_000L, clips[3].sourceInMs)
+        assertEquals(4_000L, clips[3].durationMs)
+        assertTrue(clips.drop(1).all { it.preferred && it.active })
+    }
+
+    @Test
+    fun splitRecordedClipCutsATakeInPlace() = runBlocking {
+        val (_, reducer) = testReducer()
+        val store = InMemorySessions()
+        val created = CreateSession(reducer, store)(SessionKind.SONG, "My Song")
+        val leadId = created.tracks.first { it.role == TrackRole.LEAD }.id
+        CommitRecordedTake(reducer, store)(created.id, leadId, FinishedTake("media/takes/take-1.wav", 6_000L, 0.5f))
+        val clipId = LoadSession(store)(created.id)!!.tracks.first { it.id == leadId }.clips.single().id
+        SplitRecordedClip(reducer, store)(created.id, clipId, 2_500L)
+        val clips = LoadSession(store)(created.id)!!.tracks.first { it.id == leadId }.clips
+        assertEquals(2, clips.size)
+        assertEquals(2_500L, clips[0].durationMs)
+        assertEquals(3_500L, clips[1].durationMs)
     }
 
     @Test
@@ -184,29 +234,5 @@ class LyricsAndTakeUseCaseTest {
         assertTrue(edit is com.swaralab.domain.command.SessionEdit.Applied)
         val clips = LoadSession(store)(created.id)!!.tracks.first { it.id == leadId }.clips
         assertEquals("media/takes/take-9.wav", clips.single().sourceRelativePath)
-    }
-}
-
-private class InMemorySessions : SessionRepository {
-    private val map = linkedMapOf<String, com.swaralab.domain.model.SessionDocument>()
-
-    override suspend fun save(document: com.swaralab.domain.model.SessionDocument) {
-        map[document.id] = document
-    }
-
-    override suspend fun load(id: String) = map[id]
-
-    override suspend fun list(): List<SessionSummary> = map.values.map {
-        SessionSummary(
-            it.id,
-            it.title,
-            it.kind,
-            it.updatedAtEpochMs,
-            takeCount = it.tracks.filter { track -> track.role != TrackRole.BACKING }.sumOf { track -> track.clips.size },
-        )
-    }
-
-    override suspend fun delete(id: String) {
-        map.remove(id)
     }
 }

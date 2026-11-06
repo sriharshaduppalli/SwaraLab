@@ -92,6 +92,7 @@ enum class TrackRole {
     DOUBLE,
     HARMONY,
     ADLIB,
+    EXTRA,
     GUIDE,
     MIDI_SKETCH,
     METRONOME,
@@ -106,6 +107,9 @@ data class ClipState(
     val durationMs: Long,
     val label: String = "",
     val preferred: Boolean = false,
+    val active: Boolean = true,
+    val fadeInMs: Long = 45L,
+    val fadeOutMs: Long = 45L,
     val sourceDurationMs: Long = 0L,
     val videoRelativePath: String? = null,
 ) {
@@ -123,6 +127,7 @@ data class TrackState(
     val pan: Float = 0f,
     val mute: Boolean = false,
     val solo: Boolean = false,
+    val chain: VocalChain? = null,
     val clips: List<ClipState> = emptyList(),
 )
 
@@ -171,6 +176,7 @@ enum class VocalPreset {
     CLOSE,
     STAGE,
     RADIO,
+    BRIGHT,
     CUSTOM,
 }
 
@@ -251,6 +257,20 @@ data class VocalChain(
                 tone = 0.16f,
                 fadeOut = 0.24f,
                 thicken = 0.16f,
+            )
+            VocalPreset.BRIGHT -> VocalChain(
+                preset = VocalPreset.BRIGHT,
+                denoise = 0.64f,
+                breathReduction = 0.22f,
+                deEss = 0.36f,
+                compression = 0.28f,
+                reverb = 0.12f,
+                eqLowDb = -1.6f,
+                eqPresenceDb = 2.2f,
+                eqAirDb = 3.4f,
+                tone = 0.28f,
+                fadeOut = 0.22f,
+                thicken = 0.10f,
             )
             VocalPreset.CUSTOM -> VocalChain(preset = VocalPreset.CUSTOM)
         }
@@ -380,4 +400,5 @@ data class SessionDocument(
     val publish: PublishSettings = PublishSettings(),
     val songwriter: SongwriterNotes = SongwriterNotes(),
     val practice: PracticeStats = PracticeStats(),
+    val playheadMs: Long = 0L,
 )

@@ -1,7 +1,7 @@
 package com.swaralab.app.ui
 
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -11,22 +11,40 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.delay
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
@@ -39,16 +57,18 @@ import com.swaralab.domain.port.Analytics
 import com.swaralab.domain.port.AnalyticsEvent
 import com.swaralab.domain.port.NoOpAnalytics
 import com.swaralab.domain.model.ConversionStatus
+import com.swaralab.domain.model.TakeNote
 import com.swaralab.domain.model.TrackRole
 import com.swaralab.domain.port.TakeCatalog
 import com.swaralab.domain.usecase.LoadSession
-import com.swaralab.ui.BoothRoom
 import com.swaralab.ui.EmptyState
 import com.swaralab.ui.LocalAppCopy
 import com.swaralab.ui.StatusMark
 import com.swaralab.ui.SwaraColors
 import com.swaralab.ui.LocalTakeShare
-import com.swaralab.ui.studioAtmosphere
+import com.swaralab.ui.BoothCanvas
+import com.swaralab.ui.FavoriteButton
+import com.swaralab.ui.GlassSurface
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -61,6 +81,10 @@ data class ListenUi(
     val playFile: File?,
     val durationMs: Long,
     val score: Float?,
+    val takeId: String? = null,
+    val favorite: Boolean = false,
+    val notes: List<TakeNote> = emptyList(),
+    val sendingNote: Boolean = false,
 )
 
 class ListenViewModel(
@@ -102,7 +126,50 @@ class ListenViewModel(
             playFile = playFile,
             durationMs = clip?.durationMs ?: indexed?.durationMs ?: 0L,
             score = indexed?.score,
+            takeId = indexed?.id,
+            favorite = indexed?.favorite == true,
+            notes = indexed?.notes.orEmpty(),
         )
+    }
+
+    fun addNote(text: String) {
+        val current = uiState.value ?: return
+        val takeId = current.takeId ?: return
+        val catalog = takeCatalog ?: return
+        if (text.isBlank() || current.sendingNote) return
+        uiState.value = current.copy(sendingNote = true)
+        viewModelScope.launch {
+            val note = runCatching { catalog.addNote(sessionId, takeId, text) }.getOrNull()
+            val latest = uiState.value ?: current
+            uiState.value = latest.copy(
+                sendingNote = false,
+                notes = if (note != null) latest.notes + note else latest.notes,
+            )
+        }
+    }
+
+    fun deleteNote(noteId: String) {
+        val current = uiState.value ?: return
+        val takeId = current.takeId ?: return
+        val catalog = takeCatalog ?: return
+        val previous = current.notes
+        uiState.value = current.copy(notes = previous.filterNot { it.id == noteId })
+        viewModelScope.launch {
+            runCatching { catalog.deleteNote(sessionId, takeId, noteId) }
+                .onFailure { uiState.value = (uiState.value ?: current).copy(notes = previous) }
+        }
+    }
+
+    fun toggleFavorite() {
+        val current = uiState.value ?: return
+        val takeId = current.takeId ?: return
+        val catalog = takeCatalog ?: return
+        val next = !current.favorite
+        uiState.value = current.copy(favorite = next)
+        viewModelScope.launch {
+            runCatching { catalog.toggleFavorite(sessionId, takeId) }
+                .onFailure { uiState.value = current }
+        }
     }
 
     fun togglePlay() {
@@ -139,6 +206,7 @@ class ListenViewModel(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ListenRoute(
     sessionId: String,
@@ -163,15 +231,16 @@ fun ListenRoute(
     DisposableEffect(viewModel) {
         onDispose { viewModel.playback.release() }
     }
+    var showNotes by remember { mutableStateOf(false) }
     val state = ui
     val playing = playState is PlaybackState.Playing
     val duration = playerDuration.takeIf { it > 0L } ?: (state?.durationMs ?: 1L).coerceAtLeast(1L)
     val slider = position.coerceIn(0L, duration)
 
+    BoothCanvas(intensity = 0.55f, modifier = modifier) {
     Column(
-        modifier
+        Modifier
             .fillMaxSize()
-            .studioAtmosphere(BoothRoom.SONGS)
             .padding(horizontal = 24.dp, vertical = 20.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
@@ -197,14 +266,49 @@ fun ListenRoute(
                 fillMax = true,
             )
         } else {
+        var showHeart by remember { mutableStateOf(false) }
         Spacer(Modifier.height(24.dp))
         Box(
             Modifier
                 .size(168.dp)
-                .background(SwaraColors.TealWash, CircleShape),
+                .background(SwaraColors.TealWash, CircleShape)
+                .pointerInput(state.takeId, state.favorite) {
+                    detectTapGestures(
+                        onDoubleTap = {
+                            if (state.takeId != null && !state.favorite) {
+                                viewModel.toggleFavorite()
+                            }
+                            showHeart = true
+                        },
+                    )
+                },
             contentAlignment = Alignment.Center,
         ) {
             Text("♪", style = MaterialTheme.typography.displayLarge, color = SwaraColors.Teal)
+            if (showHeart) {
+                Text(
+                    "♥",
+                    color = Color(0xFFFF4081),
+                    style = MaterialTheme.typography.displayLarge,
+                    modifier = Modifier.graphicsLayer { alpha = 0.95f },
+                )
+                LaunchedEffect(Unit) {
+                    delay(600)
+                    showHeart = false
+                }
+            }
+        }
+        if (state.takeId != null) {
+            Spacer(Modifier.height(8.dp))
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                FavoriteButton(favorite = state.favorite, onClick = viewModel::toggleFavorite)
+                TextButton(onClick = { showNotes = true }) {
+                    Text("${copy.takeNotes}${if (state.notes.isEmpty()) "" else " · ${state.notes.size}"}")
+                }
+            }
         }
         Spacer(Modifier.height(20.dp))
             Text(state.title, style = MaterialTheme.typography.headlineSmall, color = SwaraColors.Ink)
@@ -228,12 +332,10 @@ fun ListenRoute(
                 )
             }
             Spacer(Modifier.height(24.dp))
-            Surface(
+            GlassSurface(
                 onClick = onMix,
                 modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(16.dp),
-                color = SwaraColors.Card,
-                border = BorderStroke(1.dp, SwaraColors.Teal),
+                selected = true,
             ) {
                 Row(
                     Modifier.padding(16.dp),
@@ -243,6 +345,122 @@ fun ListenRoute(
                 }
             }
         }
+    }
+    if (showNotes && state?.takeId != null) {
+        TakeNotesSheet(
+            notes = state.notes,
+            sending = state.sendingNote,
+            onSend = viewModel::addNote,
+            onDelete = viewModel::deleteNote,
+            onDismiss = { showNotes = false },
+        )
+    }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun TakeNotesSheet(
+    notes: List<TakeNote>,
+    sending: Boolean,
+    onSend: (String) -> Unit,
+    onDelete: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val copy = LocalAppCopy.current
+    var text by remember { mutableStateOf("") }
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = SwaraColors.Card.copy(alpha = 0.96f),
+        modifier = Modifier.fillMaxHeight(0.85f),
+    ) {
+        Column(Modifier.fillMaxSize()) {
+            Text(
+                copy.takeNotes,
+                style = MaterialTheme.typography.titleLarge,
+                color = SwaraColors.Ink,
+                modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp),
+            )
+            if (notes.isEmpty()) {
+                EmptyState(
+                    title = copy.noNotesYet,
+                    message = copy.noNotesBody,
+                    mark = StatusMark.SONG,
+                    fillMax = false,
+                    modifier = Modifier.weight(1f),
+                )
+            } else {
+                LazyColumn(modifier = Modifier.weight(1f)) {
+                    items(notes, key = { it.id }) { note ->
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 10.dp),
+                        ) {
+                            Box(
+                                Modifier
+                                    .size(36.dp)
+                                    .background(SwaraColors.Teal.copy(alpha = 0.25f), CircleShape),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Text("♪", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = SwaraColors.Teal)
+                            }
+                            Spacer(Modifier.width(12.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    formatRelativeTime(note.createdAt),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = SwaraColors.Muted,
+                                )
+                                Spacer(Modifier.height(4.dp))
+                                Text(note.text, style = MaterialTheme.typography.bodyMedium, color = SwaraColors.Ink)
+                            }
+                            TextButton(onClick = { onDelete(note.id) }) { Text(copy.delete) }
+                        }
+                    }
+                }
+            }
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { text = it },
+                    modifier = Modifier.weight(1f),
+                    placeholder = { Text(copy.addNoteHint) },
+                    shape = RoundedCornerShape(24.dp),
+                    maxLines = 3,
+                )
+                Spacer(Modifier.width(8.dp))
+                TextButton(
+                    onClick = {
+                        if (text.isNotBlank() && !sending) {
+                            onSend(text)
+                            text = ""
+                        }
+                    },
+                    enabled = text.isNotBlank() && !sending,
+                ) {
+                    Text(copy.sendNote, color = if (text.isNotBlank()) SwaraColors.Teal else SwaraColors.Muted)
+                }
+            }
+            Spacer(Modifier.height(16.dp))
+        }
+    }
+}
+
+private fun formatRelativeTime(timestamp: Long): String {
+    val diff = System.currentTimeMillis() - timestamp
+    return when {
+        diff < 60_000 -> "now"
+        diff < 3_600_000 -> "${diff / 60_000}m"
+        diff < 86_400_000 -> "${diff / 3_600_000}h"
+        else -> "${diff / 86_400_000}d"
     }
 }
 

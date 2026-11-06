@@ -6,10 +6,12 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -43,13 +45,13 @@ import com.swaralab.domain.port.TakeCatalog
 import com.swaralab.domain.usecase.ImportBackingTrack
 import com.swaralab.domain.usecase.RenameSession
 import com.swaralab.domain.usecase.StartSession
-import com.swaralab.ui.BoothRoom
+import com.swaralab.ui.BoothCanvas
+import com.swaralab.ui.BoothShimmer
 import com.swaralab.ui.ErrorState
 import com.swaralab.ui.LocalAppCopy
 import com.swaralab.ui.MediaPermissions
 import com.swaralab.ui.PermissionRationale
 import com.swaralab.ui.SwaraColors
-import com.swaralab.ui.studioAtmosphere
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -239,15 +241,15 @@ fun ImportRoute(
                 showReadRationale = false
                 openPicker()
             },
-            modifier = modifier.studioAtmosphere(BoothRoom.HOME),
+            modifier = modifier,
         )
         return
     }
 
+    BoothCanvas(intensity = 0.55f, modifier = modifier) {
     Column(
-        modifier
+        Modifier
             .fillMaxSize()
-            .studioAtmosphere(BoothRoom.HOME)
             .padding(24.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterVertically),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -258,7 +260,16 @@ fun ImportRoute(
             color = SwaraColors.Muted,
         )
         when (val current = state) {
-            ImportState.Processing -> CircularProgressIndicator(color = SwaraColors.Teal)
+            ImportState.Processing -> Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                BoothShimmer(Modifier.fillMaxWidth().height(22.dp))
+                BoothShimmer(Modifier.fillMaxWidth(0.72f).height(16.dp))
+                BoothShimmer(Modifier.fillMaxWidth(0.5f).height(16.dp))
+                Spacer(Modifier.height(8.dp))
+                Text("Reading this file…", color = SwaraColors.Muted)
+            }
             is ImportState.Error -> ErrorState(
                 title = "Import failed",
                 message = current.message,
@@ -273,6 +284,7 @@ fun ImportRoute(
                 TextButton(onClick = onBack) { Text(copy.back) }
             }
         }
+    }
     }
 }
 

@@ -24,10 +24,11 @@ class SaveTake(
         trackId: String?,
         take: FinishedTake,
         timelineStartMs: Long = 0L,
+        punchEndMs: Long = 0L,
         backingRelativePath: String? = null,
         title: String? = null,
     ): SessionEdit {
-        val edit = commit(sessionId, trackId, take, timelineStartMs)
+        val edit = commit(sessionId, trackId, take, timelineStartMs, punchEndMs)
         if (edit !is SessionEdit.Applied) return edit
         val aacRelative = SessionLayout.takeAac(take.takeId)
         catalog?.upsertTake(

@@ -105,6 +105,64 @@ class SessionReducerTest {
     }
 
     @Test
+    fun splitClipKeepsTheSameFileOnBothHalves() {
+        val (_, reducer) = testReducer()
+        val document = reducer.create(SessionKind.PRACTICE, "Line")
+        val leadId = document.tracks.single().id
+        val withTake = reducer.apply(
+            document,
+            SessionCommand.CommitTake(leadId, SessionLayout.takeWav("take-1"), 4_000),
+        ) as SessionEdit.Applied
+        val clipId = withTake.document.tracks.single().clips.single().id
+        val split = reducer.apply(
+            withTake.document,
+            SessionCommand.SplitClip(clipId, 2_000L),
+        ) as SessionEdit.Applied
+        val clips = split.document.tracks.single().clips
+        assertEquals(2, clips.size)
+        assertEquals(2_000L, clips[0].durationMs)
+        assertEquals(2_000L, clips[1].durationMs)
+        assertEquals(2_000L, clips[1].sourceInMs)
+        assertEquals(2_000L, clips[1].timelineStartMs)
+        assertEquals(clips[0].sourceRelativePath, clips[1].sourceRelativePath)
+    }
+
+    @Test
+    fun clipMoveAndFadesStayNonDestructive() {
+        val (_, reducer) = testReducer()
+        val document = reducer.create(SessionKind.PRACTICE, "Line")
+        val leadId = document.tracks.single().id
+        val withTake = reducer.apply(
+            document,
+            SessionCommand.CommitTake(leadId, SessionLayout.takeWav("take-1"), 4_000),
+        ) as SessionEdit.Applied
+        val clipId = withTake.document.tracks.single().clips.single().id
+        val moved = reducer.apply(
+            withTake.document,
+            SessionCommand.UpdateClip(clipId, timelineStartMs = 1_200L, fadeInMs = 80L, fadeOutMs = 120L),
+        ) as SessionEdit.Applied
+        val clip = moved.document.tracks.single().clips.single()
+        assertEquals(1_200L, clip.timelineStartMs)
+        assertEquals(80L, clip.fadeInMs)
+        assertEquals(120L, clip.fadeOutMs)
+        assertEquals("media/takes/take-1.wav", clip.sourceRelativePath)
+    }
+
+    @Test
+    fun trackMixStoresPanAndSolo() {
+        val (_, reducer) = testReducer()
+        val document = reducer.create(SessionKind.SONG, "Song")
+        val leadId = document.tracks.first { it.role == TrackRole.LEAD }.id
+        val applied = reducer.apply(
+            document,
+            SessionCommand.SetTrackMix(leadId, gainDb = -2f, monitorGainDb = 0f, mute = false, solo = true, pan = 0.4f),
+        ) as SessionEdit.Applied
+        val lead = applied.document.tracks.first { it.id == leadId }
+        assertEquals(0.4f, lead.pan)
+        assertTrue(lead.solo)
+    }
+
+    @Test
     fun speakerSnapshotUsesThePhoneMic() {
         val snapshot = GearRoute.SPEAKER.recordingSnapshot()
         assertEquals(GearRoute.BUILTIN_MIC, snapshot.input)
@@ -192,7 +250,9 @@ class SessionReducerTest {
         val hall = VocalChain.preset(VocalPreset.STAGE)
         val phone = VocalChain.preset(VocalPreset.RADIO)
         val dry = VocalChain.preset(VocalPreset.RAW)
+        val bright = VocalChain.preset(VocalPreset.BRIGHT)
         assertTrue(voice.eqPresenceDb > hall.eqPresenceDb)
+        assertTrue(bright.eqAirDb > voice.eqAirDb)
         assertTrue(hall.reverb > voice.reverb)
         assertTrue(hall.delay > voice.delay)
         assertTrue(phone.denoise > voice.denoise)

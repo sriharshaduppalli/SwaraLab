@@ -36,6 +36,8 @@ sealed interface SessionCommand {
         val label: String = "Take",
         val keepPreviousPreferred: Boolean = false,
         val videoRelativePath: String? = null,
+        val sourceInMs: Long = 0L,
+        val sourceDurationMs: Long = 0L,
     ) : SessionCommand
 
     data class DeleteClip(
@@ -63,6 +65,28 @@ sealed interface SessionCommand {
         val monitorGainDb: Float,
         val mute: Boolean,
         val solo: Boolean,
+        val pan: Float = 0f,
+    ) : SessionCommand
+
+    data class SplitClip(
+        val clipId: String,
+        val atSourceMs: Long,
+    ) : SessionCommand
+
+    data class UpdateClip(
+        val clipId: String,
+        val timelineStartMs: Long? = null,
+        val sourceInMs: Long? = null,
+        val durationMs: Long? = null,
+        val fadeInMs: Long? = null,
+        val fadeOutMs: Long? = null,
+        val active: Boolean? = null,
+        val preferred: Boolean? = null,
+    ) : SessionCommand
+
+    data class SetTrackChain(
+        val trackId: String,
+        val chain: VocalChain?,
     ) : SessionCommand
 
     data class AddTrack(val role: TrackRole, val name: String) : SessionCommand

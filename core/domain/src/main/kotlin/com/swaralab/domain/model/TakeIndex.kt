@@ -22,6 +22,13 @@ data class ImportedTrackRecord(
 )
 
 @Serializable
+data class TakeNote(
+    val id: String,
+    val text: String,
+    val createdAt: Long,
+)
+
+@Serializable
 data class TakeRecord(
     val id: String,
     val trackId: String? = null,
@@ -32,6 +39,8 @@ data class TakeRecord(
     val title: String? = null,
     val createdAt: Long,
     val conversion: ConversionStatus = ConversionStatus.PENDING,
+    val favorite: Boolean = false,
+    val notes: List<TakeNote> = emptyList(),
 )
 
 @Serializable
