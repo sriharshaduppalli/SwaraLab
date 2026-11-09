@@ -287,7 +287,7 @@ fun HomeRoute(
         ) {
             Column(Modifier.padding(horizontal = 22.dp, vertical = 22.dp)) {
                 Text(
-                    text = copy.today,
+                    text = copy.tabHome,
                     style = MaterialTheme.typography.labelLarge,
                     color = SwaraColors.Teal,
                 )
@@ -332,7 +332,7 @@ fun HomeRoute(
             }
         } else {
             Text(
-                text = copy.songs,
+                text = copy.recents,
                 style = MaterialTheme.typography.titleMedium,
                 color = SwaraColors.Teal,
             )

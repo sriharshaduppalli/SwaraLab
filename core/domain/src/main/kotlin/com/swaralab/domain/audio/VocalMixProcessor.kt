@@ -29,21 +29,34 @@ object VocalMixProcessor {
         if (samples.isEmpty() || !chain.enabled) return
         val hp = if (chain.preset == VocalPreset.RADIO) 82.0 else 68.0
         highPass(samples, sampleRate, cutoffHz = hp)
-        val denoise = if (chain.preset == VocalPreset.RAW) {
-            chain.denoise.coerceIn(0f, 1f).coerceAtLeast(0.4f)
-        } else {
-            chain.denoise.coerceIn(0f, 1f).coerceAtLeast(0.62f)
+        val denoise = chain.denoise.coerceIn(0f, 1f)
+        if (denoise > 0.02f) spectralDenoise(samples, sampleRate, denoise)
+        val gateAmt = chain.noiseGate.coerceIn(0f, 1f).let { gate ->
+            if (gate > 0.01f) {
+                gate
+            } else if (chain.preset == VocalPreset.CUSTOM || denoise <= 0.02f) {
+                0f
+            } else if (chain.preset == VocalPreset.STAGE) {
+                0.30f
+            } else {
+                0.48f + denoise * 0.28f
+            }
         }
-        spectralDenoise(samples, sampleRate, denoise)
-        val gateAmt = if (chain.preset == VocalPreset.STAGE) 0.30f else 0.48f + denoise * 0.28f
-        gateGaps(samples, gateAmt)
-        tameKnocks(samples, sampleRate)
-        val breath = chain.breathReduction.coerceIn(0f, 1f).let { if (it <= 0f) 0.42f else it }
-        reduceBreaths(samples, sampleRate, breath)
-        val deEss = chain.deEss.coerceIn(0f, 1f).let { if (it <= 0f && chain.preset != VocalPreset.RAW) 0.28f else it }
+        if (gateAmt > 0.02f) gateGaps(samples, gateAmt)
+        if (gateAmt > 0.08f) tameKnocks(samples, sampleRate)
+        val breath = chain.breathReduction.coerceIn(0f, 1f)
+        if (breath > 0.02f) reduceBreaths(samples, sampleRate, breath)
+        val deEss = chain.deEss.coerceIn(0f, 1f)
         if (deEss > 0.02f) deEss(samples, sampleRate, deEss)
         if (chain.pitchCorrect > 0.04f) {
-            correctPitchToKey(samples, sampleRate, keyName, mode, chain.pitchCorrect)
+            correctPitchToKey(
+                samples,
+                sampleRate,
+                keyName,
+                mode,
+                chain.pitchCorrect,
+                speed = chain.pitchSpeed,
+            )
         }
         applyEq(samples, sampleRate, chain)
         if (chain.compression > 0.02f || chain.rider > 0.02f) {
@@ -56,9 +69,9 @@ object VocalMixProcessor {
         val wet = chain.effectAmount.coerceIn(0f, 1f)
         if (chain.delay > 0.01f && wet > 0.01f) addDelay(samples, dry, sampleRate, chain.delay * wet)
         if (chain.reverb > 0.01f && wet > 0.01f) addReverb(samples, dry, sampleRate, chain.reverb * wet)
-        suppressResidualHiss(samples, sampleRate, denoise)
-        gateGaps(samples, (gateAmt * 0.72f).coerceIn(0.28f, 0.82f))
-        tameKnocks(samples, sampleRate)
+        if (denoise > 0.02f) suppressResidualHiss(samples, sampleRate, denoise)
+        if (gateAmt > 0.02f) gateGaps(samples, (gateAmt * 0.72f).coerceIn(0.12f, 0.82f))
+        if (gateAmt > 0.08f) tameKnocks(samples, sampleRate)
         if (abs(chain.outputGainDb) > 0.05f) {
             val gain = 10.0.pow(chain.outputGainDb / 20.0).toFloat()
             for (i in samples.indices) samples[i] *= gain
@@ -73,31 +86,65 @@ object VocalMixProcessor {
         sampleRate: Int,
         chain: VocalChain,
     ): Pair<FloatArray, FloatArray> {
+        val wetAmt = chain.effectAmount.coerceIn(0f, 1f)
         val width = when (chain.preset) {
-            VocalPreset.RAW -> 0.14f
-            VocalPreset.CLOSE -> 0.40f
-            VocalPreset.STAGE -> 0.62f
-            VocalPreset.RADIO -> 0.44f
-            VocalPreset.BRIGHT -> 0.48f
-            VocalPreset.CUSTOM -> 0.38f
-        } * chain.effectAmount.coerceIn(0.35f, 1f)
-        val haas = ((sampleRate * 0.012).toInt()).coerceAtLeast(1)
+            VocalPreset.RAW -> 0.02f
+            VocalPreset.CLOSE -> 0.28f
+            VocalPreset.STAGE -> 0.50f
+            VocalPreset.RADIO -> 0.30f
+            VocalPreset.BRIGHT -> 0.32f
+            VocalPreset.CUSTOM -> 0.10f + chain.thicken.coerceIn(0f, 1f) * 0.28f
+        } * wetAmt
         val left = FloatArray(mono.size)
         val right = FloatArray(mono.size)
+        if (width < 0.03f) {
+            for (i in mono.indices) {
+                left[i] = mono[i]
+                right[i] = mono[i]
+            }
+            return left to right
+        }
+        val body = bandLimitedBody(mono, sampleRate)
+        val haas = ((sampleRate * 0.011).toInt()).coerceAtLeast(1)
         for (i in mono.indices) {
             val dry = mono[i]
-            val delayed = if (i >= haas) mono[i - haas] else 0f
+            val delayed = if (i >= haas) body[i - haas] else 0f
             left[i] = dry
-            right[i] = dry * (1f - width * 0.28f) + delayed * (width * 0.62f)
+            right[i] = dry * (1f - width * 0.18f) + delayed * (width * 0.48f)
         }
         val room = when (chain.preset) {
-            VocalPreset.STAGE -> 0.42f
-            VocalPreset.CLOSE -> 0.18f
-            VocalPreset.RADIO -> 0.16f
-            else -> 0.08f
-        } * chain.effectAmount.coerceIn(0.35f, 1f)
-        addStereoRoom(left, right, mono, sampleRate, room)
+            VocalPreset.STAGE -> 0.22f
+            VocalPreset.CLOSE -> 0.08f
+            VocalPreset.RADIO -> 0.07f
+            VocalPreset.BRIGHT -> 0.06f
+            VocalPreset.CUSTOM -> 0.04f + chain.thicken.coerceIn(0f, 1f) * 0.08f
+            VocalPreset.RAW -> 0f
+        } * wetAmt
+        addStereoRoom(left, right, body, sampleRate, room)
+        tameSideAir(left, right, sampleRate)
         return left to right
+    }
+
+    private fun bandLimitedBody(mono: FloatArray, sampleRate: Int): FloatArray {
+        val body = mono.copyOf()
+        highPass(body, sampleRate, cutoffHz = 280.0)
+        val lp = Biquad.lowPass(sampleRate, 4_200.0)
+        for (i in body.indices) body[i] = lp.process(body[i])
+        return body
+    }
+
+    private fun tameSideAir(left: FloatArray, right: FloatArray, sampleRate: Int) {
+        val n = min(left.size, right.size)
+        if (n <= 0) return
+        val hp = Biquad.highPass(sampleRate, 6_800.0)
+        for (i in 0 until n) {
+            val mid = (left[i] + right[i]) * 0.5f
+            val side = (left[i] - right[i]) * 0.5f
+            val air = hp.process(side)
+            val cleaned = side - air * 0.72f
+            left[i] = mid + cleaned
+            right[i] = mid - cleaned
+        }
     }
 
     private fun addStereoRoom(
@@ -118,10 +165,10 @@ object VocalMixProcessor {
             (sampleRate * 0.089).toInt(),
             (sampleRate * 0.149).toInt(),
         )
-        val weights = floatArrayOf(0.26f, 0.18f, 0.11f)
-        val mix = amount * 0.36f
-        val lpL = Biquad.lowPass(sampleRate, 6800.0)
-        val lpR = Biquad.lowPass(sampleRate, 6400.0)
+        val weights = floatArrayOf(0.22f, 0.14f, 0.08f)
+        val mix = amount * 0.22f
+        val lpL = Biquad.lowPass(sampleRate, 4_200.0)
+        val lpR = Biquad.lowPass(sampleRate, 3_900.0)
         for (i in dry.indices) {
             var roomL = 0f
             var roomR = 0f
@@ -524,8 +571,9 @@ object VocalMixProcessor {
         keyName: String?,
         mode: ScaleMode?,
         strength: Float,
+        speed: Float = 0.45f,
     ) {
-        val hop = 512
+        val hop = (256 + (1f - speed.coerceIn(0f, 1f)) * 512).toInt().coerceIn(256, 768)
         val frame = 1024
         if (samples.size < frame * 2) return
         val scale = MusicalKeys.scaleForKey(keyName, mode)
@@ -533,6 +581,8 @@ object VocalMixProcessor {
         val out = FloatArray(samples.size)
         val weight = FloatArray(samples.size)
         val window = FloatArray(frame) { i -> (0.5f * (1.0 - cos(2.0 * PI * i / (frame - 1))).toFloat()) }
+        val centsLimit = 28.0 + speed.coerceIn(0f, 1f) * 55.0
+        val ratioLimit = 0.03f + speed.coerceIn(0f, 1f) * 0.03f
         var pos = 0
         while (pos + frame <= samples.size) {
             val slice = FloatArray(frame) { i -> samples[pos + i] }
@@ -541,9 +591,9 @@ object VocalMixProcessor {
             if (hz > 70f) {
                 val target = nearestScaleHz(hz, scale)
                 val cents = (1200.0 * kotlin.math.ln((hz / target).toDouble()) / kotlin.math.ln(2.0))
-                    .coerceIn(-70.0, 70.0)
+                    .coerceIn(-centsLimit, centsLimit)
                 val correctCents = -cents * strength.coerceIn(0f, 1f)
-                ratio = 2.0.pow(correctCents / 1200.0).toFloat().coerceIn(0.96f, 1.04f)
+                ratio = 2.0.pow(correctCents / 1200.0).toFloat().coerceIn(1f - ratioLimit, 1f + ratioLimit)
             }
             val shifted = resample(slice, ratio)
             val n = min(frame, shifted.size)
@@ -595,7 +645,7 @@ object VocalMixProcessor {
         val targetRms = 10.0.pow(targetLufs / 20.0).toFloat().coerceIn(0.06f, 0.28f)
         val ceiling = 10.0.pow(truePeakDbtp / 20.0).toFloat().coerceIn(0.68f, 0.97f)
         val headroom = (ceiling / peak.coerceAtLeast(1e-6f)).coerceAtLeast(0.22f)
-        val loudnessGain = (targetRms / rms).coerceIn(0.35f, min(1.28f, headroom))
+        val loudnessGain = (targetRms / rms).coerceIn(0.35f, min(1.18f, headroom))
         val peakAfter = (peak * loudnessGain).coerceAtLeast(1e-6f)
         val scale = if (peakAfter > ceiling) ceiling / peakAfter else loudnessGain
         for (i in 0 until n) {

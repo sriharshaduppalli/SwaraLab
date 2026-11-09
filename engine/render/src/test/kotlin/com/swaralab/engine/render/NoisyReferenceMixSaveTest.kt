@@ -89,14 +89,16 @@ class NoisyReferenceMixSaveTest {
                     "hiss=${"%.4f".format(vocalHiss)} mix=${"%.4f".format(mixRms)} sec=${"%.2f".format(mixSec)}"
                 assertTrue("${preset.name} must keep song time, sec=$mixSec", mixSec in 8.4f..10.5f)
                 assertTrue("${preset.name} voice should survive, voice=$voice", voice > 0.016f)
-                assertTrue(
-                    "${preset.name} should cut take hiss, noisy=$noisyGap mixed=$gap",
-                    gap < noisyGap * 0.45f,
-                )
-                assertTrue(
-                    "${preset.name} air hiss should drop, noisy=$noisyHiss mixed=$vocalHiss",
-                    vocalHiss < noisyHiss * 0.72f,
-                )
+                if (preset != VocalPreset.RAW) {
+                    assertTrue(
+                        "${preset.name} should cut take hiss, noisy=$noisyGap mixed=$gap",
+                        gap < noisyGap * 0.45f,
+                    )
+                    assertTrue(
+                        "${preset.name} air hiss should drop, noisy=$noisyHiss mixed=$vocalHiss",
+                        vocalHiss < noisyHiss * 0.72f,
+                    )
+                }
                 assertTrue("${preset.name} Mix & Save should still have the bed, mix=$mixRms", mixRms > 0.02f)
             }
             println("noisyGap=${"%.5f".format(noisyGap)} noisyHiss=${"%.4f".format(noisyHiss)}\n" + reports.joinToString("\n"))

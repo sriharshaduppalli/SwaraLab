@@ -284,6 +284,7 @@ data class StudioUi(
     val heardLyric: String?,
     val monitorReverb: Float = 0f,
     val monitorDelay: Float = 0f,
+    val vocalChain: VocalChain = VocalChain(),
     val voiceGain: Float = 1f,
     val trackGain: Float = 0.8f,
     val lyricHighlight: LyricHighlight = LyricHighlight(),
@@ -563,14 +564,32 @@ class StudioViewModel(
     }
 
     fun seekReady(positionMs: Long) {
-        if (audio.state.value.status == EngineStatus.RECORDING ||
-            audio.state.value.status == EngineStatus.COUNTING
-        ) {
-            return
-        }
+        if (audio.state.value.status == EngineStatus.COUNTING) return
         punchStartMs = positionMs.coerceAtLeast(0L)
         audio.seekTake(punchStartMs)
         uiState.value = uiState.value?.copy(punchStartMs = punchStartMs)
+    }
+
+    fun seekToLyricLine(index: Int) {
+        val current = uiState.value ?: return
+        if (index !in current.lines.indices) return
+        if (audio.state.value.status == EngineStatus.COUNTING) return
+        val positionMs = LyricSync.seekMs(
+            current.lines,
+            index,
+            current.backing?.durationMs ?: 0L,
+        )
+        activeLine = index
+        lyricFollow = LiveLyricFollower.State(lineIndex = index)
+        punchStartMs = positionMs
+        audio.seekTake(positionMs)
+        uiState.value = current.copy(
+            activeLine = index,
+            punchStartMs = positionMs,
+            lyricHighlight = LyricSync.highlight(current.lines, positionMs).let { highlight ->
+                if (highlight.lineIndex >= 0) highlight else highlight.copy(lineIndex = index)
+            },
+        )
     }
 
     fun followSungLyric(dtMs: Long) {
@@ -1306,7 +1325,16 @@ class StudioViewModel(
                 stageNote = when (audio.startTake()) {
                     is TakeControl.Started -> {
                         analytics.log(AnalyticsEvent.KARAOKE_STARTED, mapOf("kind" to current.kind.name))
-                        audio.setLiveEffect(liveEffectState.value)
+                        val wet = headphoneFx &&
+                            (current.route == GearRoute.WIRED || current.route == GearRoute.USB)
+                        audio.applyVocalChainMonitor(
+                            if (wet) current.vocalChain else current.vocalChain.copy(reverb = 0f, delay = 0f),
+                            voiceGain,
+                            if (current.kind == SessionKind.PRACTICE) minOf(trackGain, 0.5f) else trackGain,
+                        )
+                        if (liveEffectState.value !is LiveMonitorEffect.None) {
+                            audio.setLiveEffect(liveEffectState.value)
+                        }
                         if (current.kind == SessionKind.PRACTICE) {
                             audio.setLoopRegion(practiceLoopState.value, practiceLoopingState.value)
                             audio.setTrackGain(minOf(trackGain, 0.5f))
@@ -1428,6 +1456,15 @@ class StudioViewModel(
             val loop = (backing?.relativePath == relativePath && backing.loops) ||
                 relativePath.endsWith("Guide_Melody.wav")
             audio.playClip(sessionId, relativePath, loop)
+        }
+    }
+
+    fun toggleCompareTake(current: RecordedTakeUi, other: RecordedTakeUi) {
+        val playing = audio.state.value.playingRelativePath
+        if (playing == other.relativePath) {
+            togglePlayTake(current)
+        } else {
+            togglePlayTake(other)
         }
     }
 
@@ -1731,6 +1768,7 @@ class StudioViewModel(
                 heardLyric = heardLyric,
                 monitorReverb = document.chain.reverb,
                 monitorDelay = document.chain.delay,
+                vocalChain = document.chain,
                 voiceGain = voiceGain,
                 trackGain = trackGain,
                 lyricHighlight = uiState.value?.lyricHighlight ?: LyricHighlight(),

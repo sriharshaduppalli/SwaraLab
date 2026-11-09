@@ -37,6 +37,13 @@ class LyricSyncTest {
         assertTrue(highlight.progressInLine in 0.5f..0.7f)
         assertEquals(1, LyricSync.findCurrentLineIndex(lines, 2_500L))
         assertEquals(-1, LyricSync.findCurrentLineIndex(emptyList(), 0L))
+        assertEquals(2_000L, LyricSync.seekMs(lines, 1, 8_000L))
+        val untimed = listOf(
+            LyricLine(id = "a", text = "One"),
+            LyricLine(id = "b", text = "Two"),
+            LyricLine(id = "c", text = "Three"),
+        )
+        assertEquals(4_000L, LyricSync.seekMs(untimed, 1, 12_000L))
     }
 
     @Test

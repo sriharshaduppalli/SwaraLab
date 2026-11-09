@@ -14,6 +14,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -61,13 +62,17 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.swaralab.domain.audio.LiveMonitorEffect
 import com.swaralab.domain.audio.PitchSample
+import com.swaralab.domain.audio.VocalMetrics
 import com.swaralab.domain.audio.LyricHighlight
 import com.swaralab.domain.audio.StageTakeState
 import com.swaralab.domain.model.LyricLine
@@ -80,6 +85,8 @@ import com.swaralab.ui.LocalAppCopy
 import com.swaralab.ui.PulsingRecordButton
 import com.swaralab.ui.SoftGlowOrb
 import com.swaralab.ui.SwaraColors
+import com.swaralab.ui.VocalHearGraph
+import com.swaralab.ui.VocalHearReadout
 import com.swaralab.ui.boothHaptic
 import com.swaralab.ui.pressScale
 import kotlin.math.abs
@@ -99,11 +106,13 @@ fun StageTakeScreen(
     durationMs: Long,
     error: AudioEngineError?,
     waveform: List<Float>,
+    metrics: VocalMetrics = VocalMetrics(),
     onStart: () -> Unit,
     onPause: () -> Unit,
     onResume: () -> Unit,
     onStop: () -> Unit,
     onSeek: (Long) -> Unit,
+    onSeekLyric: (Int) -> Unit = {},
     onVoiceGain: (Float) -> Unit,
     onTrackGain: (Float) -> Unit,
     onEffectChange: (LiveMonitorEffect) -> Unit = {},
@@ -149,12 +158,18 @@ fun StageTakeScreen(
             currentEffect = currentEffect,
             durationMs = durationMs,
             waveform = waveform,
+            metrics = metrics,
             livePitch = livePitch,
+            keyShiftSemitones = keyShiftSemitones,
+            playbackRate = playbackRate,
             onPause = onPause,
             onStop = onStop,
             onVoiceGain = onVoiceGain,
             onTrackGain = onTrackGain,
             onEffectChange = onEffectChange,
+            onSeekLyric = onSeekLyric,
+            onKeyShift = onKeyShift,
+            onPlaybackRate = onPlaybackRate,
             videoSlot = videoSlot,
             modifier = modifier,
         )
@@ -164,11 +179,15 @@ fun StageTakeScreen(
             voiceGain = voiceGain,
             trackGain = trackGain,
             currentEffect = currentEffect,
+            keyShiftSemitones = keyShiftSemitones,
+            playbackRate = playbackRate,
             onResume = onResume,
             onStop = onStop,
             onVoiceGain = onVoiceGain,
             onTrackGain = onTrackGain,
             onEffectChange = onEffectChange,
+            onKeyShift = onKeyShift,
+            onPlaybackRate = onPlaybackRate,
             modifier = modifier,
         )
         is StageTakeState.Review -> ReviewStage(state, onSave, onShare, onRetry, modifier)
@@ -208,14 +227,14 @@ private fun ReadyStage(
                 color = Color.White,
                 textAlign = TextAlign.Center,
             )
+            Spacer(Modifier.height(20.dp))
+            KeyTempoControls(
+                semitones = keyShiftSemitones,
+                tempo = playbackRate,
+                onSemitonesChange = onKeyShift,
+                onTempoChange = onPlaybackRate,
+            )
             if (showBackingShift) {
-                Spacer(Modifier.height(20.dp))
-                KeyTempoControls(
-                    semitones = keyShiftSemitones,
-                    tempo = playbackRate,
-                    onSemitonesChange = onKeyShift,
-                    onTempoChange = onPlaybackRate,
-                )
                 Text(
                     "Backing uses this key and speed when you sing.",
                     color = Color.White.copy(alpha = 0.55f),
@@ -280,6 +299,47 @@ private fun KeyTempoControls(
 }
 
 @Composable
+private fun KeyTempoBar(
+    semitones: Int,
+    tempo: Float,
+    onSemitonesChange: (Int) -> Unit,
+    onTempoChange: (Float) -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            TextButton(
+                onClick = { onSemitonesChange((semitones - 1).coerceIn(-6, 6)) },
+            ) { Text("Key −", color = Color.White) }
+            Text(
+                "${if (semitones > 0) "+" else ""}$semitones",
+                color = Color.White,
+                style = MaterialTheme.typography.titleSmall,
+            )
+            TextButton(
+                onClick = { onSemitonesChange((semitones + 1).coerceIn(-6, 6)) },
+            ) { Text("Key +", color = Color.White) }
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            TextButton(
+                onClick = { onTempoChange((tempo - 0.05f).coerceIn(0.5f, 1.5f)) },
+            ) { Text("−", color = Color.White) }
+            Text(
+                "${"%.2f".format(tempo)}x",
+                color = Color.White,
+                style = MaterialTheme.typography.titleSmall,
+            )
+            TextButton(
+                onClick = { onTempoChange((tempo + 0.05f).coerceIn(0.5f, 1.5f)) },
+            ) { Text("+", color = Color.White) }
+        }
+    }
+}
+
+@Composable
 private fun CountdownStage(beatsLeft: Int, modifier: Modifier) {
     val scale by animateFloatAsState(
         targetValue = 1f + (4 - beatsLeft).coerceIn(0, 3) * 0.04f,
@@ -307,17 +367,24 @@ private fun RecordingStage(
     currentEffect: LiveMonitorEffect,
     durationMs: Long,
     waveform: List<Float>,
+    metrics: VocalMetrics,
     livePitch: PitchSample?,
+    keyShiftSemitones: Int,
+    playbackRate: Float,
     onPause: () -> Unit,
     onStop: () -> Unit,
     onVoiceGain: (Float) -> Unit,
     onTrackGain: (Float) -> Unit,
     onEffectChange: (LiveMonitorEffect) -> Unit,
+    onSeekLyric: (Int) -> Unit,
+    onKeyShift: (Int) -> Unit,
+    onPlaybackRate: (Float) -> Unit,
     videoSlot: (@Composable () -> Unit)?,
     modifier: Modifier,
 ) {
     var showEffects by remember { mutableStateOf(false) }
     val view = LocalView.current
+    val copy = LocalAppCopy.current
     val total = durationMs.coerceAtLeast(1L)
     val currentIndex = highlight.lineIndex.coerceAtLeast(state.lyricIndex)
     Box(modifier.fillMaxSize()) {
@@ -353,16 +420,36 @@ private fun RecordingStage(
                 sample = livePitch,
                 modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
             )
+            KeyTempoBar(
+                semitones = keyShiftSemitones,
+                tempo = playbackRate,
+                onSemitonesChange = onKeyShift,
+                onTempoChange = onPlaybackRate,
+            )
             LyricsCenterView(
                 lyrics = lyrics,
                 currentIndex = currentIndex,
                 progress = highlight.progressInLine,
+                emptyText = copy.emptyLyrics,
+                allLabel = copy.allLyrics,
+                onSeekLine = onSeekLyric,
             )
             Spacer(Modifier.weight(1f))
-            VoiceBars(
-                level = state.voiceLevel,
-                history = waveform,
-                modifier = Modifier.fillMaxWidth().height(60.dp),
+            VocalHearGraph(
+                readout = VocalHearReadout(
+                    waveform = if (metrics.waveformHistory.isNotEmpty()) metrics.waveformHistory else waveform,
+                    pitchHistory = metrics.pitchHistory,
+                    bass = metrics.bassLevel,
+                    mid = metrics.midLevel,
+                    air = metrics.trebleLevel,
+                    rmsDb = metrics.rmsDb,
+                    pitchHz = metrics.pitchHz,
+                    noteName = metrics.noteName,
+                    swaraName = metrics.swaraName,
+                    cents = metrics.centsOffset,
+                    active = true,
+                ),
+                title = "Voice, pitch, and tone",
             )
             Spacer(Modifier.height(24.dp))
             Row(
@@ -375,10 +462,13 @@ private fun RecordingStage(
                     color = Color.White,
                     modifier = Modifier
                         .pressScale()
+                        .size(48.dp)
                         .clip(CircleShape)
                         .clickable { showEffects = true }
+                        .semantics { contentDescription = copy.effects }
                         .padding(12.dp),
                     style = MaterialTheme.typography.labelLarge,
+                    textAlign = TextAlign.Center,
                 )
                 Box(
                     contentAlignment = Alignment.Center,
@@ -400,13 +490,16 @@ private fun RecordingStage(
                     color = Color.White,
                     modifier = Modifier
                         .pressScale()
+                        .size(48.dp)
                         .clip(CircleShape)
                         .clickable {
                             view.boothHaptic()
                             onPause()
                         }
+                        .semantics { contentDescription = copy.stop }
                         .padding(12.dp),
                     style = MaterialTheme.typography.headlineSmall,
+                    textAlign = TextAlign.Center,
                 )
             }
             Spacer(Modifier.height(36.dp))
@@ -432,11 +525,15 @@ private fun PausedStage(
     voiceGain: Float,
     trackGain: Float,
     currentEffect: LiveMonitorEffect,
+    keyShiftSemitones: Int,
+    playbackRate: Float,
     onResume: () -> Unit,
     onStop: () -> Unit,
     onVoiceGain: (Float) -> Unit,
     onTrackGain: (Float) -> Unit,
     onEffectChange: (LiveMonitorEffect) -> Unit,
+    onKeyShift: (Int) -> Unit,
+    onPlaybackRate: (Float) -> Unit,
     modifier: Modifier,
 ) {
     var showEffects by remember { mutableStateOf(false) }
@@ -451,6 +548,13 @@ private fun PausedStage(
         Text(
             "Paused · ${formatDuration(positionMs)} / ${formatDuration(durationMs.coerceAtLeast(1L))}",
             color = Color.White,
+        )
+        Spacer(Modifier.height(16.dp))
+        KeyTempoBar(
+            semitones = keyShiftSemitones,
+            tempo = playbackRate,
+            onSemitonesChange = onKeyShift,
+            onTempoChange = onPlaybackRate,
         )
         Spacer(Modifier.height(16.dp))
         OutlinedButton(onClick = { showEffects = true }) { Text("Effects") }
@@ -729,7 +833,7 @@ fun AnimatedLyricLine(
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Text(
             text = text,
-            fontSize = if (isActive) 32.sp else 22.sp,
+            fontSize = if (isActive) 36.sp else 22.sp,
             fontWeight = if (isActive) FontWeight.Bold else FontWeight.Medium,
             color = color,
             textAlign = TextAlign.Center,
@@ -755,42 +859,83 @@ fun AnimatedLyricLine(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LyricsCenterView(
     lyrics: List<LyricLine>,
     currentIndex: Int,
     progress: Float,
+    emptyText: String = "Sing. Add words after this take if you want.",
+    allLabel: String = "All lyrics",
+    onSeekLine: (Int) -> Unit = {},
 ) {
+    var showAll by remember { mutableStateOf(false) }
     if (lyrics.isEmpty()) {
         Text(
-            "Sing. Add words after this take if you want.",
+            emptyText,
             color = Color.White.copy(alpha = 0.65f),
             textAlign = TextAlign.Center,
         )
         return
     }
-    val index = currentIndex.coerceAtLeast(0)
+    val index = currentIndex.coerceIn(0, lyrics.lastIndex)
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(16.dp),
+        modifier = Modifier.pointerInput(lyrics.size) {
+            detectVerticalDragGestures { _, dragAmount ->
+                if (dragAmount < -28f) showAll = true
+            }
+        },
     ) {
-        lyrics.getOrNull(index - 1)?.let {
+        lyrics.getOrNull(index - 1)?.let { line ->
             Text(
-                it.text,
+                line.text,
                 color = Color.White.copy(alpha = 0.35f),
                 fontSize = 18.sp,
                 textAlign = TextAlign.Center,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onSeekLine(index - 1) },
             )
         }
         lyrics.getOrNull(index)?.let {
-            AnimatedLyricLine(text = it.text, isActive = true, progress = progress)
+            Box(Modifier.clickable { onSeekLine(index) }) {
+                AnimatedLyricLine(text = it.text, isActive = true, progress = progress)
+            }
         }
-        lyrics.getOrNull(index + 1)?.let {
+        lyrics.getOrNull(index + 1)?.let { line ->
             Text(
-                it.text,
+                line.text,
                 color = Color.White.copy(alpha = 0.5f),
                 fontSize = 20.sp,
                 textAlign = TextAlign.Center,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onSeekLine(index + 1) },
+            )
+        }
+        TextButton(onClick = { showAll = true }) {
+            Text(allLabel, color = Color.White.copy(alpha = 0.8f))
+        }
+    }
+    if (showAll) {
+        ModalBottomSheet(
+            onDismissRequest = { showAll = false },
+            containerColor = SwaraColors.Card.copy(alpha = 0.96f),
+        ) {
+            LyricsList(
+                lyrics = lyrics,
+                currentIndex = index,
+                progress = progress,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(420.dp)
+                    .padding(bottom = 24.dp),
+                onSeekLine = { lineIndex ->
+                    onSeekLine(lineIndex)
+                    showAll = false
+                },
             )
         }
     }
@@ -802,6 +947,7 @@ fun LyricsList(
     currentIndex: Int,
     modifier: Modifier = Modifier,
     progress: Float = 0f,
+    onSeekLine: (Int) -> Unit = {},
 ) {
     val listState = rememberLazyListState()
     LaunchedEffect(currentIndex) {
@@ -811,7 +957,7 @@ fun LyricsList(
     }
     if (lyrics.isEmpty()) {
         Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Text("Sing. Add words after this take if you want.", color = Color.White.copy(alpha = 0.65f), textAlign = TextAlign.Center)
+            Text(LocalAppCopy.current.emptyLyrics, color = Color.White.copy(alpha = 0.65f), textAlign = TextAlign.Center)
         }
         return
     }
@@ -822,7 +968,13 @@ fun LyricsList(
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         itemsIndexed(lyrics) { index, line ->
-            Box(Modifier.fillMaxWidth().padding(vertical = 10.dp), contentAlignment = Alignment.Center) {
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .clickable { onSeekLine(index) }
+                    .padding(vertical = 10.dp),
+                contentAlignment = Alignment.Center,
+            ) {
                 AnimatedLyricLine(
                     text = line.text,
                     isActive = index == currentIndex,

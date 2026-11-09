@@ -183,7 +183,7 @@ fun LibraryRoute(
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         PageHero(
-            title = copy.songs,
+            title = copy.tabLibrary,
             body = copy.songsLine,
             accent = SwaraColors.Gold,
         )

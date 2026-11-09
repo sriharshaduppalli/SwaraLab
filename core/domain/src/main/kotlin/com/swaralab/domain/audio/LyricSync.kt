@@ -41,4 +41,14 @@ object LyricSync {
         val duration = (end - start).coerceAtLeast(1L)
         return ((positionMs - start).toFloat() / duration).coerceIn(0f, 1f)
     }
+
+    fun seekMs(lines: List<LyricLine>, index: Int, durationMs: Long = 0L): Long {
+        if (index !in lines.indices) return 0L
+        lines[index].startMs?.let { return it.coerceAtLeast(0L) }
+        val previousTimed = lines.take(index + 1).mapNotNull { it.startMs }.lastOrNull()
+        if (previousTimed != null) return previousTimed.coerceAtLeast(0L)
+        if (lines.size <= 1) return 0L
+        val span = durationMs.coerceAtLeast(lines.size * 4_000L)
+        return ((span * index) / lines.size).coerceAtLeast(0L)
+    }
 }

@@ -2,7 +2,6 @@ package com.swaralab.app.ui
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
@@ -42,7 +41,7 @@ fun ExploreRoute(
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         PageHero(
-            title = copy.start,
+            title = copy.tabNew,
             body = copy.startLine,
             accent = SwaraColors.Teal,
         )
@@ -60,24 +59,13 @@ fun ExploreRoute(
             accent = SwaraColors.Gold,
             accentWash = SwaraColors.GoldWash,
         )
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            CompactChoiceCard(
-                title = copy.videoTitle,
-                body = copy.videoBody,
-                onClick = { viewModel.start(SessionKind.VIDEO) },
-                modifier = Modifier.weight(1f),
-                accent = SwaraColors.Rose,
-                accentWash = SwaraColors.RoseWash,
-            )
-            CompactChoiceCard(
-                title = copy.warmupTitle,
-                body = copy.warmupBody,
-                onClick = { viewModel.start(SessionKind.PRACTICE) },
-                modifier = Modifier.weight(1f),
-                accent = SwaraColors.Gold,
-                accentWash = SwaraColors.GoldWash,
-            )
-        }
+        CompactChoiceCard(
+            title = copy.warmupTitle,
+            body = copy.warmupBody,
+            onClick = { viewModel.start(SessionKind.PRACTICE) },
+            accent = SwaraColors.Gold,
+            accentWash = SwaraColors.GoldWash,
+        )
     }
     }
 }

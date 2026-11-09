@@ -142,6 +142,13 @@ data class AppCopy(
     val unusedTakesFreed: String,
     val addVocalLayer: String,
     val continueEditing: String,
+    val tabHome: String,
+    val tabNew: String,
+    val tabLibrary: String,
+    val tabYou: String,
+    val recents: String,
+    val emptyLyrics: String,
+    val allLyrics: String,
 )
 
 val LocalAppCopy = staticCompositionLocalOf { AppCopySet.forLanguage(AppLanguage.ENGLISH) }
@@ -281,6 +288,13 @@ object AppCopySet {
         unusedTakesFreed = "Unused takes removed from this phone.",
         addVocalLayer = "Add vocal layer",
         continueEditing = "Continue editing",
+        tabHome = "Home",
+        tabNew = "New",
+        tabLibrary = "Library",
+        tabYou = "You",
+        recents = "Recents",
+        emptyLyrics = "Sing. Add words after this take if you want.",
+        allLyrics = "All lyrics",
     )
 
     private fun hindi() = AppCopy(
@@ -409,6 +423,13 @@ object AppCopySet {
         unusedTakesFreed = "Bekar take is phone se hata diye.",
         addVocalLayer = "Vocal layer joden",
         continueEditing = "Edit jaari rakhen",
+        tabHome = "\u0939\u094B\u092E",
+        tabNew = "\u0928\u092F\u093E",
+        tabLibrary = "\u0938\u0902\u0917\u094D\u0930\u0939",
+        tabYou = "\u0906\u092A",
+        recents = "\u0939\u093E\u0932 \u0939\u0940 \u092E\u0947\u0902",
+        emptyLyrics = "\u0917\u093E\u0907\u090F\u0964 \u0936\u092C\u094D\u0926 \u092C\u093E\u0926 \u092E\u0947\u0902 \u091C\u094B\u0921\u093C \u0938\u0915\u0924\u0947 \u0939\u0948\u0902\u0964",
+        allLyrics = "\u0938\u093E\u0930\u0947 \u092C\u094B\u0932",
     )
 
     private fun telugu() = AppCopy(
@@ -537,6 +558,13 @@ object AppCopySet {
         unusedTakesFreed = "Vadani takes ee phone nunchi teesesaam.",
         addVocalLayer = "Vocal layer add cheyandi",
         continueEditing = "Edit continue cheyandi",
+        tabHome = "\u0C39\u0C4B\u0C2E\u0C4D",
+        tabNew = "\u0C15\u0C4A\u0C24\u0C4D\u0C24",
+        tabLibrary = "\u0C38\u0C47\u0C15\u0C30\u0C23",
+        tabYou = "\u0C2E\u0C40\u0C30\u0C41",
+        recents = "\u0C07\u0C1F\u0C40\u0C35\u0C32",
+        emptyLyrics = "\u0C2A\u0C3E\u0C21\u0C02\u0C21\u0C3F. \u0C2E\u0C3E\u0C1F\u0C32\u0C41 \u0C24\u0C30\u0C41\u0C35\u0C3E\u0C24 \u0C1A\u0C47\u0C30\u0C41\u0C15\u0C4B\u0C35\u0C1A\u0C4D\u0C1A\u0C41.",
+        allLyrics = "\u0C05\u0C28\u0C4D\u0C28\u0C3F \u0C2A\u0C3E\u0C1F\u0C32\u0C41",
     )
 
     private fun tamil() = AppCopy(
@@ -665,6 +693,13 @@ object AppCopySet {
         unusedTakesFreed = "Payanpadaatha takes intha phone-ilirundhu neekkappattana.",
         addVocalLayer = "Vocal layer seru",
         continueEditing = "Edit thodaru",
+        tabHome = "\u0BAE\u0BC1\u0B95\u0BAA\u0BCD\u0BAA\u0BC1",
+        tabNew = "\u0BAA\u0BC1\u0BA4\u0BBF\u0BA4\u0BC1",
+        tabLibrary = "\u0BA4\u0BCA\u0B95\u0BC1\u0BAA\u0BCD\u0BAA\u0BC1",
+        tabYou = "\u0BA8\u0BC0\u0B99\u0BCD\u0B95\u0BB3\u0BCD",
+        recents = "\u0B9A\u0BAE\u0BC0\u0BAA\u0BA4\u0BCD\u0BA4\u0BBF\u0BAF\u0BB5\u0BC8",
+        emptyLyrics = "\u0BAA\u0BBE\u0B9F\u0BC1\u0B99\u0BCD\u0B95\u0BB3\u0BCD. \u0BB5\u0BBE\u0BB0\u0BCD\u0BA4\u0BCD\u0BA4\u0BC8 \u0BAA\u0BBF\u0BA9\u0BCD\u0BA9\u0BB0\u0BCD \u0B9A\u0BC7\u0BB0\u0BCD\u0B95\u0BCD\u0B95\u0BB2\u0BBE\u0BAE\u0BCD.",
+        allLyrics = "\u0B85\u0BA9\u0BC8\u0BA4\u0BCD\u0BA4\u0BC1 \u0BAA\u0BBE\u0B9F\u0BB2\u0BCD",
     )
 
     private fun kannada() = AppCopy(
@@ -793,5 +828,12 @@ object AppCopySet {
         unusedTakesFreed = "Balisada takes ee phone-ninda tegedideve.",
         addVocalLayer = "Vocal layer serisi",
         continueEditing = "Edit munduvare",
+        tabHome = "\u0CAE\u0CC1\u0C96\u0CAA\u0CC1\u0C9F",
+        tabNew = "\u0CB9\u0CCA\u0CB8",
+        tabLibrary = "\u0CB8\u0C82\u0C97\u0CCD\u0CB0\u0CB9",
+        tabYou = "\u0CA8\u0CC0\u0CB5\u0CC1",
+        recents = "\u0C87\u0CA4\u0CCD\u0CA4\u0CC0\u0C9A\u0CBF\u0CA8\u0CB5\u0CC1",
+        emptyLyrics = "\u0CB9\u0CBE\u0CA1\u0CBF. \u0CAE\u0CBE\u0CA4\u0CC1 \u0CA8\u0C82\u0CA4\u0CB0 \u0CB8\u0CC7\u0CB0\u0CBF\u0CB8\u0CAC\u0CB9\u0CC1\u0CA6\u0CC1.",
+        allLyrics = "\u0C8E\u0CB2\u0CCD\u0CB2\u0CBE \u0CB8\u0CBE\u0CB2\u0CC1\u0C97\u0CB3\u0CC1",
     )
 }

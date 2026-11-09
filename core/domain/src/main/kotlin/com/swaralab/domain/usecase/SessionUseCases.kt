@@ -142,6 +142,9 @@ class UpdateVocalChain(
         fadeOut: Float? = null,
         thicken: Float? = null,
         effectAmount: Float? = null,
+        breathReduction: Float? = null,
+        noiseGate: Float? = null,
+        pitchSpeed: Float? = null,
     ): SessionEdit {
         val document = sessions.load(id) ?: return SessionEdit.Rejected(RejectReason.UNKNOWN_SESSION)
         val updated = document.chain.copy(
@@ -157,6 +160,9 @@ class UpdateVocalChain(
             fadeOut = (fadeOut ?: document.chain.fadeOut).coerceIn(0f, 1f),
             thicken = (thicken ?: document.chain.thicken).coerceIn(0f, 1f),
             effectAmount = (effectAmount ?: document.chain.effectAmount).coerceIn(0f, 1f),
+            breathReduction = (breathReduction ?: document.chain.breathReduction).coerceIn(0f, 1f),
+            noiseGate = (noiseGate ?: document.chain.noiseGate).coerceIn(0f, 1f),
+            pitchSpeed = (pitchSpeed ?: document.chain.pitchSpeed).coerceIn(0f, 1f),
         )
         return applyAndSave(reducer, sessions, document, SessionCommand.SetVocalChain(updated))
     }
@@ -574,6 +580,7 @@ class UpdatePublishSettings(
 }
 
 private val lrcTimestampRegex = Regex("""^\[(\d{1,2}):(\d{2})(?:[.:](\d{1,3}))?](.*)$""")
+private val lrcClockRegex = Regex("""^(\d{1,2}):(\d{2})(?:[.:](\d{1,3}))?$""")
 private val lrcMetaRegex = Regex("""^\[[a-zA-Z]+:.*]$""")
 
 internal fun warmupLinesForKey(keyName: String, mode: ScaleMode? = null): List<LyricLine> {
@@ -594,6 +601,25 @@ internal fun warmupLinesForKey(keyName: String, mode: ScaleMode? = null): List<L
             startMs = index * 2_000L,
         )
     }
+}
+
+fun parseLyricClock(raw: String): Long? {
+    val trimmed = raw.trim().removePrefix("[").removeSuffix("]").trim()
+    if (trimmed.isEmpty()) return null
+    val match = lrcClockRegex.matchEntire(trimmed)
+    if (match != null) {
+        val minutes = match.groupValues[1].toLongOrNull() ?: return null
+        val seconds = match.groupValues[2].toLongOrNull() ?: return null
+        val fractionRaw = match.groupValues[3]
+        val millis = when (fractionRaw.length) {
+            0 -> 0L
+            1 -> (fractionRaw.toLongOrNull() ?: 0L) * 100L
+            2 -> (fractionRaw.toLongOrNull() ?: 0L) * 10L
+            else -> fractionRaw.take(3).toLongOrNull() ?: 0L
+        }
+        return (minutes * 60_000L) + (seconds * 1_000L) + millis
+    }
+    return trimmed.toLongOrNull()?.times(1_000L)
 }
 
 fun encodeLyricLines(lines: List<LyricLine>): String {

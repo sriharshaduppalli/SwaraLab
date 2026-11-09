@@ -649,6 +649,7 @@ fun StudioRoute(
             durationMs = state.backing?.durationMs ?: 0L,
             error = engine.lastError,
             waveform = engine.metrics.waveformHistory,
+            metrics = engine.metrics,
             livePitch = engine.metrics.livePitch,
             keyShiftSemitones = state.keyShiftSemitones,
             playbackRate = state.playbackRate,
@@ -665,6 +666,7 @@ fun StudioRoute(
             onResume = viewModel::resumeTake,
             onStop = { viewModel.toggleRecording() },
             onSeek = viewModel::seekReady,
+            onSeekLyric = viewModel::seekToLyricLine,
             onVoiceGain = viewModel::setVoiceGain,
             onTrackGain = viewModel::setTrackGain,
             onEffectChange = viewModel::setLiveEffect,
@@ -786,7 +788,10 @@ fun StudioRoute(
             positionMs = mixPosition,
             punchStartMs = state.punchStartMs,
             punchEndMs = state.punchEndMs,
+            onSeek = viewModel::seekMix,
+            onMoveClip = viewModel::moveTake,
         )
+        LiveVocalMonitorCard(audioStateFlow = viewModel.audio.state)
         LayersMixerCard(
             parts = state.parts,
             selectedPartId = state.selectedPartId,
@@ -798,7 +803,14 @@ fun StudioRoute(
             onAdd = viewModel::addLayer,
             onRecord = { id ->
                 viewModel.selectPart(id)
-                karaokePrep = true
+                val take = state.takes.firstOrNull { it.preferred && it.active }
+                    ?: state.takes.firstOrNull { it.active }
+                if (take != null) {
+                    viewModel.punchFrom(take, mixPosition)
+                    karaokePrep = true
+                } else {
+                    karaokePrep = true
+                }
             },
         )
 
@@ -1340,7 +1352,8 @@ fun StudioRoute(
                     Text(copy.cleanUnusedTakes)
                 }
             }
-            state.takes.forEach { take ->
+            state.takes.forEachIndexed { index, take ->
+                val previous = state.takes.getOrNull(index + 1)
                 TakeEditCard(
                     take = take,
                     wavFile = File(File(projectsDir, sessionId), take.relativePath),
@@ -1352,6 +1365,12 @@ fun StudioRoute(
                     onPunch = { start -> viewModel.punchFrom(take, start) },
                     onPunchRegion = { start, end -> viewModel.punchRegion(take, start, end) },
                     onSplit = { at -> viewModel.splitTake(take.id, at) },
+                    onSplitPlayhead = {
+                        val at = take.sourceInMs + (mixPosition - take.timelineStartMs)
+                            .coerceIn(250L, (take.durationMs - 250L).coerceAtLeast(250L))
+                        viewModel.splitTake(take.id, at)
+                    },
+                    onCompare = previous?.let { other -> { viewModel.toggleCompareTake(take, other) } },
                     onMove = { at -> viewModel.moveTake(take.id, at) },
                     onFades = { fadeIn, fadeOut -> viewModel.setTakeFades(take.id, fadeIn, fadeOut) },
                     onRestore = { viewModel.restoreTake(take.id) },

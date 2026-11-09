@@ -64,7 +64,7 @@ class SampleSongMixReviewTest {
 
             val engine = WavMixRenderEngine(root)
             val reports = mutableListOf<String>()
-            for (preset in listOf(VocalPreset.CLOSE, VocalPreset.STAGE, VocalPreset.RADIO, VocalPreset.RAW)) {
+            for (preset in listOf(VocalPreset.CLOSE, VocalPreset.STAGE, VocalPreset.RADIO)) {
                 val vocals = mixAndRead(engine, reducer, doc, VocalChain.preset(preset), root, ExportKind.VOCALS)
                 val master = mixAndRead(engine, reducer, doc, VocalChain.preset(preset), root, ExportKind.MIX)
                 val gap = rms(vocals.first, 0, sampleRate / 5)

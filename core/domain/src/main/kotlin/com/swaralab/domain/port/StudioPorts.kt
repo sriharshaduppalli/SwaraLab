@@ -8,6 +8,7 @@ import com.swaralab.domain.model.GearRoute
 import com.swaralab.domain.model.PublishTarget
 import com.swaralab.domain.model.SessionDocument
 import com.swaralab.domain.model.SessionKind
+import com.swaralab.domain.model.VocalChain
 import com.swaralab.domain.model.VocalPreset
 import com.swaralab.domain.policy.MonitorDecision
 import kotlinx.coroutines.flow.SharedFlow
@@ -180,6 +181,8 @@ interface AudioEngine {
     fun setTrackGain(gain: Float) {}
 
     fun setLiveEffect(effect: LiveMonitorEffect) {}
+
+    fun applyVocalChainMonitor(chain: VocalChain, voiceGain: Float = 1f, trackGain: Float = 0.8f) {}
 
     /** Next [startTake] appends dry PCM onto this session-relative WAV. */
     fun enableDraftMode(draftPath: String) {}

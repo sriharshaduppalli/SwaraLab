@@ -1,9 +1,14 @@
 package com.swaralab.app.nav
 
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -22,10 +27,14 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.launch
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
@@ -99,10 +108,19 @@ fun SwaraLabNav(graph: SwaraLabGraph) {
     val nav = rememberNavController()
     val entry by nav.currentBackStackEntryAsState()
     val route = entry?.destination?.route
-    val showTabs = route == Routes.HOME ||
-        route == Routes.EXPLORE ||
-        route == Routes.LIBRARY ||
-        route == Routes.ACCOUNT
+    val showTabs = route == Routes.HOME
+    val tabPager = rememberPagerState(pageCount = { 4 })
+    val tabScope = rememberCoroutineScope()
+    fun openTab(index: Int) {
+        if (route != Routes.HOME) {
+            nav.navigate(Routes.HOME) {
+                popUpTo(nav.graph.findStartDestination().id) { saveState = true }
+                launchSingleTop = true
+                restoreState = true
+            }
+        }
+        tabScope.launch { tabPager.animateScrollToPage(index) }
+    }
     var appLanguage by remember {
         mutableStateOf(AppLanguage.fromTag(graph.appSettings.uiLanguage()))
     }
@@ -113,13 +131,15 @@ fun SwaraLabNav(graph: SwaraLabGraph) {
     var showOnboarding by remember {
         mutableStateOf(!graph.appSettings.firstOpenSeen())
     }
-    LaunchedEffect(route, showOnboarding) {
+    LaunchedEffect(route, showOnboarding, tabPager.settledPage) {
         val screen = when {
             showOnboarding -> "onboarding"
-            route == Routes.HOME -> "home"
-            route == Routes.EXPLORE -> "start"
-            route == Routes.LIBRARY -> "songs"
-            route == Routes.ACCOUNT -> "singer"
+            route == Routes.HOME -> when (tabPager.settledPage) {
+                1 -> "start"
+                2 -> "songs"
+                3 -> "singer"
+                else -> "home"
+            }
             route == Screen.Import.route -> "import"
             route?.startsWith("studio/") == true || route == Routes.STUDIO -> "studio"
             route?.startsWith("listen/") == true || route == Routes.LISTEN -> "listen"
@@ -161,102 +181,68 @@ fun SwaraLabNav(graph: SwaraLabGraph) {
                         WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom,
                     ),
                 ) {
-                    val tealNav = NavigationBarItemDefaults.colors(
+                    val tabNav = NavigationBarItemDefaults.colors(
                         selectedIconColor = SwaraColors.Teal,
                         selectedTextColor = SwaraColors.Teal,
                         indicatorColor = SwaraColors.TealWash,
                         unselectedIconColor = SwaraColors.Muted,
                         unselectedTextColor = SwaraColors.Muted,
                     )
-                    val goldNav = NavigationBarItemDefaults.colors(
-                        selectedIconColor = SwaraColors.Gold,
-                        selectedTextColor = SwaraColors.Gold,
-                        indicatorColor = SwaraColors.GoldWash,
-                        unselectedIconColor = SwaraColors.Muted,
-                        unselectedTextColor = SwaraColors.Muted,
-                    )
-                    val roseNav = NavigationBarItemDefaults.colors(
-                        selectedIconColor = SwaraColors.Rose,
-                        selectedTextColor = SwaraColors.Rose,
-                        indicatorColor = SwaraColors.RoseWash,
-                        unselectedIconColor = SwaraColors.Muted,
-                        unselectedTextColor = SwaraColors.Muted,
-                    )
                     NavigationBarItem(
-                        selected = route == Routes.HOME,
-                        onClick = {
-                            nav.navigate(Routes.HOME) {
-                                popUpTo(nav.graph.findStartDestination().id) { saveState = true }
-                                launchSingleTop = true
-                                restoreState = true
-                            }
-                        },
+                        selected = tabPager.currentPage == 0,
+                        onClick = { openTab(0) },
+                        modifier = Modifier.semantics { contentDescription = copy.tabHome },
                         icon = {
                             SwaraMarkIcon(
                                 SwaraMark.BOOTH,
-                                route == Routes.HOME,
+                                tabPager.currentPage == 0,
                                 selectedColor = SwaraColors.Teal,
                             )
                         },
-                        label = { Text(copy.today) },
-                        colors = tealNav,
+                        label = { Text(copy.tabHome) },
+                        colors = tabNav,
                     )
                     NavigationBarItem(
-                        selected = route == Routes.EXPLORE,
-                        onClick = {
-                            nav.navigate(Routes.EXPLORE) {
-                                popUpTo(nav.graph.findStartDestination().id) { saveState = true }
-                                launchSingleTop = true
-                                restoreState = true
-                            }
-                        },
+                        selected = tabPager.currentPage == 1,
+                        onClick = { openTab(1) },
+                        modifier = Modifier.semantics { contentDescription = copy.tabNew },
                         icon = {
                             SwaraMarkIcon(
                                 SwaraMark.EXPLORE,
-                                route == Routes.EXPLORE,
+                                tabPager.currentPage == 1,
                                 selectedColor = SwaraColors.Teal,
                             )
                         },
-                        label = { Text(copy.start) },
-                        colors = tealNav,
+                        label = { Text(copy.tabNew) },
+                        colors = tabNav,
                     )
                     NavigationBarItem(
-                        selected = route == Routes.LIBRARY,
-                        onClick = {
-                            nav.navigate(Routes.LIBRARY) {
-                                popUpTo(nav.graph.findStartDestination().id) { saveState = true }
-                                launchSingleTop = true
-                                restoreState = true
-                            }
-                        },
+                        selected = tabPager.currentPage == 2,
+                        onClick = { openTab(2) },
+                        modifier = Modifier.semantics { contentDescription = copy.tabLibrary },
                         icon = {
                             SwaraMarkIcon(
                                 SwaraMark.SONGS,
-                                route == Routes.LIBRARY,
-                                selectedColor = SwaraColors.Gold,
+                                tabPager.currentPage == 2,
+                                selectedColor = SwaraColors.Teal,
                             )
                         },
-                        label = { Text(copy.songs) },
-                        colors = goldNav,
+                        label = { Text(copy.tabLibrary) },
+                        colors = tabNav,
                     )
                     NavigationBarItem(
-                        selected = route == Routes.ACCOUNT,
-                        onClick = {
-                            nav.navigate(Routes.ACCOUNT) {
-                                popUpTo(nav.graph.findStartDestination().id) { saveState = true }
-                                launchSingleTop = true
-                                restoreState = true
-                            }
-                        },
+                        selected = tabPager.currentPage == 3,
+                        onClick = { openTab(3) },
+                        modifier = Modifier.semantics { contentDescription = copy.tabYou },
                         icon = {
                             SwaraMarkIcon(
                                 SwaraMark.PROFILE,
-                                route == Routes.ACCOUNT,
-                                selectedColor = SwaraColors.Rose,
+                                tabPager.currentPage == 3,
+                                selectedColor = SwaraColors.Teal,
                             )
                         },
-                        label = { Text(copy.singer) },
-                        colors = roseNav,
+                        label = { Text(copy.tabYou) },
+                        colors = tabNav,
                     )
                 }
                 }
@@ -269,22 +255,60 @@ fun SwaraLabNav(graph: SwaraLabGraph) {
             modifier = Modifier.padding(padding),
         ) {
             composable(Routes.HOME) {
-                HomeRoute(
-                    startSession = graph.startSession,
-                    listSessions = graph.listSessions,
-                    appSettings = graph.appSettings,
-                    onOpen = { id -> nav.navigate(Routes.studio(id)) },
-                    onImport = { nav.navigate(Screen.Import.route) },
-                    onListen = { id -> nav.navigate(Routes.listen(id)) },
-                    analytics = graph.analytics,
-                )
-            }
-            composable(Routes.EXPLORE) {
-                ExploreRoute(
-                    startSession = graph.startSession,
-                    onOpen = { id, sing -> nav.navigate(Routes.studio(id, sing)) },
-                    onImport = { nav.navigate(Screen.Import.route) },
-                )
+                HorizontalPager(
+                    state = tabPager,
+                    modifier = Modifier.fillMaxSize(),
+                    beyondViewportPageCount = 1,
+                ) { page ->
+                    when (page) {
+                        1 -> ExploreRoute(
+                            startSession = graph.startSession,
+                            onOpen = { id, sing -> nav.navigate(Routes.studio(id, sing)) },
+                            onImport = { nav.navigate(Screen.Import.route) },
+                        )
+                        2 -> LibraryRoute(
+                            listSessions = graph.listSessions,
+                            deleteSession = graph.deleteSession,
+                            onOpen = { id -> nav.navigate(Routes.studio(id)) },
+                            onListen = { id -> nav.navigate(Routes.listen(id)) },
+                        )
+                        3 -> AccountRoute(
+                            registerAccount = graph.registerAccount,
+                            signIn = graph.signIn,
+                            signOut = graph.signOut,
+                            currentAccount = graph.currentAccount,
+                            listSessions = graph.listSessions,
+                            deleteSession = graph.deleteSession,
+                            invitePack = graph.invitePack,
+                            projectsDir = graph.projectsDir,
+                            onOpen = { id -> nav.navigate(Routes.studio(id)) },
+                            onListen = { id -> nav.navigate(Routes.listen(id)) },
+                            onStorage = { nav.navigate(Screen.Storage.route) },
+                            onReplayOnboarding = { showOnboarding = true },
+                            takeCatalog = graph.takeCatalog,
+                            boothProfile = graph.appSettings,
+                            appLanguage = appLanguage,
+                            onAppLanguage = { language ->
+                                graph.appSettings.setUiLanguage(language.tag)
+                                appLanguage = language
+                            },
+                            themeId = themeId,
+                            onTheme = { theme ->
+                                graph.appSettings.setThemeId(theme.tag)
+                                themeId = theme
+                            },
+                        )
+                        else -> HomeRoute(
+                            startSession = graph.startSession,
+                            listSessions = graph.listSessions,
+                            appSettings = graph.appSettings,
+                            onOpen = { id -> nav.navigate(Routes.studio(id)) },
+                            onImport = { nav.navigate(Screen.Import.route) },
+                            onListen = { id -> nav.navigate(Routes.listen(id)) },
+                            analytics = graph.analytics,
+                        )
+                    }
+                }
             }
             composable(
                 route = Screen.Import.route,
@@ -306,42 +330,6 @@ fun SwaraLabNav(graph: SwaraLabGraph) {
                     },
                     onBack = { nav.popBackStack() },
                     analytics = graph.analytics,
-                )
-            }
-            composable(Routes.LIBRARY) {
-                LibraryRoute(
-                    listSessions = graph.listSessions,
-                    deleteSession = graph.deleteSession,
-                    onOpen = { id -> nav.navigate(Routes.studio(id)) },
-                    onListen = { id -> nav.navigate(Routes.listen(id)) },
-                )
-            }
-            composable(Routes.ACCOUNT) {
-                AccountRoute(
-                    registerAccount = graph.registerAccount,
-                    signIn = graph.signIn,
-                    signOut = graph.signOut,
-                    currentAccount = graph.currentAccount,
-                    listSessions = graph.listSessions,
-                    deleteSession = graph.deleteSession,
-                    invitePack = graph.invitePack,
-                    projectsDir = graph.projectsDir,
-                    onOpen = { id -> nav.navigate(Routes.studio(id)) },
-                    onListen = { id -> nav.navigate(Routes.listen(id)) },
-                    onStorage = { nav.navigate(Screen.Storage.route) },
-                    onReplayOnboarding = { showOnboarding = true },
-                    takeCatalog = graph.takeCatalog,
-                    boothProfile = graph.appSettings,
-                    appLanguage = appLanguage,
-                    onAppLanguage = { language ->
-                        graph.appSettings.setUiLanguage(language.tag)
-                        appLanguage = language
-                    },
-                    themeId = themeId,
-                    onTheme = { theme ->
-                        graph.appSettings.setThemeId(theme.tag)
-                        themeId = theme
-                    },
                 )
             }
             composable(
@@ -394,8 +382,10 @@ fun SwaraLabNav(graph: SwaraLabGraph) {
             }
             composable(
                 route = Routes.LISTEN,
-                enterTransition = { fadeIn() + scaleIn(initialScale = 0.96f) },
-                exitTransition = { fadeOut() },
+                enterTransition = { fadeIn(tween(220)) + scaleIn(initialScale = 0.98f) },
+                exitTransition = { fadeOut(tween(160)) },
+                popEnterTransition = { fadeIn(tween(180)) },
+                popExitTransition = { fadeOut(tween(180)) + scaleOut(targetScale = 0.98f) },
                 arguments = listOf(navArgument("sessionId") { type = NavType.StringType }),
             ) { entry ->
                 val sessionId = entry.arguments?.getString("sessionId").orEmpty()
@@ -412,8 +402,10 @@ fun SwaraLabNav(graph: SwaraLabGraph) {
             }
             composable(
                 route = Routes.PUBLISH,
-                enterTransition = { fadeIn() + scaleIn(initialScale = 0.96f) },
-                exitTransition = { fadeOut() },
+                enterTransition = { fadeIn(tween(220)) + scaleIn(initialScale = 0.98f) },
+                exitTransition = { fadeOut(tween(160)) },
+                popEnterTransition = { fadeIn(tween(180)) },
+                popExitTransition = { fadeOut(tween(180)) + scaleOut(targetScale = 0.98f) },
                 arguments = listOf(navArgument("sessionId") { type = NavType.StringType }),
             ) { entry ->
                 val sessionId = entry.arguments?.getString("sessionId").orEmpty()
@@ -431,7 +423,13 @@ fun SwaraLabNav(graph: SwaraLabGraph) {
                     onBack = { nav.popBackStack() },
                 )
             }
-            composable(Routes.STORAGE) {
+            composable(
+                route = Routes.STORAGE,
+                enterTransition = { fadeIn(tween(220)) + scaleIn(initialScale = 0.98f) },
+                exitTransition = { fadeOut(tween(160)) },
+                popEnterTransition = { fadeIn(tween(180)) },
+                popExitTransition = { fadeOut(tween(180)) + scaleOut(targetScale = 0.98f) },
+            ) {
                 StorageRoute(
                     listSessions = graph.listSessions,
                     deleteSession = graph.deleteSession,

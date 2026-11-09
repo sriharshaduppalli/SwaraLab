@@ -442,7 +442,7 @@ fun SwaraMarkIcon(
     selectedColor: Color = SwaraColors.Teal,
 ) {
     val color = if (selected) selectedColor else SwaraColors.Muted
-    Canvas(modifier.size(24.dp)) {
+    Canvas(modifier.size(28.dp)) {
         val stroke = 2.dp.toPx()
         when (mark) {
             SwaraMark.BOOTH -> {

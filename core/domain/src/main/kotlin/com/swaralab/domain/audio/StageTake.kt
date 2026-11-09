@@ -2,6 +2,7 @@ package com.swaralab.domain.audio
 
 import com.swaralab.domain.model.LyricLine
 import com.swaralab.domain.port.EngineStatus
+import kotlin.math.pow
 
 /** Imported file on this phone. No community catalog. */
 enum class TrackSource {
@@ -64,6 +65,29 @@ data class LiveMonitorChain(
         is LiveMonitorEffect.Compress -> copy(compress = effect.amount.coerceIn(0f, 1f))
         is LiveMonitorEffect.Pitch -> copy(eqMid = 1.15f, eqHigh = 1.4f)
         LiveMonitorEffect.None -> copy(reverb = 0f, delay = 0f, compress = 0f, gate = 0.02f, eqLow = 1f, eqMid = 1f, eqHigh = 1f)
+    }
+
+    companion object {
+        fun fromVocalChain(
+            chain: com.swaralab.domain.model.VocalChain,
+            voiceGain: Float = 1f,
+            trackGain: Float = 0.8f,
+        ): LiveMonitorChain {
+            val low = 10.0.pow((chain.eqLowDb / 20.0)).toFloat().coerceIn(0.25f, 4f)
+            val mid = 10.0.pow((chain.eqPresenceDb / 20.0)).toFloat().coerceIn(0.25f, 4f)
+            val high = 10.0.pow((chain.eqAirDb / 20.0)).toFloat().coerceIn(0.25f, 4f)
+            return LiveMonitorChain(
+                gate = (chain.noiseGate * 0.12f).coerceIn(0f, 0.2f),
+                eqLow = low,
+                eqMid = mid,
+                eqHigh = high,
+                reverb = chain.reverb.coerceIn(0f, 1f),
+                delay = chain.delay.coerceIn(0f, 1f),
+                compress = chain.compression.coerceIn(0f, 1f),
+                voiceGain = voiceGain.coerceIn(0f, 2f),
+                trackGain = trackGain.coerceIn(0f, 2f),
+            )
+        }
     }
 }
 

@@ -18,6 +18,7 @@ import com.swaralab.domain.usecase.SplitRecordedClip
 import com.swaralab.domain.usecase.TrimRecordedClip
 import com.swaralab.domain.usecase.UpdateLyrics
 import com.swaralab.domain.usecase.encodeLyricLines
+import com.swaralab.domain.usecase.parseLyricClock
 import com.swaralab.domain.usecase.UpdateTrackMix
 import com.swaralab.domain.usecase.UpdateVocalChain
 import com.swaralab.domain.usecase.UpdateVocalSyncOffset
@@ -47,6 +48,9 @@ class LyricsAndTakeUseCaseTest {
         val encoded = encodeLyricLines(loaded.lyrics.lines)
         assertTrue(encoded.contains("[00:05.50]"))
         assertTrue(encoded.contains("First verse line"))
+        assertEquals(5_500L, parseLyricClock("00:05.50"))
+        assertEquals(62_000L, parseLyricClock("1:02.00"))
+        assertEquals(5_500L, parseLyricClock("[00:05.50]"))
     }
 
     @Test

@@ -31,6 +31,8 @@ import com.swaralab.domain.port.ExportKind
 import com.swaralab.ui.AppCopy
 import com.swaralab.ui.ChoiceCard
 import com.swaralab.ui.SwaraColors
+import com.swaralab.ui.VocalHearGraph
+import com.swaralab.ui.VocalHearReadout
 import kotlin.math.roundToInt
 
 @Composable
@@ -155,24 +157,35 @@ internal fun MixDeskSections(
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 Text(text = "Hear the mix", style = MaterialTheme.typography.titleLarge)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilterChip(
-                        selected = state.previewDry,
-                        onClick = { viewModel.setPreviewDry(true) },
-                        label = { Text("Dry") },
-                    )
-                    FilterChip(
-                        selected = !state.previewDry,
-                        onClick = { viewModel.setPreviewDry(false) },
-                        label = { Text("Mix") },
-                    )
-                    TextButton(onClick = viewModel::playCurrentPreview) {
-                        Text("Hear loop")
-                    }
-                    TextButton(onClick = viewModel::hearShareLoudness) {
-                        Text("Hear as ${state.target.label()}")
-                    }
-                }
+                VocalHearGraph(
+                    readout = VocalHearReadout(
+                        waveform = audioState.metrics.waveformHistory,
+                        pitchHistory = audioState.metrics.pitchHistory,
+                        bass = audioState.metrics.bassLevel,
+                        mid = audioState.metrics.midLevel,
+                        air = audioState.metrics.trebleLevel,
+                        rmsDb = audioState.metrics.rmsDb,
+                        pitchHz = audioState.metrics.pitchHz,
+                        noteName = audioState.metrics.noteName,
+                        swaraName = audioState.metrics.swaraName,
+                        cents = audioState.metrics.centsOffset,
+                        active = audioState.playingRelativePath != null,
+                    ),
+                )
+                EffectSliderRow(
+                    label = "Pitch to key (${state.keyName})",
+                    valueText = "${(state.chain.pitchCorrect * 100).roundToInt()}%",
+                    value = state.chain.pitchCorrect,
+                    valueRange = 0f..1f,
+                    onValueChange = { viewModel.updateChainSliders(pitchCorrect = it) },
+                )
+                EffectSliderRow(
+                    label = "Pitch speed",
+                    valueText = "${(state.chain.pitchSpeed * 100).roundToInt()}%",
+                    value = state.chain.pitchSpeed,
+                    valueRange = 0f..1f,
+                    onValueChange = { viewModel.updateChainSliders(pitchSpeed = it) },
+                )
                 var showMoreMix by remember { mutableStateOf(false) }
                 TextButton(onClick = { showMoreMix = !showMoreMix }) {
                     Text(if (showMoreMix) "Hide mix controls" else "More mix controls")
@@ -195,13 +208,6 @@ internal fun MixDeskSections(
                     value = state.chain.deEss,
                     valueRange = 0f..1f,
                     onValueChange = { viewModel.updateChainSliders(deEss = it) },
-                )
-                EffectSliderRow(
-                    label = "Pitch to key",
-                    valueText = "${(state.chain.pitchCorrect * 100).roundToInt()}%",
-                    value = state.chain.pitchCorrect,
-                    valueRange = 0f..1f,
-                    onValueChange = { viewModel.updateChainSliders(pitchCorrect = it) },
                 )
                 EffectSliderRow(
                     label = "Thicken",
@@ -247,10 +253,24 @@ internal fun MixDeskSections(
                 )
                 EffectSliderRow(
                     label = "Noise clean",
-                    valueText = "${(state.chain.denoise * 100).roundToInt()}%",
+                    valueText = if (state.chain.denoise <= 0.02f) "Off" else "${(state.chain.denoise * 100).roundToInt()}%",
                     value = state.chain.denoise,
                     valueRange = 0f..1f,
                     onValueChange = { viewModel.updateChainSliders(denoise = it) },
+                )
+                EffectSliderRow(
+                    label = "Noise gate",
+                    valueText = if (state.chain.noiseGate <= 0.02f) "Off" else "${(state.chain.noiseGate * 100).roundToInt()}%",
+                    value = state.chain.noiseGate,
+                    valueRange = 0f..1f,
+                    onValueChange = { viewModel.updateChainSliders(noiseGate = it) },
+                )
+                EffectSliderRow(
+                    label = "Breath",
+                    valueText = if (state.chain.breathReduction <= 0.02f) "Off" else "${(state.chain.breathReduction * 100).roundToInt()}%",
+                    value = state.chain.breathReduction,
+                    valueRange = 0f..1f,
+                    onValueChange = { viewModel.updateChainSliders(breathReduction = it) },
                 )
                 EffectSliderRow(
                     label = "Auto-Duck Backing Music",

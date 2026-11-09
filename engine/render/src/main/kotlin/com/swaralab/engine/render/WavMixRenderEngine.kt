@@ -273,12 +273,15 @@ class WavMixRenderEngine(
                     val semitones = document.musical.keyShiftSemitones
                     val tempo = document.musical.playbackRate.coerceIn(0.5f, 1.5f)
                     val gain = dbToLinear(backingTrack.gainDb)
+                    val pan = backingTrack.pan.coerceIn(-1f, 1f)
+                    val gL = gain * if (pan <= 0f) 1f else 1f - pan
+                    val gR = gain * if (pan >= 0f) 1f else 1f + pan
                     backingL = PcmWarp.shiftAndStretch(decoded.first, semitones, tempo)
                         .also { highPassInPlace(it, targetSampleRate) }
                     backingR = PcmWarp.shiftAndStretch(decoded.second, semitones, tempo)
                         .also { highPassInPlace(it, targetSampleRate) }
-                    for (i in backingL.indices) backingL[i] *= gain
-                    for (i in backingR.indices) backingR[i] *= gain
+                    for (i in backingL.indices) backingL[i] *= gL
+                    for (i in backingR.indices) backingR[i] *= gR
                     if (maxDurationMs > 0L) {
                         val frames = ((maxDurationMs * targetSampleRate) / 1000L).toInt()
                         if (backingL.size > frames) backingL = backingL.copyOf(frames)
@@ -355,7 +358,7 @@ class WavMixRenderEngine(
         dry: Boolean = false,
     ): Pair<FloatArray, FloatArray>? {
         val anySolo = document.tracks.any { it.role != TrackRole.BACKING && it.solo && !it.mute }
-        val placed = mutableListOf<Triple<Int, FloatArray, Pair<Float, Float>>>()
+        val placed = mutableListOf<Triple<Int, FloatArray, FloatArray>>()
         var latestEnd = 0
         for (track in document.tracks) {
             if (onlyTrackId != null) {
@@ -378,8 +381,10 @@ class WavMixRenderEngine(
                 val cropped = cropClip(pcm, sampleRate, clip)
                 if (cropped.isEmpty()) continue
                 val floats = FloatArray(cropped.size) { idx -> cropped[idx] / 32768f }
-                if (!dry) {
-                    val chain = track.chain ?: document.chain
+                val chain = track.chain ?: document.chain
+                val stereo = if (dry) {
+                    floats to floats.copyOf()
+                } else {
                     VocalMixProcessor.applyChain(
                         floats,
                         sampleRate,
@@ -387,10 +392,15 @@ class WavMixRenderEngine(
                         keyName = document.musical.keyName,
                         mode = document.musical.mode,
                     )
+                    VocalMixProcessor.spreadStereo(floats, sampleRate, chain)
+                }
+                for (i in stereo.first.indices) {
+                    stereo.first[i] *= gL
+                    stereo.second[i] *= gR
                 }
                 val start = ((clip.timelineStartMs * sampleRate) / 1000L).toInt().coerceAtLeast(0)
-                placed += Triple(start, floats, gL to gR)
-                latestEnd = max(latestEnd, start + floats.size)
+                placed += Triple(start, stereo.first, stereo.second)
+                latestEnd = max(latestEnd, start + stereo.first.size)
             }
         }
         if (placed.isEmpty()) return null
@@ -398,12 +408,13 @@ class WavMixRenderEngine(
         val n = (latestEnd + max(0, shiftSamples)).coerceAtLeast(1)
         val left = FloatArray(n)
         val right = FloatArray(n)
-        for ((start, buf, gains) in placed) {
-            for (i in buf.indices) {
+        for ((start, bufL, bufR) in placed) {
+            val frames = min(bufL.size, bufR.size)
+            for (i in 0 until frames) {
                 val destIdx = i + start + shiftSamples
                 if (destIdx in left.indices) {
-                    left[destIdx] += buf[i] * gains.first
-                    right[destIdx] += buf[i] * gains.second
+                    left[destIdx] += bufL[i]
+                    right[destIdx] += bufR[i]
                 }
             }
         }

@@ -34,6 +34,26 @@ class VocalMixProcessorTest {
     }
 
     @Test
+    fun denoiseGateAndBreathAtZeroLeaveTheTake() {
+        val sampleRate = 48_000
+        val samples = FloatArray(sampleRate) { i ->
+            val hiss = ((i * 1103515245 + 12345) and 0x7fff) / 32768f * 0.10f - 0.05f
+            if (i < sampleRate / 4) hiss else hiss + 0.28f * sin(2.0 * PI * 220.0 * i / sampleRate).toFloat()
+        }
+        val beforeGap = rms(samples, 0, sampleRate / 5)
+        val beforeTone = rms(samples, sampleRate / 2, sampleRate / 2 + 8192)
+        VocalMixProcessor.applyChain(
+            samples,
+            sampleRate,
+            VocalChain(preset = VocalPreset.CUSTOM, denoise = 0f, noiseGate = 0f, breathReduction = 0f),
+        )
+        val afterGap = rms(samples, 0, sampleRate / 5)
+        val afterTone = rms(samples, sampleRate / 2, sampleRate / 2 + 8192)
+        assertTrue("Zero denoise should keep the gap, before=$beforeGap after=$afterGap", afterGap > beforeGap * 0.85f)
+        assertTrue("Zero processing should keep the note, before=$beforeTone after=$afterTone", afterTone > beforeTone * 0.85f)
+    }
+
+    @Test
     fun voiceForwardMixDoesNotLiftGapHiss() {
         val sampleRate = 48_000
         val samples = FloatArray(sampleRate) { i ->
@@ -87,6 +107,26 @@ class VocalMixProcessorTest {
     }
 
     @Test
+    fun stereoSpreadDoesNotLiftGapHiss() {
+        val sampleRate = 48_000
+        val hiss = FloatArray(sampleRate) { i ->
+            ((i * 1103515245 + 12345) and 0x7fff) / 32768f * 0.12f - 0.06f
+        }
+        val before = rms(hiss, 0, sampleRate)
+        val beforeAir = airEnergy(hiss, sampleRate)
+        val (left, right) = VocalMixProcessor.spreadStereo(
+            hiss.copyOf(),
+            sampleRate,
+            VocalChain.preset(VocalPreset.STAGE).copy(preset = VocalPreset.CUSTOM, effectAmount = 1f, thicken = 0.4f),
+        )
+        val mid = FloatArray(hiss.size) { i -> (left[i] + right[i]) * 0.5f }
+        val after = rms(mid, 0, sampleRate)
+        val afterAir = airEnergy(mid, sampleRate)
+        assertTrue("Spread should not lift the gap, before=$before after=$after", after < before * 1.08f)
+        assertTrue("Spread should not add air hiss, before=$beforeAir after=$afterAir", afterAir < beforeAir * 1.12f)
+    }
+
+    @Test
     fun reelsCeilingStaysHotterThanMaster() {
         val sampleRate = 8_000
         fun tone(): Pair<FloatArray, FloatArray> {
@@ -108,5 +148,17 @@ class VocalMixProcessorTest {
         val to = end.coerceIn(from + 1, samples.size)
         for (i in from until to) sum += samples[i] * samples[i]
         return kotlin.math.sqrt(sum / (to - from)).toFloat()
+    }
+
+    private fun airEnergy(samples: FloatArray, sampleRate: Int): Float {
+        var sum = 0.0
+        var prev = 0f
+        val step = (sampleRate / 8_000).coerceAtLeast(1)
+        for (i in samples.indices step step) {
+            val hp = samples[i] - prev
+            prev = samples[i]
+            sum += hp * hp
+        }
+        return kotlin.math.sqrt(sum / (samples.size / step).coerceAtLeast(1)).toFloat()
     }
 }

@@ -274,8 +274,9 @@ fun ListenRoute(
                 .background(SwaraColors.TealWash, CircleShape)
                 .pointerInput(state.takeId, state.favorite) {
                     detectTapGestures(
+                        onTap = { viewModel.togglePlay() },
                         onDoubleTap = {
-                            if (state.takeId != null && !state.favorite) {
+                            if (state.takeId != null) {
                                 viewModel.toggleFavorite()
                             }
                             showHeart = true

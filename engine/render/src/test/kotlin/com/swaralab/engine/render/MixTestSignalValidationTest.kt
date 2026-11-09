@@ -64,7 +64,9 @@ class MixTestSignalValidationTest {
                 val noisyTone = rms(noisyOut, rate + rate / 4, rate * 2)
                 val sourceGap = rms(noisy, 0, rate / 2)
                 assertTrue("${preset.name} clean A4 should survive, rms=$cleanTone", cleanTone > 0.10f)
-                assertTrue("${preset.name} noisy gap should drop, source=$sourceGap mixed=$noisyGap", noisyGap < sourceGap * 0.50f)
+                if (preset != VocalPreset.RAW) {
+                    assertTrue("${preset.name} noisy gap should drop, source=$sourceGap mixed=$noisyGap", noisyGap < sourceGap * 0.50f)
+                }
                 assertTrue("${preset.name} noisy tone should survive, rms=$noisyTone", noisyTone > 0.08f)
             }
         } finally {

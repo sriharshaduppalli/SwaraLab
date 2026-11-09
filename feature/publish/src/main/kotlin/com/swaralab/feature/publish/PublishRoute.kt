@@ -102,7 +102,8 @@ data class PublishUi(
     val status: String?,
     val busy: Boolean = false,
     val hasCameraVideo: Boolean = false,
-    val previewDry: Boolean = true,
+    val previewDry: Boolean = false,
+    val keyName: String = "C",
     val vocalPath: String? = null,
     val vocalStartMs: Long = 0L,
     val vocalDurationMs: Long = 0L,
@@ -202,6 +203,9 @@ class PublishViewModel(
         fadeOut: Float = uiState.value?.chain?.fadeOut ?: 0.4f,
         thicken: Float = uiState.value?.chain?.thicken ?: 0f,
         effectAmount: Float = uiState.value?.chain?.effectAmount ?: 1f,
+        breathReduction: Float = uiState.value?.chain?.breathReduction ?: 0f,
+        noiseGate: Float = uiState.value?.chain?.noiseGate ?: 0f,
+        pitchSpeed: Float = uiState.value?.chain?.pitchSpeed ?: 0.45f,
     ) {
         val current = uiState.value ?: return
         val updatedChain = current.chain.copy(
@@ -217,6 +221,9 @@ class PublishViewModel(
             fadeOut = fadeOut,
             thicken = thicken,
             effectAmount = effectAmount,
+            breathReduction = breathReduction,
+            noiseGate = noiseGate,
+            pitchSpeed = pitchSpeed,
         )
         uiState.value = current.copy(chain = updatedChain)
         scheduleSliderSave()
@@ -259,6 +266,9 @@ class PublishViewModel(
                 fadeOut = snap.chain.fadeOut,
                 thicken = snap.chain.thicken,
                 effectAmount = snap.chain.effectAmount,
+                breathReduction = snap.chain.breathReduction,
+                noiseGate = snap.chain.noiseGate,
+                pitchSpeed = snap.chain.pitchSpeed,
             )
         }
     }
@@ -280,7 +290,7 @@ class PublishViewModel(
                     sessionId = sessionId,
                     vocalRelativePath = vocal,
                     vocalStartMs = snap.vocalStartMs,
-                    vocalDurationMs = snap.vocalDurationMs.coerceAtMost(12_000L).coerceAtLeast(1L),
+                    vocalDurationMs = snap.vocalDurationMs.coerceAtLeast(1L),
                     backingRelativePath = snap.backingPath,
                     backingStartMs = 0L,
                     loopBacking = false,
@@ -291,9 +301,9 @@ class PublishViewModel(
                     chain = snap.chain,
                     publish = document.publish.withTarget(snap.target),
                 )
-                val preview = render.preview(aimed, 12_000L)
+                val preview = render.preview(aimed, 0L)
                 if (preview != null) {
-                    audio.playPcm(sessionId, preview.left, preview.right, preview.sampleRate, loop = true)
+                    audio.playPcm(sessionId, preview.left, preview.right, preview.sampleRate, loop = false)
                     val lufs = aimed.publish.loudnessLufs.toInt()
                     val peak = aimed.publish.truePeakDbtp
                     uiState.value = uiState.value?.copy(
@@ -608,7 +618,8 @@ class PublishViewModel(
                 exportedMime = exportedMime,
                 status = status,
                 busy = false,
-                previewDry = uiState.value?.previewDry ?: true,
+                previewDry = uiState.value?.previewDry ?: false,
+                keyName = document.musical.keyName ?: "C",
                 stems = uiState.value?.stems ?: StemSelection(),
                 vocalPath = document.tracks
                     .filter { it.role != TrackRole.BACKING }
@@ -763,6 +774,36 @@ fun PublishRoute(
             border = BorderStroke(1.dp, SwaraColors.Teal),
         ) {
             Column(Modifier.padding(horizontal = 18.dp, vertical = 14.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    FilterChip(
+                        selected = state.previewDry,
+                        onClick = { viewModel.setPreviewDry(true) },
+                        label = { Text("Dry") },
+                    )
+                    FilterChip(
+                        selected = !state.previewDry,
+                        onClick = { viewModel.setPreviewDry(false) },
+                        label = { Text("Mix") },
+                    )
+                    OutlinedButton(
+                        onClick = viewModel::playCurrentPreview,
+                        enabled = !state.busy,
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text(
+                            when {
+                                audioState.playingRelativePath != null -> copy.stop
+                                state.previewDry -> "Hear dry"
+                                else -> "Hear mix"
+                            },
+                        )
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
                 Button(
                     onClick = { viewModel.shareThisTake(context) },
                     enabled = !state.busy,

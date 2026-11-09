@@ -137,6 +137,8 @@ import com.swaralab.ui.ChoiceCard
 import com.swaralab.ui.AppCopy
 import com.swaralab.ui.LocalAppCopy
 import com.swaralab.ui.SwaraColors
+import com.swaralab.ui.VocalHearGraph
+import com.swaralab.ui.VocalHearReadout
 import com.swaralab.ui.studioAtmosphere
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -301,157 +303,26 @@ internal fun RecordingControlBar(
 internal fun LiveVocalMonitorCard(
     audioStateFlow: StateFlow<AudioEngineState>,
 ) {
-    val audioState = audioStateFlow.collectAsState()
-    var calmMetrics by remember { mutableStateOf(VocalMetrics()) }
-    var calmModeLabel by remember { mutableStateOf("READY") }
-    var calmActive by remember { mutableStateOf(false) }
-
-    LaunchedEffect(audioStateFlow) {
-        while (true) {
-            val current = audioStateFlow.value
-            val rec = current.status == EngineStatus.RECORDING
-            val play = current.playingRelativePath != null
-            calmActive = rec || play
-            calmModeLabel = when {
-                rec -> "LIVE MIC"
-                play -> "PLAYBACK"
-                else -> "READY"
-            }
-            calmMetrics = current.metrics
-            delay(380L)
-        }
-    }
-
-    val hasPitch = calmMetrics.pitchHz > 0f
-    val tuningLabel = when {
-        !hasPitch -> "Listen, then sing"
-        abs(calmMetrics.centsOffset) <= 12 -> "In tune"
-        abs(calmMetrics.centsOffset) <= 35 && calmMetrics.centsOffset < 0 -> "A little low"
-        abs(calmMetrics.centsOffset) <= 35 -> "A little high"
-        calmMetrics.centsOffset < 0 -> "Low · lift the note"
-        else -> "High · ease the note"
-    }
-    val voiceLevel = voiceLevelFromDb(calmMetrics.rmsDb)
-    val voiceTone = when {
-        voiceLevel < 0.22f -> SwaraColors.Muted
-        voiceLevel > 0.88f -> SwaraColors.Clay
-        else -> SwaraColors.Teal
-    }
-    val pitchTone = when {
-        !hasPitch -> SwaraColors.Gold
-        abs(calmMetrics.centsOffset) <= 12 -> SwaraColors.Teal
-        abs(calmMetrics.centsOffset) <= 35 -> SwaraColors.Gold
-        else -> SwaraColors.Clay
-    }
-
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(22.dp),
-        color = SwaraColors.Card,
-        border = BorderStroke(1.dp, if (calmActive) SwaraColors.Teal else SwaraColors.Line),
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            Text(
-                text = "Live pitch",
-                style = MaterialTheme.typography.titleLarge,
-                color = SwaraColors.Ink,
-            )
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(16.dp),
-                color = if (hasPitch) pitchTone.copy(alpha = 0.16f) else SwaraColors.Paper,
-            ) {
-                Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
-                    Text(
-                        text = if (hasPitch) {
-                            "${calmMetrics.swaraName}  ·  ${calmMetrics.noteName}"
-                        } else {
-                            calmModeLabel
-                        },
-                        style = MaterialTheme.typography.headlineLarge,
-                        color = if (hasPitch) pitchTone else SwaraColors.Muted,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    Text(
-                        text = if (hasPitch) {
-                            "$tuningLabel  ·  ${calmMetrics.pitchHz.roundToInt()} Hz  ·  ${calmMetrics.rmsDb.roundToInt()} dB"
-                        } else {
-                            "Sing a held note. Sa and the Western name will sit here."
-                        },
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = SwaraColors.Ink,
-                    )
-                }
-            }
-
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(168.dp),
-            ) {
-                Surface(
-                    modifier = Modifier.fillMaxSize(),
-                    shape = RoundedCornerShape(14.dp),
-                    color = SwaraColors.Paper,
-                    border = BorderStroke(1.dp, SwaraColors.Line),
-                ) {
-                    PitchAndWaveformCanvas(
-                        audioState = audioState,
-                        pitchColor = pitchTone,
-                    )
-                }
-                Column(
-                    modifier = Modifier
-                        .align(Alignment.CenterStart)
-                        .padding(start = 8.dp, top = 8.dp, bottom = 28.dp),
-                    verticalArrangement = Arrangement.SpaceBetween,
-                ) {
-                    Text("High", style = MaterialTheme.typography.labelSmall, color = SwaraColors.Muted)
-                    Spacer(Modifier.weight(1f))
-                    Text("Mid", style = MaterialTheme.typography.labelSmall, color = SwaraColors.Muted)
-                    Spacer(Modifier.weight(1f))
-                    Text("Low", style = MaterialTheme.typography.labelSmall, color = SwaraColors.Muted)
-                }
-            }
-
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                EqBandRow(
-                    label = "Voice",
-                    hint = when {
-                        voiceLevel < 0.22f -> "Closer"
-                        voiceLevel > 0.88f -> "Hot"
-                        else -> "Good"
-                    },
-                    levelProvider = { voiceLevelFromDb(audioState.value.metrics.rmsDb) },
-                    color = voiceTone,
-                )
-                EqBandRow(
-                    label = "Low",
-                    hint = "Warmth",
-                    levelProvider = { audioState.value.metrics.bassLevel },
-                    color = SwaraColors.Teal,
-                )
-                EqBandRow(
-                    label = "Mid",
-                    hint = "Words",
-                    levelProvider = { audioState.value.metrics.midLevel },
-                    color = SwaraColors.Gold,
-                )
-                EqBandRow(
-                    label = "Air",
-                    hint = "Shine",
-                    levelProvider = { audioState.value.metrics.trebleLevel },
-                    color = SwaraColors.Rose,
-                )
-            }
-        }
-    }
+    val audioState by audioStateFlow.collectAsState()
+    val rec = audioState.status == EngineStatus.RECORDING
+    val play = audioState.playingRelativePath != null
+    val metrics = audioState.metrics
+    VocalHearGraph(
+        readout = VocalHearReadout(
+            waveform = metrics.waveformHistory,
+            pitchHistory = metrics.pitchHistory,
+            bass = metrics.bassLevel,
+            mid = metrics.midLevel,
+            air = metrics.trebleLevel,
+            rmsDb = metrics.rmsDb,
+            pitchHz = metrics.pitchHz,
+            noteName = metrics.noteName,
+            swaraName = metrics.swaraName,
+            cents = metrics.centsOffset,
+            active = rec || play,
+        ),
+        title = if (rec) "Live pitch" else "Voice, pitch, and tone",
+    )
 }
 
 @Composable
@@ -1382,6 +1253,8 @@ internal fun TakeEditCard(
     onPunch: (Long) -> Unit,
     onPunchRegion: (Long, Long) -> Unit = { start, _ -> onPunch(start) },
     onSplit: (Long) -> Unit = {},
+    onSplitPlayhead: () -> Unit = {},
+    onCompare: (() -> Unit)? = null,
     onMove: (Long) -> Unit = {},
     onFades: (Long, Long) -> Unit = { _, _ -> },
     onRestore: () -> Unit = {},
@@ -1495,6 +1368,10 @@ internal fun TakeEditCard(
                 OutlinedButton(
                     onClick = { onSplit(((startMs + endMs) / 2f).toLong()) },
                 ) { Text("Split") }
+                OutlinedButton(onClick = onSplitPlayhead) { Text("Split at playhead") }
+                if (onCompare != null) {
+                    OutlinedButton(onClick = onCompare) { Text("A/B previous") }
+                }
                 FilterChip(
                     selected = take.preferred && take.active,
                     onClick = onPrefer,

@@ -1,6 +1,8 @@
 package com.swaralab.feature.studio
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -17,11 +19,16 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.swaralab.domain.model.VocalPreset
@@ -71,48 +78,125 @@ internal fun TimelineOverview(
     positionMs: Long,
     punchStartMs: Long = 0L,
     punchEndMs: Long = 0L,
+    onSeek: (Long) -> Unit = {},
+    onMoveClip: (String, Long) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier,
 ) {
     val span = durationMs.toFloat().coerceAtLeast(1f)
+    var pendingStarts by remember(takes) { mutableStateOf<Map<String, Long>>(emptyMap()) }
+    var dragClipId by remember { mutableStateOf<String?>(null) }
     Surface(
         modifier = modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp),
         color = SwaraColors.Card,
     ) {
-        Canvas(
+        Column(
             Modifier
                 .fillMaxWidth()
-                .height(80.dp)
-                .padding(horizontal = 12.dp, vertical = 10.dp),
+                .padding(horizontal = 12.dp, vertical = 8.dp),
         ) {
-            val lanes = takes.filter { it.active }.take(6)
-            val laneHeight = if (lanes.isEmpty()) size.height else (size.height / lanes.size.coerceAtLeast(1))
-            lanes.forEachIndexed { index, take ->
-                val left = (take.timelineStartMs / span) * size.width
-                val width = (take.durationMs / span) * size.width
-                drawRect(
-                    color = if (take.preferred) SwaraColors.Teal.copy(alpha = 0.72f) else SwaraColors.Gold.copy(alpha = 0.45f),
-                    topLeft = Offset(left, index * laneHeight + 3.dp.toPx()),
-                    size = Size(width.coerceAtLeast(4.dp.toPx()), laneHeight - 6.dp.toPx()),
+            Canvas(
+                Modifier
+                    .fillMaxWidth()
+                    .height(20.dp)
+                    .pointerInput(durationMs) {
+                        detectTapGestures { offset ->
+                            onSeek(((offset.x / size.width) * span).toLong().coerceAtLeast(0L))
+                        }
+                    }
+                    .pointerInput(durationMs) {
+                        detectDragGestures { change, _ ->
+                            change.consume()
+                            onSeek(((change.position.x / size.width) * span).toLong().coerceAtLeast(0L))
+                        }
+                    },
+            ) {
+                val playX = ((positionMs / span) * size.width).coerceIn(0f, size.width)
+                drawLine(
+                    color = SwaraColors.Line,
+                    start = Offset(0f, size.height / 2f),
+                    end = Offset(size.width, size.height / 2f),
+                    strokeWidth = 2.dp.toPx(),
+                    cap = StrokeCap.Round,
+                )
+                drawLine(
+                    color = SwaraColors.Ink,
+                    start = Offset(playX, 0f),
+                    end = Offset(playX, size.height),
+                    strokeWidth = 2.dp.toPx(),
+                    cap = StrokeCap.Round,
                 )
             }
-            if (punchEndMs > punchStartMs) {
-                val left = (punchStartMs / span) * size.width
-                val width = ((punchEndMs - punchStartMs) / span) * size.width
-                drawRect(
-                    color = SwaraColors.Clay.copy(alpha = 0.22f),
-                    topLeft = Offset(left, 0f),
-                    size = Size(width.coerceAtLeast(2.dp.toPx()), size.height),
+            Canvas(
+                Modifier
+                    .fillMaxWidth()
+                    .height(72.dp)
+                    .pointerInput(takes, durationMs) {
+                        detectDragGestures(
+                            onDragStart = { offset ->
+                                val lanes = takes.filter { it.active }.take(6)
+                                if (lanes.isEmpty()) {
+                                    dragClipId = null
+                                    return@detectDragGestures
+                                }
+                                val laneHeight = size.height / lanes.size
+                                val idx = (offset.y / laneHeight).toInt().coerceIn(0, lanes.lastIndex)
+                                val take = lanes[idx]
+                                val start = pendingStarts[take.id] ?: take.timelineStartMs
+                                val left = (start / span) * size.width
+                                val width = (take.durationMs / span) * size.width
+                                dragClipId = if (offset.x in left..(left + width.coerceAtLeast(8f))) take.id else null
+                            },
+                            onDragEnd = {
+                                val id = dragClipId
+                                if (id != null) {
+                                    val start = pendingStarts[id] ?: takes.firstOrNull { it.id == id }?.timelineStartMs
+                                    if (start != null) onMoveClip(id, start.coerceAtLeast(0L))
+                                }
+                                dragClipId = null
+                            },
+                            onDragCancel = { dragClipId = null },
+                            onDrag = { change, dragAmount ->
+                                change.consume()
+                                val id = dragClipId ?: return@detectDragGestures
+                                val take = takes.firstOrNull { it.id == id } ?: return@detectDragGestures
+                                val current = pendingStarts[id] ?: take.timelineStartMs
+                                val deltaMs = ((dragAmount.x / size.width) * span).toLong()
+                                pendingStarts = pendingStarts + (id to (current + deltaMs).coerceAtLeast(0L))
+                            },
+                        )
+                    },
+            ) {
+                val lanes = takes.filter { it.active }.take(6)
+                val laneHeight = if (lanes.isEmpty()) size.height else (size.height / lanes.size.coerceAtLeast(1))
+                lanes.forEachIndexed { index, take ->
+                    val start = pendingStarts[take.id] ?: take.timelineStartMs
+                    val left = (start / span) * size.width
+                    val width = (take.durationMs / span) * size.width
+                    drawRect(
+                        color = if (take.preferred) SwaraColors.Teal.copy(alpha = 0.72f) else SwaraColors.Gold.copy(alpha = 0.45f),
+                        topLeft = Offset(left, index * laneHeight + 3.dp.toPx()),
+                        size = Size(width.coerceAtLeast(4.dp.toPx()), laneHeight - 6.dp.toPx()),
+                    )
+                }
+                if (punchEndMs > punchStartMs) {
+                    val left = (punchStartMs / span) * size.width
+                    val width = ((punchEndMs - punchStartMs) / span) * size.width
+                    drawRect(
+                        color = SwaraColors.Clay.copy(alpha = 0.22f),
+                        topLeft = Offset(left, 0f),
+                        size = Size(width.coerceAtLeast(2.dp.toPx()), size.height),
+                    )
+                }
+                val playX = ((positionMs / span) * size.width).coerceIn(0f, size.width)
+                drawLine(
+                    color = SwaraColors.Ink,
+                    start = Offset(playX, 0f),
+                    end = Offset(playX, size.height),
+                    strokeWidth = 2.dp.toPx(),
+                    cap = StrokeCap.Round,
                 )
             }
-            val playX = ((positionMs / span) * size.width).coerceIn(0f, size.width)
-            drawLine(
-                color = SwaraColors.Ink,
-                start = Offset(playX, 0f),
-                end = Offset(playX, size.height),
-                strokeWidth = 2.dp.toPx(),
-                cap = StrokeCap.Round,
-            )
         }
     }
 }

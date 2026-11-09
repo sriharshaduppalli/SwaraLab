@@ -185,6 +185,7 @@ data class VocalChain(
     val preset: VocalPreset = VocalPreset.RAW,
     val enabled: Boolean = true,
     val denoise: Float = 0f,
+    val noiseGate: Float = 0f,
     val breathReduction: Float = 0f,
     val deEss: Float = 0f,
     val compression: Float = 0f,
@@ -198,6 +199,7 @@ data class VocalChain(
     val outputGainDb: Float = 0f,
     val tone: Float = 0f,
     val pitchCorrect: Float = 0f,
+    val pitchSpeed: Float = 0.45f,
     val fadeOut: Float = 0.4f,
     val thicken: Float = 0f,
     val effectAmount: Float = 1f,
@@ -206,14 +208,16 @@ data class VocalChain(
         fun preset(preset: VocalPreset): VocalChain = when (preset) {
             VocalPreset.RAW -> VocalChain(
                 preset = VocalPreset.RAW,
-                denoise = 0.42f,
-                breathReduction = 0.16f,
+                denoise = 0f,
+                noiseGate = 0f,
+                breathReduction = 0f,
                 deEss = 0f,
                 fadeOut = 0.2f,
             )
             VocalPreset.CLOSE -> VocalChain(
                 preset = VocalPreset.CLOSE,
                 denoise = 0.72f,
+                noiseGate = 0.55f,
                 breathReduction = 0.32f,
                 deEss = 0.30f,
                 compression = 0.36f,
@@ -229,6 +233,7 @@ data class VocalChain(
             VocalPreset.STAGE -> VocalChain(
                 preset = VocalPreset.STAGE,
                 denoise = 0.68f,
+                noiseGate = 0.30f,
                 breathReduction = 0.24f,
                 deEss = 0.18f,
                 compression = 0.18f,
@@ -245,7 +250,9 @@ data class VocalChain(
             VocalPreset.RADIO -> VocalChain(
                 preset = VocalPreset.RADIO,
                 denoise = 0.86f,
+                noiseGate = 0.62f,
                 breathReduction = 0.48f,
+                pitchSpeed = 0.62f,
                 deEss = 0.48f,
                 compression = 0.52f,
                 rider = 0.36f,
@@ -261,6 +268,7 @@ data class VocalChain(
             VocalPreset.BRIGHT -> VocalChain(
                 preset = VocalPreset.BRIGHT,
                 denoise = 0.64f,
+                noiseGate = 0.48f,
                 breathReduction = 0.22f,
                 deEss = 0.36f,
                 compression = 0.28f,

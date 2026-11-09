@@ -21,6 +21,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.swaralab.domain.model.LyricLine
 import com.swaralab.domain.usecase.encodeLyricLines
+import com.swaralab.domain.usecase.parseLyricClock
 import com.swaralab.ui.SwaraColors
 import java.util.UUID
 
@@ -120,7 +121,7 @@ private fun LyricEditorItem(
             value = timeText,
             onValueChange = { value ->
                 timeText = value
-                parseEditorTime(value)?.let(onTimeChange)
+                parseLyricClock(value)?.let(onTimeChange)
             },
             modifier = Modifier.width(88.dp),
             singleLine = true,
@@ -138,21 +139,13 @@ private fun LyricEditorItem(
 }
 
 private fun formatEditorTime(ms: Long): String {
-    val total = (ms / 1000L).coerceAtLeast(0L)
-    return "%d:%02d".format(total / 60L, total % 60L)
-}
-
-private fun parseEditorTime(raw: String): Long? {
-    val trimmed = raw.trim()
-    if (trimmed.isEmpty()) return null
-    val parts = trimmed.split(':', '.')
-    return when (parts.size) {
-        1 -> parts[0].toLongOrNull()?.times(1_000L)
-        2 -> {
-            val minutes = parts[0].toLongOrNull() ?: return null
-            val seconds = parts[1].toLongOrNull() ?: return null
-            (minutes * 60_000L) + (seconds * 1_000L)
-        }
-        else -> null
+    val clamped = ms.coerceAtLeast(0L)
+    val minutes = clamped / 60_000L
+    val seconds = (clamped % 60_000L) / 1_000L
+    val hundredths = (clamped % 1_000L) / 10L
+    return if (hundredths == 0L) {
+        "%d:%02d".format(minutes, seconds)
+    } else {
+        "%d:%02d.%02d".format(minutes, seconds, hundredths)
     }
 }

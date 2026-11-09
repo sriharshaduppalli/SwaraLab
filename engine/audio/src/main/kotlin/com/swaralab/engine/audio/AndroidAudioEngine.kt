@@ -10,6 +10,7 @@ import android.media.MediaRecorder
 import android.media.audiofx.AcousticEchoCanceler
 import android.os.Build
 import com.swaralab.domain.model.GearRoute
+import com.swaralab.domain.model.VocalChain
 import com.swaralab.domain.model.VocalPreset
 import com.swaralab.domain.audio.LiveCaptureCleaner
 import com.swaralab.domain.audio.LiveMonitorChain
@@ -393,6 +394,18 @@ class AndroidAudioEngine(
             is LiveMonitorEffect.Compress -> OboeMic.setEffect(5, floatArrayOf(effect.amount))
             is LiveMonitorEffect.Pitch -> OboeMic.setEffect(3, floatArrayOf(1f, 1.15f, 1.4f))
             LiveMonitorEffect.None -> OboeMic.setEffect(0, floatArrayOf())
+        }
+    }
+
+    override fun applyVocalChainMonitor(chain: VocalChain, voiceGain: Float, trackGain: Float) {
+        liveChain = LiveMonitorChain.fromVocalChain(chain, voiceGain, trackGain)
+        pushMonitor()
+        OboeMic.setEffect(3, floatArrayOf(liveChain.eqLow, liveChain.eqMid, liveChain.eqHigh))
+        if (liveChain.gate > 0.01f) {
+            OboeMic.setEffect(4, floatArrayOf(liveChain.gate))
+        }
+        if (liveChain.compress > 0.02f) {
+            OboeMic.setEffect(5, floatArrayOf(liveChain.compress))
         }
     }
 
@@ -1023,9 +1036,11 @@ class AndroidAudioEngine(
         }
         pcmTrack = track
         track.play()
-        states.update { it.copy(playingRelativePath = "preview-mix") }
+        states.update { it.copy(playingRelativePath = "preview-mix", metrics = VocalMetrics(), positionMs = 0L) }
         pcmPlayJob = scope.launch {
             val chunk = ShortArray(2048)
+            val meter = ShortArray(1024)
+            var lastMeterNs = 0L
             do {
                 var offset = 0
                 while (isActive && pcmTrack === track && offset < frames) {
@@ -1038,6 +1053,26 @@ class AndroidAudioEngine(
                             .coerceIn(-32767, 32767).toShort()
                     }
                     track.write(chunk, 0, w)
+                    val now = System.nanoTime()
+                    if (now - lastMeterNs >= 80_000_000L) {
+                        lastMeterNs = now
+                        for (i in 0 until count) {
+                            val mid = ((left[offset + i] + right[offset + i]) * 0.5f).coerceIn(-1f, 1f)
+                            meter[i] = (mid * 22000f).toInt().coerceIn(-32767, 32767).toShort()
+                        }
+                        val updated = VocalSignalAnalyzer.analyzeFrame(
+                            samples = meter,
+                            length = count,
+                            sampleRate = sampleRate,
+                            previous = states.value.metrics,
+                        )
+                        states.update {
+                            it.copy(
+                                metrics = updated,
+                                positionMs = (offset.toLong() * 1000L) / sampleRate,
+                            )
+                        }
+                    }
                     offset += count
                 }
             } while (loop && isActive && pcmTrack === track)
@@ -1116,13 +1151,22 @@ class AndroidAudioEngine(
         playbackMeterJob = scope.launch {
             val bytes = runCatching { wavFile.readBytes() }.getOrNull() ?: return@launch
             if (bytes.size <= 44) return@launch
-            val sampleRate = 48_000
-            val totalSamples = (bytes.size - 44) / 2
-            val allShorts = ShortArray(totalSamples)
-            ByteBuffer.wrap(bytes, 44, totalSamples * 2)
-                .order(ByteOrder.LITTLE_ENDIAN)
-                .asShortBuffer()
-                .get(allShorts)
+            val sampleRate = ByteBuffer.wrap(bytes, 24, 4).order(ByteOrder.LITTLE_ENDIAN).int.coerceAtLeast(8_000)
+            val channels = ByteBuffer.wrap(bytes, 22, 2).order(ByteOrder.LITTLE_ENDIAN).short.toInt().coerceIn(1, 2)
+            val totalFrames = (bytes.size - 44) / (2 * channels)
+            if (totalFrames <= 64) return@launch
+            val pcm = ByteBuffer.wrap(bytes, 44, bytes.size - 44).order(ByteOrder.LITTLE_ENDIAN)
+            val mono = ShortArray(totalFrames)
+            for (i in 0 until totalFrames) {
+                val left = pcm.short.toInt()
+                val sample = if (channels > 1) {
+                    val right = pcm.short.toInt()
+                    ((left + right) / 2)
+                } else {
+                    left
+                }
+                mono[i] = sample.coerceIn(-32767, 32767).toShort()
+            }
 
             val frameSize = 2048
             val frameBuffer = ShortArray(frameSize)
@@ -1131,10 +1175,10 @@ class AndroidAudioEngine(
                     if (player.isPlaying) player.currentPosition else -1
                 }.getOrDefault(-1)
                 if (posMs < 0) break
-                val startSample = ((posMs.toLong() * sampleRate) / 1000L).toInt().coerceIn(0, max(0, totalSamples - 1))
-                val count = (totalSamples - startSample).coerceIn(0, frameSize)
+                val startSample = ((posMs.toLong() * sampleRate) / 1000L).toInt().coerceIn(0, max(0, totalFrames - 1))
+                val count = (totalFrames - startSample).coerceIn(0, frameSize)
                 if (count > 64) {
-                    System.arraycopy(allShorts, startSample, frameBuffer, 0, count)
+                    System.arraycopy(mono, startSample, frameBuffer, 0, count)
                     val updatedMetrics = VocalSignalAnalyzer.analyzeFrame(
                         samples = frameBuffer,
                         length = count,

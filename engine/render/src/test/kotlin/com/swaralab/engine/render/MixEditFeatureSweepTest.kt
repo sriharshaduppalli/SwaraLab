@@ -73,10 +73,12 @@ class MixEditFeatureSweepTest {
                             "srcTone=${"%.4f".format(sourceTone)} mixTone=${"%.4f".format(mixedTone)} cleanTone=${"%.4f".format(cleanTone)}",
                     )
                     assertTrue("${recipe.id} ${preset.name} clean note should survive, rms=$cleanTone", cleanTone > 0.06f)
-                    assertTrue(
-                        "${recipe.id} ${preset.name} should remove gap noise, src=$sourceGap mix=$mixedGap",
-                        mixedGap < sourceGap * 0.52f,
-                    )
+                    if (preset != VocalPreset.RAW) {
+                        assertTrue(
+                            "${recipe.id} ${preset.name} should remove gap noise, src=$sourceGap mix=$mixedGap",
+                            mixedGap < sourceGap * 0.52f,
+                        )
+                    }
                     assertTrue(
                         "${recipe.id} ${preset.name} should keep the sung note, src=$sourceTone mix=$mixedTone",
                         mixedTone > sourceTone * 0.26f && mixedTone > 0.022f,
@@ -115,6 +117,32 @@ class MixEditFeatureSweepTest {
             val (rightL, rightR) = stereoPair(engine, root, withMix(reducer, doc, leadId, pan = 1f))
             assertTrue("Pan left should bias L, L=${rms(leftL)} R=${rms(leftR)}", rms(leftL) > rms(leftR) * 1.2f)
             assertTrue("Pan right should bias R, L=${rms(rightL)} R=${rms(rightR)}", rms(rightR) > rms(rightL) * 1.2f)
+
+            fun stereoWidth(pair: Pair<FloatArray, FloatArray>): Float {
+                var side = 0.0
+                var mid = 0.0
+                val n = min(pair.first.size, pair.second.size)
+                for (i in 0 until n) {
+                    val m = (pair.first[i] + pair.second[i]) * 0.5f
+                    val s = (pair.first[i] - pair.second[i]) * 0.5f
+                    mid += m * m
+                    side += s * s
+                }
+                return if (mid <= 1e-12) 0f else sqrt((side / mid).toFloat())
+            }
+            val rawWidth = stereoWidth(stereoPair(engine, root, withChain(reducer, doc, VocalPreset.RAW)))
+            val hallWidth = stereoWidth(stereoPair(engine, root, withChain(reducer, doc, VocalPreset.STAGE)))
+            assertTrue("Stage mix should be wider than Dry, dry=$rawWidth hall=$hallWidth", hallWidth > rawWidth * 1.15f)
+
+            val mutedLead = withMix(reducer, doc, leadId, mute = true)
+            val bedPanResult = engine.export(
+                withMix(reducer, mutedLead, backingId, pan = 1f),
+                ExportRequest(PublishTarget.MASTER, ExportKind.MIX),
+            )
+            assertTrue("panned bed wrote, got $bedPanResult", bedPanResult is ExportResult.Written)
+            val bedFile = File(File(root, mutedLead.id), (bedPanResult as ExportResult.Written).relativePath)
+            val (bedL, bedR, _) = readStereo(bedFile)
+            assertTrue("Backing pan right should bias R, L=${rms(bedL)} R=${rms(bedR)}", rms(bedR) > rms(bedL) * 1.08f)
 
             val late = export(engine, root, applied(reducer, doc, SessionCommand.SetLatency(0.0, 80.0)), ExportKind.VOCALS)
             val shift = (onset(late, 0.03f) - onset(base, 0.03f)) * 1000f / rate
