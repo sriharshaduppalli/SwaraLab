@@ -49,6 +49,22 @@ class VocalMixProcessorTest {
     }
 
     @Test
+    fun handlingKnockInAQuietGapIsTamed() {
+        val sampleRate = 48_000
+        val samples = FloatArray(sampleRate) { i ->
+            val hiss = ((i * 1103515245 + 12345) and 0x7fff) / 32768f * 0.10f - 0.05f
+            val knock = if (i in (sampleRate * 0.4).toInt()..(sampleRate * 0.42).toInt()) 0.32f else 0f
+            val tone = if (i > sampleRate / 2) 0.30f * sin(2.0 * PI * 220.0 * i / sampleRate).toFloat() else 0f
+            hiss + knock + tone
+        }
+        VocalMixProcessor.applyChain(samples, sampleRate, VocalChain.preset(VocalPreset.CLOSE))
+        val knock = samples.sliceArray((sampleRate * 0.39).toInt() until (sampleRate * 0.43).toInt()).maxOf { kotlin.math.abs(it) }
+        val voice = rms(samples, sampleRate / 2 + 2048, sampleRate / 2 + 8192)
+        assertTrue("Knock should be tamed, knock=$knock", knock < 0.16f)
+        assertTrue("Voice should remain after knock taming, voice=$voice", voice > 0.04f)
+    }
+
+    @Test
     fun softHallSpreadIsWiderThanKeepDry() {
         val sampleRate = 48_000
         val mono = FloatArray(sampleRate) { i ->

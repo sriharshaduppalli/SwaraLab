@@ -261,24 +261,6 @@ class WavMixRenderEngine(
             if (vocalL.size > frames) vocalL = vocalL.copyOf(frames)
             if (vocalR.size > frames) vocalR = vocalR.copyOf(frames)
         }
-        val layeredChains = document.tracks.any { it.role != TrackRole.BACKING && it.chain != null }
-        if (vocalL.isNotEmpty() && !layeredChains) {
-            VocalMixProcessor.applyChain(
-                vocalL,
-                targetSampleRate,
-                document.chain,
-                keyName = document.musical.keyName,
-                mode = document.musical.mode,
-            )
-            VocalMixProcessor.applyChain(
-                vocalR,
-                targetSampleRate,
-                document.chain,
-                keyName = document.musical.keyName,
-                mode = document.musical.mode,
-            )
-        }
-
         val backingTrack = document.tracks.firstOrNull { it.role == TrackRole.BACKING && !it.mute }
         val backingClip = backingTrack?.clips?.lastOrNull()
         var backingL: FloatArray? = null
@@ -398,15 +380,13 @@ class WavMixRenderEngine(
                 val floats = FloatArray(cropped.size) { idx -> cropped[idx] / 32768f }
                 if (!dry) {
                     val chain = track.chain ?: document.chain
-                    if (track.chain != null) {
-                        VocalMixProcessor.applyChain(
-                            floats,
-                            sampleRate,
-                            chain,
-                            keyName = document.musical.keyName,
-                            mode = document.musical.mode,
-                        )
-                    }
+                    VocalMixProcessor.applyChain(
+                        floats,
+                        sampleRate,
+                        chain,
+                        keyName = document.musical.keyName,
+                        mode = document.musical.mode,
+                    )
                 }
                 val start = ((clip.timelineStartMs * sampleRate) / 1000L).toInt().coerceAtLeast(0)
                 placed += Triple(start, floats, gL to gR)

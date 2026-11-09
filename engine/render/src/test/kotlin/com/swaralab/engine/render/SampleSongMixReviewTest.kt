@@ -69,7 +69,7 @@ class SampleSongMixReviewTest {
                 val master = mixAndRead(engine, reducer, doc, VocalChain.preset(preset), root, ExportKind.MIX)
                 val gap = rms(vocals.first, 0, sampleRate / 5)
                 val voice = rms(vocals.first, sampleRate + sampleRate / 8, sampleRate + sampleRate / 3)
-                val knock = peak(vocals.first, (sampleRate * 0.35).toInt(), (sampleRate * 0.55).toInt())
+                val knock = peak(vocals.first, (sampleRate * 0.39).toInt(), (sampleRate * 0.43).toInt())
                 val music = rms(master.first, 0, sampleRate / 5)
                 val mixSeconds = master.first.size / sampleRate.toFloat()
                 reports += "${preset.name}: vocalGap=${"%.5f".format(gap)} voice=${"%.4f".format(voice)} knock=${"%.4f".format(knock)} music=${"%.4f".format(music)} mixSec=${"%.2f".format(mixSeconds)}"

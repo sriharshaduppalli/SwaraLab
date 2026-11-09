@@ -16,6 +16,12 @@ From a terminal, with `JAVA_HOME` pointed at JDK 17 or newer and the Android SDK
 
 On Windows that is `gradlew.bat` with the same tasks.
 
+Mix and edit fixtures live in `testdata/mix-fixtures/`: a clean 440 Hz A4, the same tone with white noise, a phrase pair with gaps for the noise gate, and eight more clean/noisy recipes under `testdata/mix-fixtures/batch/` (white, hiss, rumble, hum, knock, air, low SNR, fifth). Import those WAVs on the phone, or regenerate with:
+
+```bash
+python tools/generate_mix_test_signals.py
+```
+
 A signed Play bundle:
 
 ```bash
