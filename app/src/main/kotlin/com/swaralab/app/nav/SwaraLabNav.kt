@@ -47,6 +47,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import com.swaralab.app.TakeRecordingService
 import com.swaralab.app.graph.SwaraLabGraph
 import com.swaralab.app.ui.ExploreRoute
 import com.swaralab.app.ui.HomeRoute
@@ -54,6 +55,7 @@ import com.swaralab.app.ui.ImportRoute
 import com.swaralab.app.ui.ListenRoute
 import com.swaralab.app.ui.OnboardingRoute
 import com.swaralab.app.ui.importStudioRoute
+import androidx.compose.ui.platform.LocalContext
 import com.swaralab.domain.port.AnalyticsEvent
 import com.swaralab.feature.account.AccountRoute
 import com.swaralab.feature.account.StorageRoute
@@ -106,6 +108,7 @@ object Routes {
 @Composable
 fun SwaraLabNav(graph: SwaraLabGraph) {
     val nav = rememberNavController()
+    val context = LocalContext.current
     val entry by nav.currentBackStackEntryAsState()
     val route = entry?.destination?.route
     val showTabs = route == Routes.HOME
@@ -377,6 +380,12 @@ fun SwaraLabNav(graph: SwaraLabGraph) {
                     analytics = graph.analytics,
                     onBack = { nav.popBackStack() },
                     onPublish = { nav.navigate(Routes.publish(sessionId)) },
+                    onCaptureActive = { active ->
+                        runCatching {
+                            if (active) TakeRecordingService.start(context) else TakeRecordingService.stop(context)
+                        }
+                    },
+                    updateVocalSyncOffset = graph.updateVocalSyncOffset,
                     initialSing = initialSing,
                 )
             }

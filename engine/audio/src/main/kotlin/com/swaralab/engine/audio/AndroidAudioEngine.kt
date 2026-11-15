@@ -991,8 +991,9 @@ class AndroidAudioEngine(
         right: FloatArray,
         sampleRate: Int,
         loop: Boolean,
+        replace: Boolean,
     ): Unit = withContext(Dispatchers.IO) {
-        if (states.value.playingRelativePath == "preview-mix") {
+        if (!replace && states.value.playingRelativePath == "preview-mix") {
             stopPlayback()
             return@withContext
         }

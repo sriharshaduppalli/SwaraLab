@@ -161,6 +161,7 @@ import com.swaralab.domain.model.VocalChain
 import com.swaralab.domain.usecase.UpdateGear
 import com.swaralab.domain.usecase.UpdateLyrics
 import com.swaralab.domain.usecase.UpdateMusicalSettings
+import com.swaralab.domain.usecase.UpdateVocalSyncOffset
 import com.swaralab.domain.usecase.UpdatePracticeStats
 import com.swaralab.domain.usecase.UpdatePublishSettings
 import com.swaralab.domain.usecase.UpdateVocalPreset
@@ -288,6 +289,7 @@ data class StudioUi(
     val voiceGain: Float = 1f,
     val trackGain: Float = 0.8f,
     val lyricHighlight: LyricHighlight = LyricHighlight(),
+    val syncOffsetMs: Float = 0f,
 )
 
 class StudioViewModel(
@@ -305,6 +307,7 @@ class StudioViewModel(
     private val importBackingTrack: ImportBackingTrack,
     private val updatePublish: UpdatePublishSettings,
     private val updateMusical: UpdateMusicalSettings,
+    private val updateVocalSyncOffset: UpdateVocalSyncOffset? = null,
     private val trimRecordedClip: TrimRecordedClip,
     private val splitRecordedClip: SplitRecordedClip? = null,
     private val updateRecordedClip: UpdateRecordedClip? = null,
@@ -1099,9 +1102,9 @@ class StudioViewModel(
                         val label = "Music only · ${backing.name}"
                         importBackingTrack(sessionId, relativePath, result.durationMs, label, rightsConfirmed = true)
                         stageNote = if (result.mostlyMono) {
-                            "This file is mostly one channel, so some words may still be heard. Preview it, then Sing."
+                            "Music only is limited on mono or narrow stereo — some words may remain. Prefer a true instrumental when you can. Preview, then Sing."
                         } else {
-                            "Music only is ready — the sung lyrics are pulled off the track. Hear it, then add your voice."
+                            "Music only pulled the centered vocal band. Not ML stems — ghost words can remain. Preview, then Sing."
                         }
                         refresh()
                     }
@@ -1460,13 +1463,96 @@ class StudioViewModel(
     }
 
     fun toggleCompareTake(current: RecordedTakeUi, other: RecordedTakeUi) {
-        val playing = audio.state.value.playingRelativePath
-        if (playing == other.relativePath) {
-            togglePlayTake(current)
-        } else {
-            togglePlayTake(other)
+        viewModelScope.launch {
+            stageNote = "A/B mix — hearing the previous take first…"
+            refresh()
+            val document = loadSession(sessionId) ?: return@launch
+            val preferOther = preferDocumentClip(document, other.id)
+            val otherPreview = render.preview(preferOther, 4_500L)
+            if (otherPreview != null) {
+                audio.playPcm(
+                    sessionId,
+                    otherPreview.left,
+                    otherPreview.right,
+                    otherPreview.sampleRate,
+                    loop = false,
+                    replace = true,
+                )
+                delay(4_600L)
+            }
+            stageNote = "Now this preferred take in the same mix…"
+            refresh()
+            val preferCurrent = preferDocumentClip(document, current.id)
+            val currentPreview = render.preview(preferCurrent, 4_500L)
+            if (currentPreview != null) {
+                audio.playPcm(
+                    sessionId,
+                    currentPreview.left,
+                    currentPreview.right,
+                    currentPreview.sampleRate,
+                    loop = false,
+                    replace = true,
+                )
+                stageNote = "A was previous · B is this take. Prefer the one you want for Mix & Save."
+                refresh()
+            } else {
+                togglePlayTake(current)
+            }
         }
     }
+
+    private fun preferDocumentClip(
+        document: com.swaralab.domain.model.SessionDocument,
+        clipId: String,
+    ): com.swaralab.domain.model.SessionDocument {
+        return document.copy(
+            tracks = document.tracks.map { track ->
+                if (track.clips.none { it.id == clipId }) track
+                else track.copy(
+                    clips = track.clips.map { clip ->
+                        clip.copy(preferred = clip.id == clipId)
+                    },
+                )
+            },
+        )
+    }
+
+    fun startLatencyTap() {
+        viewModelScope.launch {
+            latencyTapAtMs = android.os.SystemClock.elapsedRealtime()
+            val rate = 48_000
+            val samples = ShortArray(rate / 20)
+            for (i in samples.indices) {
+                val env = 1f - i / samples.size.toFloat()
+                val s = (kotlin.math.sin(2.0 * Math.PI * 1_000.0 * i / rate) * 22_000 * env).toInt()
+                samples[i] = s.coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
+            }
+            val floats = FloatArray(samples.size) { samples[it] / 32768f }
+            audio.playPcm(sessionId, floats, floats, rate, loop = false, replace = true)
+            stageNote = "Tap Heard it the moment the click reaches your headphones."
+            refresh()
+        }
+    }
+
+    fun finishLatencyTap() {
+        val started = latencyTapAtMs ?: return
+        latencyTapAtMs = null
+        val measured = (android.os.SystemClock.elapsedRealtime() - started).toDouble().coerceIn(20.0, 350.0)
+        val compensation = measured.coerceIn(0.0, 300.0)
+        viewModelScope.launch {
+            val sync = updateVocalSyncOffset
+            if (sync == null) {
+                stageNote = "Could not save sync on this build."
+                refresh()
+                return@launch
+            }
+            sync(sessionId, compensationMs = compensation, measuredRoundTripMs = measured)
+            stageNote = "Sync set to +${compensation.toInt()} ms so your voice lands with the track."
+            refresh()
+        }
+    }
+
+    private var latencyTapAtMs: Long? = null
 
     fun togglePlayTake(take: RecordedTakeUi) {
         viewModelScope.launch {
@@ -1772,6 +1858,7 @@ class StudioViewModel(
                 voiceGain = voiceGain,
                 trackGain = trackGain,
                 lyricHighlight = uiState.value?.lyricHighlight ?: LyricHighlight(),
+                syncOffsetMs = document.latency.compensationMs.toFloat(),
             )
         }
     }
@@ -1792,6 +1879,7 @@ class StudioViewModel(
             importBackingTrack: ImportBackingTrack,
             updatePublish: UpdatePublishSettings,
             updateMusical: UpdateMusicalSettings,
+            updateVocalSyncOffset: UpdateVocalSyncOffset? = null,
             trimRecordedClip: TrimRecordedClip,
             splitRecordedClip: SplitRecordedClip,
             updateRecordedClip: UpdateRecordedClip,
@@ -1824,6 +1912,7 @@ class StudioViewModel(
                     importBackingTrack = importBackingTrack,
                     updatePublish = updatePublish,
                     updateMusical = updateMusical,
+                    updateVocalSyncOffset = updateVocalSyncOffset,
                     trimRecordedClip = trimRecordedClip,
                     splitRecordedClip = splitRecordedClip,
                     updateRecordedClip = updateRecordedClip,

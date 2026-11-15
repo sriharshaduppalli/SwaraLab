@@ -215,6 +215,7 @@ interface AudioEngine {
         right: FloatArray = left,
         sampleRate: Int = 48_000,
         loop: Boolean = false,
+        replace: Boolean = false,
     ) {}
 
     fun stopPlayback() {}

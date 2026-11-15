@@ -41,7 +41,9 @@ object VocalCancel {
 
         val bassCoeff = onePoleCoeff(180f, sampleRate)
         var bassLp = 0f
-        val lyricKeep = if (mostlyMono) 1f - 0.35f * strength else 0f
+        // Stereo beds: pull the centered lyric band. Mono beds cannot separate
+        // cleanly — leave more mid so the bed does not become a hollow shell.
+        val lyricKeep = if (mostlyMono) 1f - 0.22f * strength else 0f
 
         for (i in 0 until frames) {
             val mid = (left[i] + right[i]) * 0.5f

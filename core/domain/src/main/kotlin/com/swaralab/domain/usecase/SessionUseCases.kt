@@ -206,15 +206,17 @@ class UpdateVocalSyncOffset(
     suspend operator fun invoke(
         sessionId: String,
         compensationMs: Double,
+        measuredRoundTripMs: Double? = null,
     ): SessionEdit {
         val document = sessions.load(sessionId) ?: return SessionEdit.Rejected(RejectReason.UNKNOWN_SESSION)
-        val measured = document.latency.measuredRoundTripMs ?: 0.0
+        val measured = (measuredRoundTripMs ?: document.latency.measuredRoundTripMs ?: 0.0)
+            .coerceAtLeast(0.0)
         return applyAndSave(
             reducer,
             sessions,
             document,
             SessionCommand.SetLatency(
-                measuredRoundTripMs = measured.coerceAtLeast(0.0),
+                measuredRoundTripMs = measured,
                 compensationMs = compensationMs.coerceIn(-300.0, 300.0),
             ),
         )

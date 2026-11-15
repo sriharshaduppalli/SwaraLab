@@ -1,4 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">SwaraLab</string>
+    <string name="recording_channel_name">Singing take</string>
+    <string name="recording_channel_desc">Keeps the dry take alive if the screen locks</string>
+    <string name="recording_notification_title">SwaraLab is recording</string>
+    <string name="recording_notification_body">Your dry take stays on this phone. Tap to return to the stage.</string>
 </resources>

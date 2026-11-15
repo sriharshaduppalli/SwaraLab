@@ -430,6 +430,7 @@ private fun RecordingStage(
                 lyrics = lyrics,
                 currentIndex = currentIndex,
                 progress = highlight.progressInLine,
+                wordIndex = highlight.wordIndex,
                 emptyText = copy.emptyLyrics,
                 allLabel = copy.allLyrics,
                 onSeekLine = onSeekLyric,
@@ -462,11 +463,11 @@ private fun RecordingStage(
                     color = Color.White,
                     modifier = Modifier
                         .pressScale()
-                        .size(48.dp)
+                        .size(56.dp)
                         .clip(CircleShape)
                         .clickable { showEffects = true }
                         .semantics { contentDescription = copy.effects }
-                        .padding(12.dp),
+                        .padding(16.dp),
                     style = MaterialTheme.typography.labelLarge,
                     textAlign = TextAlign.Center,
                 )
@@ -490,14 +491,14 @@ private fun RecordingStage(
                     color = Color.White,
                     modifier = Modifier
                         .pressScale()
-                        .size(48.dp)
+                        .size(56.dp)
                         .clip(CircleShape)
                         .clickable {
                             view.boothHaptic()
                             onPause()
                         }
                         .semantics { contentDescription = copy.stop }
-                        .padding(12.dp),
+                        .padding(16.dp),
                     style = MaterialTheme.typography.headlineSmall,
                     textAlign = TextAlign.Center,
                 )
@@ -820,6 +821,8 @@ fun AnimatedLyricLine(
     text: String,
     isActive: Boolean,
     progress: Float = 0f,
+    wordIndex: Int = -1,
+    words: List<String> = emptyList(),
 ) {
     val scale by animateFloatAsState(
         targetValue = if (isActive) 1.08f else 1f,
@@ -831,19 +834,34 @@ fun AnimatedLyricLine(
         label = "lyricColor",
     )
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(
-            text = text,
-            fontSize = if (isActive) 36.sp else 22.sp,
-            fontWeight = if (isActive) FontWeight.Bold else FontWeight.Medium,
-            color = color,
-            textAlign = TextAlign.Center,
-            modifier = Modifier
-                .fillMaxWidth()
-                .graphicsLayer {
-                    scaleX = scale
-                    scaleY = scale
-                },
-        )
+        if (isActive && words.isNotEmpty()) {
+            Text(
+                text = buildAnnotatedWordLine(words, wordIndex),
+                fontSize = 36.sp,
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Center,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .graphicsLayer {
+                        scaleX = scale
+                        scaleY = scale
+                    },
+            )
+        } else {
+            Text(
+                text = text,
+                fontSize = if (isActive) 36.sp else 22.sp,
+                fontWeight = if (isActive) FontWeight.Bold else FontWeight.Medium,
+                color = color,
+                textAlign = TextAlign.Center,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .graphicsLayer {
+                        scaleX = scale
+                        scaleY = scale
+                    },
+            )
+        }
         if (isActive) {
             Spacer(Modifier.height(6.dp))
             LinearProgressIndicator(
@@ -859,12 +877,30 @@ fun AnimatedLyricLine(
     }
 }
 
+private fun buildAnnotatedWordLine(words: List<String>, wordIndex: Int): androidx.compose.ui.text.AnnotatedString {
+    return androidx.compose.ui.text.buildAnnotatedString {
+        words.forEachIndexed { index, word ->
+            if (index > 0) append(' ')
+            val active = index == wordIndex || (wordIndex < 0 && index == 0 && words.size == 1)
+            pushStyle(
+                androidx.compose.ui.text.SpanStyle(
+                    color = if (active) SwaraColors.Gold else SwaraColors.Teal,
+                    fontWeight = if (active) FontWeight.Bold else FontWeight.SemiBold,
+                ),
+            )
+            append(word)
+            pop()
+        }
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LyricsCenterView(
     lyrics: List<LyricLine>,
     currentIndex: Int,
     progress: Float,
+    wordIndex: Int = -1,
     emptyText: String = "Sing. Add words after this take if you want.",
     allLabel: String = "All lyrics",
     onSeekLine: (Int) -> Unit = {},
@@ -899,9 +935,25 @@ fun LyricsCenterView(
                     .clickable { onSeekLine(index - 1) },
             )
         }
-        lyrics.getOrNull(index)?.let {
+        lyrics.getOrNull(index)?.let { line ->
             Box(Modifier.clickable { onSeekLine(index) }) {
-                AnimatedLyricLine(text = it.text, isActive = true, progress = progress)
+                val paintWords = when {
+                    line.words.isNotEmpty() -> line.words.map { it.text }
+                    else -> line.text.split(Regex("\\s+")).filter { it.isNotBlank() }
+                }
+                val paintIndex = when {
+                    line.words.isNotEmpty() -> wordIndex
+                    paintWords.isEmpty() -> -1
+                    else -> (progress.coerceIn(0f, 0.999f) * paintWords.size).toInt()
+                        .coerceIn(0, paintWords.lastIndex)
+                }
+                AnimatedLyricLine(
+                    text = line.text,
+                    isActive = true,
+                    progress = progress,
+                    wordIndex = paintIndex,
+                    words = paintWords,
+                )
             }
         }
         lyrics.getOrNull(index + 1)?.let { line ->

@@ -6,12 +6,14 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -81,7 +83,11 @@ class ImportViewModel(
     private val states = MutableStateFlow<ImportState>(ImportState.Idle)
     val state: StateFlow<ImportState> = states.asStateFlow()
 
-    fun onFilePicked(uri: Uri) {
+    fun onFilePicked(uri: Uri, rightsConfirmed: Boolean) {
+        if (!rightsConfirmed) {
+            states.value = ImportState.Error("Confirm you can use this track before importing.")
+            return
+        }
         viewModelScope.launch {
             states.value = ImportState.Processing
             val result = withContext(Dispatchers.IO) {
@@ -197,12 +203,13 @@ fun ImportRoute(
         ),
     )
     val state by viewModel.state.collectAsState()
+    var rightsOk by remember { mutableStateOf(false) }
     LaunchedEffect(state) {
         val ready = state as? ImportState.Ready ?: return@LaunchedEffect
         onTrackReady(ready.sessionId)
     }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        uri?.let(viewModel::onFilePicked)
+        uri?.let { viewModel.onFilePicked(it, rightsConfirmed = rightsOk) }
     }
     var showReadRationale by remember { mutableStateOf(false) }
     val readPermission = rememberLauncherForActivityResult(
@@ -220,6 +227,7 @@ fun ImportRoute(
     }
 
     fun chooseAudio() {
+        if (!rightsOk) return
         if (MediaPermissions.hasAudioRead(context)) {
             openPicker()
         } else {
@@ -270,17 +278,42 @@ fun ImportRoute(
                 Spacer(Modifier.height(8.dp))
                 Text("Reading this file…", color = SwaraColors.Muted)
             }
-            is ImportState.Error -> ErrorState(
-                title = "Import failed",
-                message = current.message,
-                retryLabel = "Choose audio file",
-                onRetry = ::chooseAudio,
-                secondaryLabel = copy.back,
-                onSecondary = onBack,
-                fillMax = false,
-            )
+            is ImportState.Error -> Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                ErrorState(
+                    title = "Import failed",
+                    message = current.message,
+                    retryLabel = "Choose audio file",
+                    onRetry = ::chooseAudio,
+                    secondaryLabel = copy.back,
+                    onSecondary = onBack,
+                    fillMax = false,
+                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Checkbox(checked = rightsOk, onCheckedChange = { rightsOk = it })
+                    Text(copy.iCanUseTrack, style = MaterialTheme.typography.bodyMedium)
+                }
+            }
             else -> {
-                Button(onClick = ::chooseAudio) { Text("Choose audio file") }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Checkbox(checked = rightsOk, onCheckedChange = { rightsOk = it })
+                    Text(copy.iCanUseTrack, style = MaterialTheme.typography.bodyMedium)
+                }
+                Text(
+                    copy.rightsNote,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = SwaraColors.Muted,
+                )
+                Button(onClick = ::chooseAudio, enabled = rightsOk) { Text("Choose audio file") }
                 TextButton(onClick = onBack) { Text(copy.back) }
             }
         }

@@ -103,9 +103,9 @@ fun PracticeModeScreen(
             Spacer(Modifier.height(16.dp))
             Text("Tempo: ${"%.1f".format(uiState.tempo)}x", color = Color.White)
             Slider(
-                value = uiState.tempo.coerceIn(0.5f, 1f),
+                value = uiState.tempo.coerceIn(0.5f, 1.5f),
                 onValueChange = onTempoChange,
-                valueRange = 0.5f..1.0f,
+                valueRange = 0.5f..1.5f,
                 enabled = !uiState.isPlaying,
             )
             if (uiState.backingBusy) {

@@ -722,38 +722,60 @@ private fun HighlightedLyricLine(
     }
     val words = line.words
     if (words.isEmpty()) {
-        Text(
-            text = line.text,
-            style = MaterialTheme.typography.displayMedium,
-            color = SwaraColors.Teal,
-            textAlign = TextAlign.Center,
-            maxLines = 4,
-            overflow = TextOverflow.Ellipsis,
-        )
-    } else {
-        Text(
-            text = buildString {
-                words.forEachIndexed { index, word ->
-                    if (index > 0) append(' ')
-                    append(word.text)
-                }
-            },
-            style = MaterialTheme.typography.displayMedium.copy(
-                fontWeight = if (wordIndex >= 0) FontWeight.SemiBold else FontWeight.Normal,
-            ),
-            color = SwaraColors.Teal,
-            textAlign = TextAlign.Center,
-            maxLines = 4,
-            overflow = TextOverflow.Ellipsis,
-        )
-        if (wordIndex >= 0) {
+        val split = line.text.split(Regex("\\s+")).filter { it.isNotBlank() }
+        if (split.size <= 1) {
             Text(
-                text = words.getOrNull(wordIndex)?.text.orEmpty(),
-                style = MaterialTheme.typography.titleLarge,
-                color = SwaraColors.Gold,
+                text = line.text,
+                style = MaterialTheme.typography.displayMedium,
+                color = SwaraColors.Teal,
                 textAlign = TextAlign.Center,
+                maxLines = 4,
+                overflow = TextOverflow.Ellipsis,
+            )
+        } else {
+            val paintIndex = (progress.coerceIn(0f, 0.999f) * split.size).toInt()
+                .coerceIn(0, split.lastIndex)
+            Text(
+                text = androidx.compose.ui.text.buildAnnotatedString {
+                    split.forEachIndexed { index, word ->
+                        if (index > 0) append(' ')
+                        pushStyle(
+                            androidx.compose.ui.text.SpanStyle(
+                                color = if (index == paintIndex) SwaraColors.Gold else SwaraColors.Teal,
+                                fontWeight = if (index == paintIndex) FontWeight.Bold else FontWeight.SemiBold,
+                            ),
+                        )
+                        append(word)
+                        pop()
+                    }
+                },
+                style = MaterialTheme.typography.displayMedium,
+                textAlign = TextAlign.Center,
+                maxLines = 4,
+                overflow = TextOverflow.Ellipsis,
             )
         }
+    } else {
+        Text(
+            text = androidx.compose.ui.text.buildAnnotatedString {
+                words.forEachIndexed { index, word ->
+                    if (index > 0) append(' ')
+                    val active = index == wordIndex
+                    pushStyle(
+                        androidx.compose.ui.text.SpanStyle(
+                            color = if (active) SwaraColors.Gold else SwaraColors.Teal,
+                            fontWeight = if (active) FontWeight.Bold else FontWeight.SemiBold,
+                        ),
+                    )
+                    append(word.text)
+                    pop()
+                }
+            },
+            style = MaterialTheme.typography.displayMedium,
+            textAlign = TextAlign.Center,
+            maxLines = 4,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
     LinearProgressIndicator(
         progress = { progress },
@@ -994,6 +1016,9 @@ internal fun MusicalSetupCard(
     onVoiceGain: (Float) -> Unit = {},
     onTrackGain: (Float) -> Unit = {},
     onSeek: (Long) -> Unit = {},
+    syncOffsetMs: Float = 0f,
+    onCalibrateSync: () -> Unit = {},
+    onHeardSyncClick: () -> Unit = {},
 ) {
     val copy = LocalAppCopy.current
     Surface(
@@ -1063,6 +1088,20 @@ internal fun MusicalSetupCard(
                 value = tempoBpm,
                 onValueChange = onTempo,
                 valueRange = 60f..140f,
+            )
+            Text(
+                text = "Headphone sync ${if (syncOffsetMs >= 0f) "+" else ""}${syncOffsetMs.roundToInt()} ms",
+                style = MaterialTheme.typography.bodyMedium,
+                color = SwaraColors.Muted,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = onCalibrateSync) { Text("Play click") }
+                Button(onClick = onHeardSyncClick) { Text("Heard it") }
+            }
+            Text(
+                text = "Wear headphones. Play click, then tap Heard it the moment it arrives. This lines your voice with the track.",
+                style = MaterialTheme.typography.bodySmall,
+                color = SwaraColors.Muted,
             )
             if (showBackingShift) {
                 Text(
@@ -1370,7 +1409,7 @@ internal fun TakeEditCard(
                 ) { Text("Split") }
                 OutlinedButton(onClick = onSplitPlayhead) { Text("Split at playhead") }
                 if (onCompare != null) {
-                    OutlinedButton(onClick = onCompare) { Text("A/B previous") }
+                    OutlinedButton(onClick = onCompare) { Text("A/B mix") }
                 }
                 FilterChip(
                     selected = take.preferred && take.active,

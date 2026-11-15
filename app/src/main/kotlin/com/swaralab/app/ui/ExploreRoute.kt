@@ -42,12 +42,12 @@ fun ExploreRoute(
     ) {
         PageHero(
             title = copy.tabNew,
-            body = copy.startLine,
+            body = "Start a song stage, import a track you can use, or warm up. Duet and group layers open after you Sing.",
             accent = SwaraColors.Teal,
         )
         CompactChoiceCard(
             title = copy.openStage,
-            body = copy.tapToSing,
+            body = "Empty stage — paste lyrics, then Sing solo or add layers for duet and group.",
             onClick = { viewModel.start(SessionKind.SONG) },
             accent = SwaraColors.Teal,
             accentWash = SwaraColors.TealWash,

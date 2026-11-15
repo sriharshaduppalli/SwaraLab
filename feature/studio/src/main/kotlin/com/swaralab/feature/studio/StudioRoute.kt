@@ -143,6 +143,7 @@ import com.swaralab.domain.usecase.UpdateMusicalSettings
 import com.swaralab.domain.usecase.UpdatePracticeStats
 import com.swaralab.domain.usecase.UpdatePublishSettings
 import com.swaralab.domain.usecase.UpdateVocalPreset
+import com.swaralab.domain.usecase.UpdateVocalSyncOffset
 import com.swaralab.ui.BoothRoom
 import com.swaralab.ui.MediaPermissions
 import com.swaralab.ui.PermissionRationale
@@ -221,6 +222,8 @@ fun StudioRoute(
     analytics: Analytics = NoOpAnalytics,
     onBack: () -> Unit,
     onPublish: () -> Unit,
+    onCaptureActive: (Boolean) -> Unit = {},
+    updateVocalSyncOffset: UpdateVocalSyncOffset? = null,
     initialSing: String = "",
     modifier: Modifier = Modifier,
 ) {
@@ -240,6 +243,7 @@ fun StudioRoute(
             importBackingTrack = importBackingTrack,
             updatePublish = updatePublish,
             updateMusical = updateMusical,
+            updateVocalSyncOffset = updateVocalSyncOffset,
             trimRecordedClip = trimRecordedClip,
             splitRecordedClip = splitRecordedClip,
             updateRecordedClip = updateRecordedClip,
@@ -319,7 +323,11 @@ fun StudioRoute(
 
     DisposableEffect(isCapturing) {
         view.keepScreenOn = isCapturing
-        onDispose { view.keepScreenOn = false }
+        onCaptureActive(isCapturing)
+        onDispose {
+            view.keepScreenOn = false
+            onCaptureActive(false)
+        }
     }
 
     fun readClipboardText(): String? {
@@ -453,6 +461,12 @@ fun StudioRoute(
             PackageManager.PERMISSION_GRANTED
         ) {
             add(Manifest.permission.CAMERA)
+        }
+        if (android.os.Build.VERSION.SDK_INT >= 33 &&
+            context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            add(Manifest.permission.POST_NOTIFICATIONS)
         }
     }
 
@@ -614,13 +628,13 @@ fun StudioRoute(
                     currentLyric = lyric,
                     isLooping = practiceLooping,
                     loop = practiceLoop,
-                    tempo = state.playbackRate.coerceIn(0.5f, 1f),
+                    tempo = state.playbackRate.coerceIn(0.5f, 1.5f),
                     isPlaying = engineStatus == EngineStatus.RECORDING,
                     isPaused = engineStatus == EngineStatus.PAUSED,
                     backingBusy = backingPrep.busy,
                     backingProgress = backingPrep.progress,
                 ),
-                onTempoChange = { viewModel.setMusical(playbackRate = it.coerceIn(0.5f, 1f)) },
+                onTempoChange = { viewModel.setMusical(playbackRate = it.coerceIn(0.5f, 1.5f)) },
                 onLoopToggle = viewModel::togglePracticeLoop,
                 onSetLoopPoint = viewModel::setPracticeLoopPoint,
                 onPlayToggle = {
@@ -892,6 +906,9 @@ fun StudioRoute(
             onVoiceGain = viewModel::setVoiceGain,
             onTrackGain = viewModel::setTrackGain,
             onSeek = viewModel::seekReady,
+            syncOffsetMs = state.syncOffsetMs,
+            onCalibrateSync = viewModel::startLatencyTap,
+            onHeardSyncClick = viewModel::finishLatencyTap,
         )
         if (state.headphoneFx) {
             Text(
@@ -990,14 +1007,14 @@ fun StudioRoute(
                         text = if (backing != null) {
                             "${backing.name} · ${backing.durationText}"
                         } else {
-                            "Upload a song you have the right to use. Then tap Music only to play it without the original lyrics."
+                            "Confirm you can use a track, import it, then optionally try Music only (center-vocal pull — not ML stems)."
                         },
                         style = MaterialTheme.typography.bodyMedium,
                         color = SwaraColors.Muted,
                     )
                     if (backing?.isInstrumental == true) {
                         Text(
-                            text = "Playing music only — original lyrics removed. Sing your part on this.",
+                            text = "Music only bed — centered vocals reduced. Ghost words can remain; preview before you Sing.",
                             style = MaterialTheme.typography.bodyMedium,
                             color = SwaraColors.Teal,
                         )
@@ -1007,7 +1024,7 @@ fun StudioRoute(
                             onClick = viewModel::makeInstrumental,
                             modifier = Modifier.fillMaxWidth(),
                         ) {
-                            Text("Music only — remove lyrics")
+                            Text("Music only — reduce centered vocals")
                         }
                     }
                     if (backing == null) {
@@ -1275,30 +1292,6 @@ fun StudioRoute(
         }
         }
 
-        val thisTake = state.takes.firstOrNull { it.preferred } ?: state.takes.firstOrNull()
-        if (thisTake != null) {
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(22.dp),
-                color = SwaraColors.TealWash,
-                border = BorderStroke(1.5.dp, SwaraColors.Teal),
-            ) {
-                Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text(text = "This take", style = MaterialTheme.typography.titleLarge, color = SwaraColors.Teal)
-                    Text(text = thisTake.label, style = MaterialTheme.typography.titleMedium, color = SwaraColors.Ink)
-                    Text(text = thisTake.durationText, style = MaterialTheme.typography.bodyMedium, color = SwaraColors.Muted)
-                    Button(onClick = viewModel::hearPreferredWithTrack, modifier = Modifier.fillMaxWidth()) {
-                        Text(
-                            if (playingRelativePath == "preview-mix") "Stop mix" else "Hear this mix with the track",
-                        )
-                    }
-                    Button(onClick = onPublish, modifier = Modifier.fillMaxWidth()) {
-                        Text(copy.mixSave)
-                    }
-                }
-            }
-        }
-
         if (state.takes.isNotEmpty()) {
         Text(text = "Mix for this take", style = MaterialTheme.typography.titleLarge)
         Text(
@@ -1382,6 +1375,30 @@ fun StudioRoute(
     }
     }
     if (!showKaraoke) {
+        val stickyTake = state.takes.firstOrNull { it.preferred } ?: state.takes.firstOrNull()
+        if (stickyTake != null) {
+            Surface(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+                shape = RoundedCornerShape(18.dp),
+                color = SwaraColors.TealWash,
+                border = BorderStroke(1.5.dp, SwaraColors.Teal),
+            ) {
+                Row(
+                    Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(stickyTake.label, style = MaterialTheme.typography.titleSmall, color = SwaraColors.Teal)
+                        Text(stickyTake.durationText, style = MaterialTheme.typography.bodySmall, color = SwaraColors.Muted)
+                    }
+                    OutlinedButton(onClick = viewModel::hearPreferredWithTrack) {
+                        Text(if (playingRelativePath == "preview-mix") copy.stop else "Hear")
+                    }
+                    Button(onClick = onPublish) { Text(copy.mixSave) }
+                }
+            }
+        }
         EditorTransportBar(
             isPlaying = playingRelativePath != null,
             positionMs = mixPosition,
