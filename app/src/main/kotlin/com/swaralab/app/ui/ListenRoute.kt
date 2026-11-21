@@ -41,6 +41,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -272,6 +276,10 @@ fun ListenRoute(
             Modifier
                 .size(168.dp)
                 .background(SwaraColors.TealWash, CircleShape)
+                .semantics {
+                    role = Role.Button
+                    contentDescription = if (playing) copy.stop else copy.listenTake
+                }
                 .pointerInput(state.takeId, state.favorite) {
                     detectTapGestures(
                         onTap = { viewModel.togglePlay() },
@@ -299,6 +307,12 @@ fun ListenRoute(
                 }
             }
         }
+        Spacer(Modifier.height(6.dp))
+        Text(
+            text = "Tap to play · Double-tap to ♥",
+            style = MaterialTheme.typography.bodySmall,
+            color = SwaraColors.Muted,
+        )
         if (state.takeId != null) {
             Spacer(Modifier.height(8.dp))
             Row(

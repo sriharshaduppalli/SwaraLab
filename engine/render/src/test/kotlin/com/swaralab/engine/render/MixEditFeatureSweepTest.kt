@@ -145,8 +145,12 @@ class MixEditFeatureSweepTest {
             assertTrue("Backing pan right should bias R, L=${rms(bedL)} R=${rms(bedR)}", rms(bedR) > rms(bedL) * 1.08f)
 
             val late = export(engine, root, applied(reducer, doc, SessionCommand.SetLatency(0.0, 80.0)), ExportKind.VOCALS)
-            val shift = (onset(late, 0.03f) - onset(base, 0.03f)) * 1000f / rate
+            val early = export(engine, root, applied(reducer, doc, SessionCommand.SetLatency(80.0, -80.0)), ExportKind.VOCALS)
+            val baseOnset = onset(base, 0.06f)
+            val shift = (onset(late, 0.06f) - baseOnset) * 1000f / rate
+            val earlyShift = (onset(early, 0.06f) - baseOnset) * 1000f / rate
             assertTrue("Vocal sync +80 ms should delay the take, shift=$shift", shift in 50f..110f)
+            assertTrue("Vocal sync -80 ms should pull late vocals earlier, shift=$earlyShift", earlyShift in -110f..-40f)
 
             val trimmed = applied(
                 reducer,

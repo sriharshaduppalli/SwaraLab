@@ -74,6 +74,7 @@ import kotlin.math.sin
 class AndroidAudioEngine(
     private val projectsRoot: File,
     private val ids: IdGenerator = UuidIdGenerator(),
+    private val allowEmulatorTestTone: Boolean = false,
 ) : AudioEngine {
     private val trackProcessor = FfmpegTrackProcessor()
     private val pitchPipeline = PitchAnalysisPipeline()
@@ -731,7 +732,7 @@ class AndroidAudioEngine(
                                 val mag = abs(shorts[i].toInt())
                                 if (mag > peakSample) peakSample = mag
                             }
-                            if (isEmulator && peakSample < 1200) {
+                            if (allowEmulatorTestTone && isEmulator && peakSample < 1200) {
                                 val elapsedSec = (sampleCursor.toDouble() / sampleRate.toDouble())
                                 val noteIdx = (elapsedSec.toInt()) % scaleFreqs.size
                                 val freq = scaleFreqs[noteIdx]

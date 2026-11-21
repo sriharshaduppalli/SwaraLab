@@ -1090,7 +1090,11 @@ internal fun MusicalSetupCard(
                 valueRange = 60f..140f,
             )
             Text(
-                text = "Headphone sync ${if (syncOffsetMs >= 0f) "+" else ""}${syncOffsetMs.roundToInt()} ms",
+                text = when {
+                    syncOffsetMs < -0.5f -> "Headphone sync ${syncOffsetMs.roundToInt()} ms (voice pulled earlier)"
+                    syncOffsetMs > 0.5f -> "Headphone sync +${syncOffsetMs.roundToInt()} ms (voice pushed later)"
+                    else -> "Headphone sync 0 ms"
+                },
                 style = MaterialTheme.typography.bodyMedium,
                 color = SwaraColors.Muted,
             )

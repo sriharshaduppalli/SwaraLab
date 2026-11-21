@@ -724,17 +724,24 @@ class StudioViewModel(
                 }
                 SingMode.DUET -> {
                     ensureVoiceParts(2)
-                    val parts = uiState.value?.parts.orEmpty()
-                    parts.getOrNull(1)?.id?.let(::selectPart)
+                    val doc = loadSession(sessionId)
+                    val secondId = doc?.tracks?.filter { it.role != TrackRole.BACKING }?.getOrNull(1)?.id
+                    if (secondId != null) {
+                        selectedPartId = secondId
+                    }
                     stageNote = "Duet · Part 2 selected. A friend can take the other part from a pack."
-                    uiState.value = uiState.value?.copy(stageNote = stageNote)
+                    refresh()
                     onReadyToRecord()
                 }
                 SingMode.GROUP -> {
                     ensureVoiceParts(3)
-                    uiState.value?.parts?.lastOrNull()?.id?.let(::selectPart)
+                    val doc = loadSession(sessionId)
+                    val lastId = doc?.tracks?.lastOrNull { it.role != TrackRole.BACKING }?.id
+                    if (lastId != null) {
+                        selectedPartId = lastId
+                    }
                     stageNote = "Group on this phone. Take turns on each part. Not a live room."
-                    uiState.value = uiState.value?.copy(stageNote = stageNote)
+                    refresh()
                     onReadyToRecord()
                 }
                 SingMode.FROM_PHONE -> {
@@ -1537,8 +1544,9 @@ class StudioViewModel(
     fun finishLatencyTap() {
         val started = latencyTapAtMs ?: return
         latencyTapAtMs = null
-        val measured = (android.os.SystemClock.elapsedRealtime() - started).toDouble().coerceIn(20.0, 350.0)
-        val compensation = measured.coerceIn(0.0, 300.0)
+        val rawTapMs = (android.os.SystemClock.elapsedRealtime() - started).toDouble()
+        val measured = (rawTapMs - 165.0).coerceIn(15.0, 260.0)
+        val compensation = -measured.coerceIn(0.0, 250.0)
         viewModelScope.launch {
             val sync = updateVocalSyncOffset
             if (sync == null) {
@@ -1547,7 +1555,7 @@ class StudioViewModel(
                 return@launch
             }
             sync(sessionId, compensationMs = compensation, measuredRoundTripMs = measured)
-            stageNote = "Sync set to +${compensation.toInt()} ms so your voice lands with the track."
+            stageNote = "Sync set to ${compensation.toInt()} ms so your voice lands on beat with the track."
             refresh()
         }
     }

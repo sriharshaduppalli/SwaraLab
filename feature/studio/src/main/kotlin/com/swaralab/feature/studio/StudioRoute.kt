@@ -502,10 +502,8 @@ fun StudioRoute(
         val mode = SingMode.entries.firstOrNull { it.name.equals(initialSing, ignoreCase = true) }
             ?: return@LaunchedEffect
         if (mode == SingMode.FROM_PHONE && state.backing == null) {
-            rightsOk = true
             showBackingDesk = true
             recordAfterImport = true
-            pickBacking()
             appliedInitialSing = true
             return@LaunchedEffect
         }
@@ -516,10 +514,8 @@ fun StudioRoute(
         viewModel.prepareSingMode(
             mode = mode,
             onNeedSongFromPhone = {
-                rightsOk = true
                 showBackingDesk = true
                 recordAfterImport = true
-                pickBacking()
             },
             onNeedLyrics = { editingLyrics = true },
             onReadyToRecord = { karaokePrep = true },
@@ -987,11 +983,11 @@ fun StudioRoute(
                             }
                             TextButton(
                                 onClick = {
-                                    if (state.backing != null || rightsOk) {
+                                    if (rightsOk) {
                                         pickBacking()
                                     }
                                 },
-                                enabled = state.backing != null || rightsOk,
+                                enabled = rightsOk,
                                 contentPadding = compactPad,
                             ) {
                                 Text(
@@ -1027,11 +1023,9 @@ fun StudioRoute(
                             Text("Music only — reduce centered vocals")
                         }
                     }
-                    if (backing == null) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Checkbox(checked = rightsOk, onCheckedChange = { rightsOk = it })
-                            Text(copy.iCanUseTrack, style = MaterialTheme.typography.bodyMedium)
-                        }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(checked = rightsOk, onCheckedChange = { rightsOk = it })
+                        Text(copy.iCanUseTrack, style = MaterialTheme.typography.bodyMedium)
                     }
                 }
             }
@@ -1376,33 +1370,12 @@ fun StudioRoute(
     }
     if (!showKaraoke) {
         val stickyTake = state.takes.firstOrNull { it.preferred } ?: state.takes.firstOrNull()
-        if (stickyTake != null) {
-            Surface(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
-                shape = RoundedCornerShape(18.dp),
-                color = SwaraColors.TealWash,
-                border = BorderStroke(1.5.dp, SwaraColors.Teal),
-            ) {
-                Row(
-                    Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(Modifier.weight(1f)) {
-                        Text(stickyTake.label, style = MaterialTheme.typography.titleSmall, color = SwaraColors.Teal)
-                        Text(stickyTake.durationText, style = MaterialTheme.typography.bodySmall, color = SwaraColors.Muted)
-                    }
-                    OutlinedButton(onClick = viewModel::hearPreferredWithTrack) {
-                        Text(if (playingRelativePath == "preview-mix") copy.stop else "Hear")
-                    }
-                    Button(onClick = onPublish) { Text(copy.mixSave) }
-                }
-            }
-        }
         EditorTransportBar(
             isPlaying = playingRelativePath != null,
             positionMs = mixPosition,
             durationMs = studioDurationMs(state),
+            takeLabel = stickyTake?.label,
+            takeDurationText = stickyTake?.durationText,
             onPlayPause = {
                 if (playingRelativePath != null) {
                     viewModel.stopMixPlayback()
@@ -1411,6 +1384,7 @@ fun StudioRoute(
                 }
             },
             onSeek = viewModel::seekMix,
+            onMixSave = if (stickyTake != null) onPublish else null,
         )
         RecordingControlBar(
         audioStateFlow = viewModel.audio.state,
@@ -1438,10 +1412,8 @@ fun StudioRoute(
                 viewModel.prepareSingMode(
                     mode = mode,
                     onNeedSongFromPhone = {
-                        rightsOk = true
                         showBackingDesk = true
                         recordAfterImport = true
-                        pickBacking()
                     },
                     onNeedLyrics = { editingLyrics = true },
                     onReadyToRecord = { karaokePrep = true },

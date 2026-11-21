@@ -126,7 +126,11 @@ internal fun MixDeskSections(
                         ) {
                             val ms = state.syncOffsetMs.roundToInt()
                             Text(
-                                text = if (ms >= 0) "+$ms ms" else "$ms ms",
+                                text = when {
+                                    ms < 0 -> "${ms} ms (earlier)"
+                                    ms > 0 -> "+${ms} ms (later)"
+                                    else -> "0 ms (on beat)"
+                                },
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = SwaraColors.Muted,
                             )

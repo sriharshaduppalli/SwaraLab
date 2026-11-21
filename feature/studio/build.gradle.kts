@@ -34,4 +34,6 @@ dependencies {
     implementation(libs.camerax.lifecycle)
     implementation(libs.camerax.view)
     implementation(libs.camerax.video)
+    testImplementation(libs.junit)
+    testImplementation(libs.coroutines.test)
 }

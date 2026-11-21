@@ -168,8 +168,6 @@ fun StageTakeScreen(
             onTrackGain = onTrackGain,
             onEffectChange = onEffectChange,
             onSeekLyric = onSeekLyric,
-            onKeyShift = onKeyShift,
-            onPlaybackRate = onPlaybackRate,
             videoSlot = videoSlot,
             modifier = modifier,
         )
@@ -186,8 +184,6 @@ fun StageTakeScreen(
             onVoiceGain = onVoiceGain,
             onTrackGain = onTrackGain,
             onEffectChange = onEffectChange,
-            onKeyShift = onKeyShift,
-            onPlaybackRate = onPlaybackRate,
             modifier = modifier,
         )
         is StageTakeState.Review -> ReviewStage(state, onSave, onShare, onRetry, modifier)
@@ -209,6 +205,7 @@ private fun ReadyStage(
     backingProgress: Float,
     modifier: Modifier,
 ) {
+    val copy = LocalAppCopy.current
     Box(modifier.fillMaxSize()) {
         AnimatedMusicBackground(intensity = 0.85f)
         SoftGlowOrb(modifier = Modifier.align(Alignment.TopEnd).offset(x = 40.dp, y = (-60).dp))
@@ -216,6 +213,14 @@ private fun ReadyStage(
             color = SwaraColors.Gold,
             modifier = Modifier.align(Alignment.BottomStart).offset(x = (-40).dp, y = 80.dp),
         )
+        TextButton(
+            onClick = onBack,
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+        ) {
+            Text(copy.back, color = Color.White.copy(alpha = 0.9f))
+        }
         Column(
             Modifier.fillMaxSize().padding(24.dp),
             verticalArrangement = Arrangement.Center,
@@ -299,44 +304,17 @@ private fun KeyTempoControls(
 }
 
 @Composable
-private fun KeyTempoBar(
+private fun KeyTempoReadoutBadge(
     semitones: Int,
     tempo: Float,
-    onSemitonesChange: (Int) -> Unit,
-    onTempoChange: (Float) -> Unit,
 ) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            TextButton(
-                onClick = { onSemitonesChange((semitones - 1).coerceIn(-6, 6)) },
-            ) { Text("Key −", color = Color.White) }
-            Text(
-                "${if (semitones > 0) "+" else ""}$semitones",
-                color = Color.White,
-                style = MaterialTheme.typography.titleSmall,
-            )
-            TextButton(
-                onClick = { onSemitonesChange((semitones + 1).coerceIn(-6, 6)) },
-            ) { Text("Key +", color = Color.White) }
-        }
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            TextButton(
-                onClick = { onTempoChange((tempo - 0.05f).coerceIn(0.5f, 1.5f)) },
-            ) { Text("−", color = Color.White) }
-            Text(
-                "${"%.2f".format(tempo)}x",
-                color = Color.White,
-                style = MaterialTheme.typography.titleSmall,
-            )
-            TextButton(
-                onClick = { onTempoChange((tempo + 0.05f).coerceIn(0.5f, 1.5f)) },
-            ) { Text("+", color = Color.White) }
-        }
-    }
+    if (semitones == 0 && kotlin.math.abs(tempo - 1f) < 0.01f) return
+    Text(
+        text = "Key ${if (semitones > 0) "+" else ""}$semitones · Tempo ${"%.2f".format(tempo)}x",
+        color = Color.White.copy(alpha = 0.72f),
+        style = MaterialTheme.typography.bodySmall,
+        modifier = Modifier.padding(bottom = 8.dp),
+    )
 }
 
 @Composable
@@ -377,8 +355,6 @@ private fun RecordingStage(
     onTrackGain: (Float) -> Unit,
     onEffectChange: (LiveMonitorEffect) -> Unit,
     onSeekLyric: (Int) -> Unit,
-    onKeyShift: (Int) -> Unit,
-    onPlaybackRate: (Float) -> Unit,
     videoSlot: (@Composable () -> Unit)?,
     modifier: Modifier,
 ) {
@@ -420,11 +396,9 @@ private fun RecordingStage(
                 sample = livePitch,
                 modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
             )
-            KeyTempoBar(
+            KeyTempoReadoutBadge(
                 semitones = keyShiftSemitones,
                 tempo = playbackRate,
-                onSemitonesChange = onKeyShift,
-                onTempoChange = onPlaybackRate,
             )
             LyricsCenterView(
                 lyrics = lyrics,
@@ -478,6 +452,7 @@ private fun RecordingStage(
                         .pressScale(0.94f)
                         .clip(CircleShape)
                         .background(Color.White.copy(alpha = 0.15f))
+                        .semantics { contentDescription = copy.stop }
                         .clickable {
                             view.boothHaptic(HapticFeedbackConstants.LONG_PRESS)
                             onStop()
@@ -497,7 +472,7 @@ private fun RecordingStage(
                             view.boothHaptic()
                             onPause()
                         }
-                        .semantics { contentDescription = copy.stop }
+                        .semantics { contentDescription = "Pause recording" }
                         .padding(16.dp),
                     style = MaterialTheme.typography.headlineSmall,
                     textAlign = TextAlign.Center,
@@ -533,8 +508,6 @@ private fun PausedStage(
     onVoiceGain: (Float) -> Unit,
     onTrackGain: (Float) -> Unit,
     onEffectChange: (LiveMonitorEffect) -> Unit,
-    onKeyShift: (Int) -> Unit,
-    onPlaybackRate: (Float) -> Unit,
     modifier: Modifier,
 ) {
     var showEffects by remember { mutableStateOf(false) }
@@ -550,12 +523,10 @@ private fun PausedStage(
             "Paused · ${formatDuration(positionMs)} / ${formatDuration(durationMs.coerceAtLeast(1L))}",
             color = Color.White,
         )
-        Spacer(Modifier.height(16.dp))
-        KeyTempoBar(
+        Spacer(Modifier.height(12.dp))
+        KeyTempoReadoutBadge(
             semitones = keyShiftSemitones,
             tempo = playbackRate,
-            onSemitonesChange = onKeyShift,
-            onTempoChange = onPlaybackRate,
         )
         Spacer(Modifier.height(16.dp))
         OutlinedButton(onClick = { showEffects = true }) { Text("Effects") }

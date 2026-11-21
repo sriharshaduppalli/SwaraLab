@@ -820,9 +820,11 @@ fun AccountRoute(
             title = { Text(copy.privacy) },
             text = {
                 Text(
-                    "SwaraLab does not collect personal data and does not send it to a server. " +
-                        "Sessions, takes, and imported tracks stay in this app’s private storage. " +
-                        "Share uses the sheet on this phone. Questions: bysel.trader@gmail.com",
+                    "SwaraLab is a local-first studio. Microphone audio, optional 9:16 camera takes, " +
+                        "sessions, and imported tracks stay in this app’s private storage. A foreground " +
+                        "microphone notification keeps your take alive if the screen locks. Speech recognition " +
+                        "is not started while recording. Exports only leave this phone when you choose Share or Save. " +
+                        "Questions: bysel.trader@gmail.com",
                 )
             },
             confirmButton = {

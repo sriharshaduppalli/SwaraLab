@@ -38,9 +38,11 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.composed
@@ -286,6 +288,7 @@ data class SwaraPalette(
     }
 }
 
+val LocalSwaraPalette = staticCompositionLocalOf { SwaraPalette.RagaLight }
 private var ActiveSwaraPalette: SwaraPalette = SwaraPalette.RagaLight
 
 object SwaraColors {
@@ -353,6 +356,7 @@ fun SwaraLabTheme(
     }
 
     val base = Typography()
+    CompositionLocalProvider(LocalSwaraPalette provides palette) {
     MaterialTheme(
         colorScheme = palette.colorScheme(),
         shapes = androidx.compose.material3.Shapes(
@@ -409,6 +413,7 @@ fun SwaraLabTheme(
         ),
         content = content,
     )
+    }
 }
 
 @Composable

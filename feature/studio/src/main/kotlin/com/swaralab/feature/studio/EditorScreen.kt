@@ -98,7 +98,7 @@ internal fun TimelineOverview(
             Canvas(
                 Modifier
                     .fillMaxWidth()
-                    .height(20.dp)
+                    .height(36.dp)
                     .pointerInput(durationMs) {
                         detectTapGestures { offset ->
                             onSeek(((offset.x / size.width) * span).toLong().coerceAtLeast(0L))
@@ -121,10 +121,15 @@ internal fun TimelineOverview(
                 )
                 drawLine(
                     color = SwaraColors.Ink,
-                    start = Offset(playX, 0f),
-                    end = Offset(playX, size.height),
+                    start = Offset(playX, 4.dp.toPx()),
+                    end = Offset(playX, size.height - 4.dp.toPx()),
                     strokeWidth = 2.dp.toPx(),
                     cap = StrokeCap.Round,
+                )
+                drawCircle(
+                    color = SwaraColors.Teal,
+                    radius = 5.dp.toPx(),
+                    center = Offset(playX, size.height / 2f),
                 )
             }
             Canvas(
@@ -270,45 +275,69 @@ internal fun EditorTransportBar(
     isPlaying: Boolean,
     positionMs: Long,
     durationMs: Long,
+    takeLabel: String? = null,
+    takeDurationText: String? = null,
     onPlayPause: () -> Unit,
     onSeek: (Long) -> Unit,
+    onMixSave: (() -> Unit)? = null,
 ) {
     val span = durationMs.toFloat().coerceAtLeast(1f)
-    Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
-        Slider(
-            value = positionMs.toFloat().coerceIn(0f, span),
-            onValueChange = { onSeek(it.toLong()) },
-            valueRange = 0f..span,
-        )
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.Center,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                text = formatDuration(positionMs),
-                style = MaterialTheme.typography.bodyMedium,
-                color = SwaraColors.Muted,
+    val copy = com.swaralab.ui.LocalAppCopy.current
+    Surface(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+        shape = RoundedCornerShape(18.dp),
+        color = if (takeLabel != null) SwaraColors.TealWash else SwaraColors.Card,
+        border = androidx.compose.foundation.BorderStroke(
+            width = if (takeLabel != null) 1.5.dp else 1.dp,
+            color = if (takeLabel != null) SwaraColors.Teal else SwaraColors.Line,
+        ),
+    ) {
+        Column(Modifier.padding(horizontal = 14.dp, vertical = 8.dp)) {
+            Slider(
+                value = positionMs.toFloat().coerceIn(0f, span),
+                onValueChange = { onSeek(it.toLong()) },
+                valueRange = 0f..span,
             )
-            Spacer(Modifier.width(16.dp))
-            Surface(
-                onClick = onPlayPause,
-                shape = RoundedCornerShape(24.dp),
-                color = SwaraColors.TealWash,
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(
-                    text = if (isPlaying) "Pause" else "Play",
-                    modifier = Modifier.padding(horizontal = 28.dp, vertical = 12.dp),
-                    style = MaterialTheme.typography.titleMedium,
-                    color = SwaraColors.Teal,
-                )
+                Column(Modifier.weight(1f)) {
+                    if (takeLabel != null) {
+                        Text(
+                            text = takeLabel,
+                            style = MaterialTheme.typography.titleSmall,
+                            color = SwaraColors.Teal,
+                            maxLines = 1,
+                        )
+                    }
+                    Text(
+                        text = buildString {
+                            append("${formatDuration(positionMs)} / ${formatDuration(durationMs)}")
+                            if (!takeDurationText.isNullOrBlank()) {
+                                append(" · $takeDurationText")
+                            }
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = SwaraColors.Muted,
+                        maxLines = 1,
+                    )
+                }
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    androidx.compose.material3.OutlinedButton(onClick = onPlayPause) {
+                        Text(if (isPlaying) copy.stop else "Hear")
+                    }
+                    if (onMixSave != null) {
+                        androidx.compose.material3.Button(onClick = onMixSave) {
+                            Text(copy.mixSave)
+                        }
+                    }
+                }
             }
-            Spacer(Modifier.width(16.dp))
-            Text(
-                text = formatDuration(durationMs),
-                style = MaterialTheme.typography.bodyMedium,
-                color = SwaraColors.Muted,
-            )
         }
     }
 }
