@@ -83,15 +83,23 @@ object PitchScorer {
         contourSamples(pcm, hopMs).map { it.frequencyHz }
 
     fun pitchAccuracy(samples: List<PitchSample>): Float {
-        val voiced = samples.filter { it.frequencyHz > 70f && it.confidence > 0.6f }
+        val voiced = samples.filter { it.frequencyHz > 70f && it.confidence > 0.55f }
         if (voiced.isEmpty()) return 40f
-        val inTune = voiced.count { abs(it.centsOffset ?: 100f) < 40f }
-        return (inTune.toFloat() / voiced.size * 100f).coerceIn(0f, 100f)
+        var total = 0f
+        for (s in voiced) {
+            val cents = abs(s.centsOffset ?: 35f).coerceIn(0f, 50f)
+            val frameScore = when {
+                cents <= 24f -> 1f - (cents / 24f) * 0.08f
+                else -> 0.92f - ((cents - 24f) / 26f) * 0.42f
+            }
+            total += frameScore
+        }
+        return (total / voiced.size * 100f).coerceIn(0f, 100f)
     }
 
     fun stabilityFromSamples(samples: List<PitchSample>): Float {
         val voiced = samples.map { it.frequencyHz }.filter { it > 70f }
-        return stabilityScore(voiced) / 40f * 100f
+        return (stabilityScore(voiced) / 40f * 100f).coerceIn(0f, 100f)
     }
 
     fun timingFromSamples(
@@ -155,13 +163,21 @@ object PitchScorer {
 
     fun stabilityScore(pitches: List<Float>): Float {
         val voiced = pitches.filter { it > 50f }
-        if (voiced.size < 8) return 8f
-        val mean = voiced.average().toFloat()
-        val variance = voiced.fold(0f) { acc, hz ->
-            val d = hz - mean
-            acc + d * d
-        } / voiced.size
-        return (40f - sqrt(variance) / 6f).coerceIn(0f, 40f)
+        if (voiced.size < 8) return 24f
+        var sustainedJitterCents = 0f
+        var sustainedPairs = 0
+        for (i in 1 until voiced.size) {
+            val prev = voiced[i - 1]
+            val curr = voiced[i]
+            val semitones = abs(12.0 * ln((curr / prev).toDouble()) / ln(2.0)).toFloat()
+            if (semitones <= 1.5f) {
+                sustainedJitterCents += semitones * 100f
+                sustainedPairs += 1
+            }
+        }
+        if (sustainedPairs == 0) return 28f
+        val avgJitterCents = sustainedJitterCents / sustainedPairs
+        return (40f - (avgJitterCents - 8f).coerceAtLeast(0f) * 0.45f).coerceIn(14f, 40f)
     }
 
     fun rangeScore(pitches: List<Float>): Float {

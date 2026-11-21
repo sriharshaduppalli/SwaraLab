@@ -626,6 +626,10 @@ class WavMixRenderEngine(
             } else {
                 1
             }
+            var pcmEncoding = android.media.AudioFormat.ENCODING_PCM_16BIT
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
+                format.setInteger(MediaFormat.KEY_PCM_ENCODING, android.media.AudioFormat.ENCODING_PCM_16BIT)
+            }
 
             val codec = MediaCodec.createDecoderByType(mime)
             codec.configure(format, null, null, 0)
@@ -681,6 +685,11 @@ class WavMixRenderEngine(
                         if (outFormat.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) {
                             channels = outFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT).coerceAtLeast(1)
                         }
+                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N &&
+                            outFormat.containsKey(MediaFormat.KEY_PCM_ENCODING)
+                        ) {
+                            pcmEncoding = outFormat.getInteger(MediaFormat.KEY_PCM_ENCODING)
+                        }
                     }
                 }
             }
@@ -690,20 +699,38 @@ class WavMixRenderEngine(
             extractor.release()
 
             val rawBytes = pcmOut.toByteArray()
-            val totalShorts = rawBytes.size / 2
-            val frames = totalShorts / channels
-            if (frames <= 0) return null
-
-            val shortBuf = ByteBuffer.wrap(rawBytes, 0, frames * channels * 2)
-                .order(ByteOrder.LITTLE_ENDIAN)
-                .asShortBuffer()
-            val leftSrc = FloatArray(frames)
-            val rightSrc = FloatArray(frames)
-            for (f in 0 until frames) {
-                val l = shortBuf.get(f * channels) / 32768f
-                val r = if (channels > 1) shortBuf.get(f * channels + 1) / 32768f else l
-                leftSrc[f] = l
-                rightSrc[f] = r
+            val (leftSrc, rightSrc) = if (pcmEncoding == android.media.AudioFormat.ENCODING_PCM_FLOAT) {
+                val totalFloats = rawBytes.size / 4
+                val frames = totalFloats / channels
+                if (frames <= 0) return null
+                val floatBuf = ByteBuffer.wrap(rawBytes, 0, frames * channels * 4)
+                    .order(ByteOrder.LITTLE_ENDIAN)
+                    .asFloatBuffer()
+                val lArr = FloatArray(frames)
+                val rArr = FloatArray(frames)
+                for (f in 0 until frames) {
+                    val l = floatBuf.get(f * channels).coerceIn(-1f, 1f)
+                    val r = if (channels > 1) floatBuf.get(f * channels + 1).coerceIn(-1f, 1f) else l
+                    lArr[f] = l
+                    rArr[f] = r
+                }
+                lArr to rArr
+            } else {
+                val totalShorts = rawBytes.size / 2
+                val frames = totalShorts / channels
+                if (frames <= 0) return null
+                val shortBuf = ByteBuffer.wrap(rawBytes, 0, frames * channels * 2)
+                    .order(ByteOrder.LITTLE_ENDIAN)
+                    .asShortBuffer()
+                val lArr = FloatArray(frames)
+                val rArr = FloatArray(frames)
+                for (f in 0 until frames) {
+                    val l = shortBuf.get(f * channels) / 32768f
+                    val r = if (channels > 1) shortBuf.get(f * channels + 1) / 32768f else l
+                    lArr[f] = l
+                    rArr[f] = r
+                }
+                lArr to rArr
             }
 
             if (sourceRate == targetRate || sourceRate <= 0) {

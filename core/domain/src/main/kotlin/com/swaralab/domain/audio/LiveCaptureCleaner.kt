@@ -29,6 +29,7 @@ class LiveCaptureCleaner(
     private var env = 0f
     private var floor = 0.018f
     private var airEnv = 0f
+    private var sibilanceGain = 1f
 
     fun process(samples: ShortArray, length: Int) {
         val n = length.coerceIn(0, samples.size)
@@ -52,10 +53,9 @@ class LiveCaptureCleaner(
             airX = highPassed
             airY = air
             airEnv = if (abs(air) > airEnv) abs(air) else airEnv * 0.975f
-            var out = highPassed * gate
-            if (env < 0.038f && airEnv > env * 1.55f) {
-                out *= 0.52f
-            }
+            val targetSib = if (env < 0.038f && airEnv > env * 1.55f) 0.52f else 1f
+            sibilanceGain += 0.02f * (targetSib - sibilanceGain)
+            val out = highPassed * gate * sibilanceGain
             samples[i] = (out.coerceIn(-1f, 1f) * 32767f).toInt().toShort()
         }
     }

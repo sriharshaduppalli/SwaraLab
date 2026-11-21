@@ -69,6 +69,13 @@ class LyricSyncTest {
     }
 
     @Test
+    fun multiNoteMelodyKeepsHighStabilityInsteadOfZero() {
+        val notes = listOf(220f, 220f, 220f, 220f, 261.63f, 261.63f, 261.63f, 329.63f, 329.63f, 329.63f, 440f, 440f, 440f)
+        val stability = PitchScorer.stabilityScore(notes) / 40f * 100f
+        assertTrue("Multi-note melody with steady held notes should score >= 75 stability, was $stability", stability >= 75f)
+    }
+
+    @Test
     fun wavPcmReadsMono() {
         val file = File.createTempFile("pcm", ".wav")
         writeSineWav(file, hz = 440.0, seconds = 0.1)

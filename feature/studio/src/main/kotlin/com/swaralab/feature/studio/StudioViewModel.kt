@@ -352,7 +352,7 @@ class StudioViewModel(
     private var instrumentalBusy = false
     private var lyricFollow = LiveLyricFollower.State()
     private var heardLyric: String? = null
-    private var headphoneFx = true
+    private var headphoneFx = false
     private var voiceGain = 1f
     private var trackGain = 0.8f
     private var liveHits = 0
@@ -1749,9 +1749,9 @@ class StudioViewModel(
                 sessionAutoSave?.rememberOpened(sessionId, playhead)
                 if (playhead > 0L) audio.seekTake(playhead)
             }
-            val route = document.gear.output.takeUnless { it == GearRoute.UNKNOWN } ?: GearRoute.WIRED
+            val route = document.gear.output.takeUnless { it == GearRoute.UNKNOWN } ?: GearRoute.SPEAKER
             if (document.gear.output == GearRoute.UNKNOWN) {
-                updateGear(sessionId, GearRoute.WIRED)
+                updateGear(sessionId, GearRoute.SPEAKER)
             }
             val backingTrack = document.tracks.firstOrNull { it.role == TrackRole.BACKING }
             val backingClip = backingTrack?.clips?.lastOrNull()

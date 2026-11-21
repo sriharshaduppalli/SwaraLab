@@ -219,7 +219,7 @@ private fun ReadyStage(
                 .align(Alignment.TopStart)
                 .padding(horizontal = 16.dp, vertical = 12.dp),
         ) {
-            Text(copy.back, color = Color.White.copy(alpha = 0.9f))
+            Text(copy.back, color = SwaraColors.Ink)
         }
         Column(
             Modifier.fillMaxSize().padding(24.dp),
@@ -229,7 +229,7 @@ private fun ReadyStage(
             Text(
                 state.draft.track?.title ?: "Ready to sing",
                 style = MaterialTheme.typography.headlineLarge,
-                color = Color.White,
+                color = SwaraColors.Ink,
                 textAlign = TextAlign.Center,
             )
             Spacer(Modifier.height(20.dp))
@@ -242,7 +242,7 @@ private fun ReadyStage(
             if (showBackingShift) {
                 Text(
                     "Backing uses this key and speed when you sing.",
-                    color = Color.White.copy(alpha = 0.55f),
+                    color = SwaraColors.Muted,
                     style = MaterialTheme.typography.bodySmall,
                     textAlign = TextAlign.Center,
                     modifier = Modifier.padding(top = 8.dp),
@@ -257,7 +257,7 @@ private fun ReadyStage(
                 )
                 Text(
                     "Processing track…",
-                    color = Color.White.copy(alpha = 0.75f),
+                    color = SwaraColors.Muted,
                     style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier.padding(top = 8.dp, bottom = 16.dp),
                 )
@@ -281,7 +281,7 @@ private fun KeyTempoControls(
     Column(Modifier.fillMaxWidth()) {
         Text(
             "Key: ${if (semitones > 0) "+" else ""}$semitones",
-            color = Color.White,
+            color = SwaraColors.Ink,
             style = MaterialTheme.typography.titleSmall,
         )
         Slider(
@@ -292,7 +292,7 @@ private fun KeyTempoControls(
         )
         Text(
             "Tempo: ${"%.1f".format(tempo)}x",
-            color = Color.White,
+            color = SwaraColors.Ink,
             style = MaterialTheme.typography.titleSmall,
         )
         Slider(
@@ -311,7 +311,7 @@ private fun KeyTempoReadoutBadge(
     if (semitones == 0 && kotlin.math.abs(tempo - 1f) < 0.01f) return
     Text(
         text = "Key ${if (semitones > 0) "+" else ""}$semitones · Tempo ${"%.2f".format(tempo)}x",
-        color = Color.White.copy(alpha = 0.72f),
+        color = SwaraColors.Muted,
         style = MaterialTheme.typography.bodySmall,
         modifier = Modifier.padding(bottom = 8.dp),
     )
@@ -380,13 +380,13 @@ private fun RecordingStage(
             Text(
                 text = "${formatDuration(state.positionMs)} / ${formatDuration(total)}",
                 style = MaterialTheme.typography.titleMedium,
-                color = Color.White.copy(alpha = 0.8f),
+                color = SwaraColors.Ink,
             )
             LinearProgressIndicator(
                 progress = { (state.positionMs.toFloat() / total).coerceIn(0f, 1f) },
-                modifier = Modifier.fillMaxWidth().padding(top = 8.dp).height(3.dp).clip(CircleShape).alpha(0.75f),
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp).height(3.dp).clip(CircleShape).alpha(0.85f),
                 color = SwaraColors.Teal,
-                trackColor = Color.White.copy(alpha = 0.16f),
+                trackColor = SwaraColors.Line,
             )
             if (videoSlot != null) {
                 Box(Modifier.fillMaxWidth().height(140.dp).padding(vertical = 8.dp)) { videoSlot() }
@@ -434,11 +434,12 @@ private fun RecordingStage(
             ) {
                 Text(
                     "FX",
-                    color = Color.White,
+                    color = SwaraColors.Ink,
                     modifier = Modifier
                         .pressScale()
                         .size(56.dp)
                         .clip(CircleShape)
+                        .background(SwaraColors.Card.copy(alpha = 0.75f))
                         .clickable { showEffects = true }
                         .semantics { contentDescription = copy.effects }
                         .padding(16.dp),
@@ -451,7 +452,7 @@ private fun RecordingStage(
                         .size(88.dp)
                         .pressScale(0.94f)
                         .clip(CircleShape)
-                        .background(Color.White.copy(alpha = 0.15f))
+                        .background(SwaraColors.Card.copy(alpha = 0.85f))
                         .semantics { contentDescription = copy.stop }
                         .clickable {
                             view.boothHaptic(HapticFeedbackConstants.LONG_PRESS)
@@ -459,15 +460,16 @@ private fun RecordingStage(
                         },
                 ) {
                     RadialVoice(level = state.voiceLevel, history = waveform, modifier = Modifier.size(88.dp))
-                    Text("■", color = Color(0xFFFF1744), style = MaterialTheme.typography.headlineMedium)
+                    Text("■", color = SwaraColors.Rose, style = MaterialTheme.typography.headlineMedium)
                 }
                 Text(
                     "‖",
-                    color = Color.White,
+                    color = SwaraColors.Ink,
                     modifier = Modifier
                         .pressScale()
                         .size(56.dp)
                         .clip(CircleShape)
+                        .background(SwaraColors.Card.copy(alpha = 0.75f))
                         .clickable {
                             view.boothHaptic()
                             onPause()
@@ -521,7 +523,8 @@ private fun PausedStage(
     ) {
         Text(
             "Paused · ${formatDuration(positionMs)} / ${formatDuration(durationMs.coerceAtLeast(1L))}",
-            color = Color.White,
+            color = SwaraColors.Ink,
+            style = MaterialTheme.typography.titleMedium,
         )
         Spacer(Modifier.height(12.dp))
         KeyTempoReadoutBadge(
@@ -591,10 +594,14 @@ internal fun PitchVisualizer(
         sample.frequencyHz > 70f &&
         sample.confidence >= 0.6f &&
         sample.centsOffset != null
+    val lineColor = SwaraColors.Line
+    val goodColor = SwaraColors.Teal
+    val warnColor = SwaraColors.Gold
+    val offColor = SwaraColors.Rose
     Canvas(modifier.height(72.dp).fillMaxWidth()) {
         val centerY = size.height / 2
         drawLine(
-            color = Color.White.copy(alpha = 0.3f),
+            color = lineColor,
             start = Offset(0f, centerY),
             end = Offset(size.width, centerY),
             strokeWidth = 2f,
@@ -605,9 +612,9 @@ internal fun PitchVisualizer(
         val x = size.width * 0.7f
         drawCircle(
             color = when {
-                abs(cents) < 15 -> Color(0xFF00E5FF)
-                abs(cents) < 35 -> Color(0xFFFFC107)
-                else -> Color(0xFFFF5252)
+                abs(cents) < 15 -> goodColor
+                abs(cents) < 35 -> warnColor
+                else -> offColor
             },
             radius = 12f,
             center = Offset(x, centerY + offsetY),
@@ -622,18 +629,23 @@ private fun ScoreBar(label: String, value: Float) {
             Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
-            Text(label, color = Color.White)
-            Text("${value.toInt()}", color = Color.White.copy(alpha = 0.8f))
+            Text(label, color = SwaraColors.Ink, style = MaterialTheme.typography.bodyMedium)
+            Text(
+                "${value.toInt()}",
+                color = SwaraColors.Ink,
+                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+            )
         }
+        Spacer(Modifier.height(4.dp))
         LinearProgressIndicator(
             progress = { (value / 100f).coerceIn(0f, 1f) },
             modifier = Modifier.fillMaxWidth().height(8.dp).clip(CircleShape),
             color = when {
-                value >= 80 -> Color(0xFF00E5FF)
-                value >= 60 -> Color(0xFFFFC107)
-                else -> Color(0xFFFF5252)
+                value >= 75 -> SwaraColors.Teal
+                value >= 50 -> SwaraColors.Gold
+                else -> SwaraColors.Rose
             },
-            trackColor = Color.White.copy(alpha = 0.16f),
+            trackColor = SwaraColors.Line,
         )
     }
 }
@@ -693,7 +705,7 @@ private fun ReviewStage(
             CircularProgressIndicator(color = SwaraColors.Teal, modifier = Modifier.size(32.dp))
             Text(
                 "Analyzing…",
-                color = Color.White.copy(alpha = 0.7f),
+                color = SwaraColors.Muted,
                 modifier = Modifier.padding(top = 8.dp),
             )
         }
@@ -707,7 +719,7 @@ private fun ReviewStage(
                 Text(
                     "Sections",
                     style = MaterialTheme.typography.titleMedium,
-                    color = Color.White,
+                    color = SwaraColors.Ink,
                     modifier = Modifier.fillMaxWidth(),
                 )
                 detailed.sections.forEach { section ->
@@ -717,12 +729,12 @@ private fun ReviewStage(
                     ) {
                         Text(
                             "${section.name}  ${formatDuration(section.startMs)}–${formatDuration(section.endMs)}",
-                            color = Color.White.copy(alpha = 0.8f),
+                            color = SwaraColors.Ink,
                             style = MaterialTheme.typography.bodySmall,
                         )
                         Text(
                             "P ${section.pitch.toInt()} · T ${section.timing.toInt()}",
-                            color = Color.White.copy(alpha = 0.7f),
+                            color = SwaraColors.Muted,
                             style = MaterialTheme.typography.bodySmall,
                         )
                     }
@@ -801,7 +813,7 @@ fun AnimatedLyricLine(
         label = "lyricScale",
     )
     val color by animateColorAsState(
-        targetValue = if (isActive) SwaraColors.Teal else Color.White.copy(alpha = 0.65f),
+        targetValue = if (isActive) SwaraColors.Teal else SwaraColors.Muted,
         label = "lyricColor",
     )
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -842,7 +854,7 @@ fun AnimatedLyricLine(
                     .height(3.dp)
                     .clip(CircleShape),
                 color = SwaraColors.Teal,
-                trackColor = Color.White.copy(alpha = 0.2f),
+                trackColor = SwaraColors.Line,
             )
         }
     }
@@ -880,7 +892,7 @@ fun LyricsCenterView(
     if (lyrics.isEmpty()) {
         Text(
             emptyText,
-            color = Color.White.copy(alpha = 0.65f),
+            color = SwaraColors.Muted,
             textAlign = TextAlign.Center,
         )
         return
@@ -898,7 +910,7 @@ fun LyricsCenterView(
         lyrics.getOrNull(index - 1)?.let { line ->
             Text(
                 line.text,
-                color = Color.White.copy(alpha = 0.35f),
+                color = SwaraColors.Muted.copy(alpha = 0.65f),
                 fontSize = 18.sp,
                 textAlign = TextAlign.Center,
                 modifier = Modifier
@@ -930,7 +942,7 @@ fun LyricsCenterView(
         lyrics.getOrNull(index + 1)?.let { line ->
             Text(
                 line.text,
-                color = Color.White.copy(alpha = 0.5f),
+                color = SwaraColors.Muted,
                 fontSize = 20.sp,
                 textAlign = TextAlign.Center,
                 modifier = Modifier
@@ -939,7 +951,7 @@ fun LyricsCenterView(
             )
         }
         TextButton(onClick = { showAll = true }) {
-            Text(allLabel, color = Color.White.copy(alpha = 0.8f))
+            Text(allLabel, color = SwaraColors.Ink)
         }
     }
     if (showAll) {
@@ -980,7 +992,7 @@ fun LyricsList(
     }
     if (lyrics.isEmpty()) {
         Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Text(LocalAppCopy.current.emptyLyrics, color = Color.White.copy(alpha = 0.65f), textAlign = TextAlign.Center)
+            Text(LocalAppCopy.current.emptyLyrics, color = SwaraColors.Muted, textAlign = TextAlign.Center)
         }
         return
     }

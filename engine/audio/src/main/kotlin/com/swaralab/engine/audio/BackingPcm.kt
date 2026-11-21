@@ -1,8 +1,10 @@
 package com.swaralab.engine.audio
 
+import android.media.AudioFormat
 import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
+import android.os.Build
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.nio.ByteBuffer
@@ -82,6 +84,10 @@ internal object BackingPcm {
         val mime = format.getString(MediaFormat.KEY_MIME) ?: return null
         var sourceRate = format.getInteger(MediaFormat.KEY_SAMPLE_RATE, targetRate)
         var channels = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT, 1).coerceAtLeast(1)
+        var pcmEncoding = AudioFormat.ENCODING_PCM_16BIT
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            format.setInteger(MediaFormat.KEY_PCM_ENCODING, AudioFormat.ENCODING_PCM_16BIT)
+        }
         val codec = MediaCodec.createDecoderByType(mime)
         codec.configure(format, null, null, 0)
         codec.start()
@@ -122,6 +128,9 @@ internal object BackingPcm {
                     val outFormat = codec.outputFormat
                     sourceRate = outFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE, sourceRate)
                     channels = outFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT, channels).coerceAtLeast(1)
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && outFormat.containsKey(MediaFormat.KEY_PCM_ENCODING)) {
+                        pcmEncoding = outFormat.getInteger(MediaFormat.KEY_PCM_ENCODING)
+                    }
                 }
             }
         }
@@ -129,14 +138,24 @@ internal object BackingPcm {
         codec.release()
         extractor.release()
         val raw = pcm.toByteArray()
-        val frames = raw.size / (2 * channels)
-        if (frames <= 0) return null
-        val shorts = ByteBuffer.wrap(raw).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer()
-        val mono = FloatArray(frames)
-        for (i in 0 until frames) {
-            val l = shorts.get(i * channels) / 32768f
-            val r = if (channels > 1) shorts.get(i * channels + 1) / 32768f else l
-            mono[i] = (l + r) * 0.5f
+        val mono = if (pcmEncoding == AudioFormat.ENCODING_PCM_FLOAT) {
+            val frames = raw.size / (4 * channels)
+            if (frames <= 0) return null
+            val floats = ByteBuffer.wrap(raw, 0, frames * channels * 4).order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer()
+            FloatArray(frames) { i ->
+                val l = floats.get(i * channels).coerceIn(-1f, 1f)
+                val r = if (channels > 1) floats.get(i * channels + 1).coerceIn(-1f, 1f) else l
+                (l + r) * 0.5f
+            }
+        } else {
+            val frames = raw.size / (2 * channels)
+            if (frames <= 0) return null
+            val shorts = ByteBuffer.wrap(raw, 0, frames * channels * 2).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer()
+            FloatArray(frames) { i ->
+                val l = shorts.get(i * channels) / 32768f
+                val r = if (channels > 1) shorts.get(i * channels + 1) / 32768f else l
+                (l + r) * 0.5f
+            }
         }
         cap48k(resample(mono, sourceRate, targetRate), targetRate)
     }.getOrNull()

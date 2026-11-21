@@ -61,6 +61,8 @@ public:
     void reset() {
         writePos.store(0);
         readPos.store(0);
+        primed.store(false);
+        lastSample = 0;
     }
 
     void write(const int16_t *src, int32_t count) {
@@ -68,19 +70,30 @@ public:
         for (int32_t i = 0; i < count; ++i) {
             data[(w + i) & (kTapFrames - 1)] = src[i];
         }
-        writePos.store(w + count, std::memory_order_release);
+        int32_t nextW = w + count;
+        writePos.store(nextW, std::memory_order_release);
         int32_t r = readPos.load(std::memory_order_relaxed);
-        if ((w + count) - r > kTapFrames - 64) {
-            readPos.store(w + count - (kTapFrames / 2), std::memory_order_release);
+        if (nextW - r >= 512) {
+            primed.store(true, std::memory_order_release);
+        }
+        if (nextW - r > kTapFrames - 64) {
+            readPos.store(nextW - (kTapFrames / 2), std::memory_order_release);
         }
     }
 
     int16_t readOrZero() {
+        if (!primed.load(std::memory_order_acquire)) {
+            return 0;
+        }
         int32_t r = readPos.load(std::memory_order_relaxed);
         int32_t w = writePos.load(std::memory_order_acquire);
-        if (r >= w) return 0;
+        if (r >= w) {
+            lastSample = static_cast<int16_t>(lastSample * 0.92f);
+            return lastSample;
+        }
         int16_t s = data[r & (kTapFrames - 1)];
         readPos.store(r + 1, std::memory_order_release);
+        lastSample = s;
         return s;
     }
 
@@ -88,6 +101,8 @@ private:
     int16_t data[kTapFrames]{};
     std::atomic<int32_t> writePos{0};
     std::atomic<int32_t> readPos{0};
+    std::atomic<bool> primed{false};
+    int16_t lastSample{0};
 };
 
 struct MixerState {
@@ -116,7 +131,7 @@ struct MixerState {
     float lp{0.f};
     float env{0.f};
 
-    void render(void *audioData, int32_t numFrames, oboe::AudioFormat format, DropRing &tap);
+    void render(void *audioData, int32_t numFrames, int32_t channelCount, oboe::AudioFormat format, DropRing &tap);
 };
 
 class Engine : public oboe::AudioStreamDataCallback, public oboe::AudioStreamErrorCallback {
@@ -143,7 +158,7 @@ public:
             cv.notify_all();
             return oboe::DataCallbackResult::Continue;
         }
-        mix.render(audioData, numFrames, stream->getFormat(), tap);
+        mix.render(audioData, numFrames, std::max(1, stream->getChannelCount()), stream->getFormat(), tap);
         return oboe::DataCallbackResult::Continue;
     }
 
@@ -180,7 +195,7 @@ private:
 
 };
 
-void MixerState::render(void *audioData, int32_t numFrames, oboe::AudioFormat format, DropRing &tap) {
+void MixerState::render(void *audioData, int32_t numFrames, int32_t channelCount, oboe::AudioFormat format, DropRing &tap) {
     const float hp = 0.986f;
     const float delayMix = delayAmt.load(std::memory_order_relaxed) * 0.35f;
     const float reverbMix = reverb.load(std::memory_order_relaxed) * 0.28f;
@@ -195,11 +210,12 @@ void MixerState::render(void *audioData, int32_t numFrames, oboe::AudioFormat fo
     const int16_t *bedPtr = backingPtr.load(std::memory_order_acquire);
     const int32_t bedLen = backingLen.load(std::memory_order_acquire);
     const bool doLoop = loop.load(std::memory_order_relaxed);
+    const int32_t ch = std::max(1, channelCount);
     if (paused.load(std::memory_order_relaxed)) {
         if (format == oboe::AudioFormat::Float) {
-            std::fill(static_cast<float *>(audioData), static_cast<float *>(audioData) + numFrames, 0.f);
+            std::fill(static_cast<float *>(audioData), static_cast<float *>(audioData) + numFrames * ch, 0.f);
         } else {
-            std::fill(static_cast<int16_t *>(audioData), static_cast<int16_t *>(audioData) + numFrames, 0);
+            std::fill(static_cast<int16_t *>(audioData), static_cast<int16_t *>(audioData) + numFrames * ch, 0);
         }
         return;
     }
@@ -242,9 +258,12 @@ void MixerState::render(void *audioData, int32_t numFrames, oboe::AudioFormat fo
         }
         float out = std::clamp(wet * vg + bed * tg, -1.f, 1.f);
         if (format == oboe::AudioFormat::Float) {
-            static_cast<float *>(audioData)[i] = out;
+            auto *dst = static_cast<float *>(audioData) + i * ch;
+            for (int32_t c = 0; c < ch; ++c) dst[c] = out;
         } else {
-            static_cast<int16_t *>(audioData)[i] = static_cast<int16_t>(out * 22000.f);
+            auto *dst = static_cast<int16_t *>(audioData) + i * ch;
+            const auto sample = static_cast<int16_t>(out * 22000.f);
+            for (int32_t c = 0; c < ch; ++c) dst[c] = sample;
         }
     }
     playHead.store(head, std::memory_order_relaxed);

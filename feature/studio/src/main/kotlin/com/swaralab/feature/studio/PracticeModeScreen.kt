@@ -64,7 +64,7 @@ fun PracticeModeScreen(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text("Practice Mode", style = MaterialTheme.typography.titleLarge, color = Color.White)
+                Text("Practice Mode", style = MaterialTheme.typography.titleLarge, color = SwaraColors.Ink)
                 TextButton(onClick = onExitPractice) { Text("Exit") }
             }
             Spacer(Modifier.height(16.dp))
@@ -77,7 +77,7 @@ fun PracticeModeScreen(
                 text = uiState.currentLyric ?: "♪ ♪ ♪",
                 fontSize = 28.sp,
                 fontWeight = FontWeight.Bold,
-                color = Color(0xFF00E5FF),
+                color = SwaraColors.Teal,
                 textAlign = TextAlign.Center,
                 modifier = Modifier.fillMaxWidth(),
             )
@@ -101,7 +101,7 @@ fun PracticeModeScreen(
                 }
             }
             Spacer(Modifier.height(16.dp))
-            Text("Tempo: ${"%.1f".format(uiState.tempo)}x", color = Color.White)
+            Text("Tempo: ${"%.1f".format(uiState.tempo)}x", color = SwaraColors.Ink)
             Slider(
                 value = uiState.tempo.coerceIn(0.5f, 1.5f),
                 onValueChange = onTempoChange,
@@ -119,7 +119,7 @@ fun PracticeModeScreen(
                         modifier = Modifier.height(22.dp),
                         color = SwaraColors.Teal,
                     )
-                    Text(" Processing track…", color = Color.White.copy(alpha = 0.7f))
+                    Text(" Processing track…", color = SwaraColors.Muted)
                 }
             }
             Spacer(Modifier.height(24.dp))
