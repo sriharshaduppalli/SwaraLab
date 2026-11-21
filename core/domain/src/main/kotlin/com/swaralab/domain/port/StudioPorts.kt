@@ -256,6 +256,8 @@ data class ExportRequest(
     val target: PublishTarget,
     val kind: ExportKind = ExportKind.MIX,
     val stems: StemSelection = StemSelection(),
+    val clipStartMs: Long = 0L,
+    val clipDurationMs: Long = 0L,
 )
 
 sealed interface ExportResult {

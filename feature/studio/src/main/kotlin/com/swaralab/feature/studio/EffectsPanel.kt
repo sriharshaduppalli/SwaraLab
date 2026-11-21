@@ -10,8 +10,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.swaralab.domain.audio.LiveMonitorEffect
@@ -26,11 +28,30 @@ fun EffectsPanel(
     onVoiceGainChange: (Float) -> Unit,
     trackGain: Float,
     onTrackGainChange: (Float) -> Unit,
+    headphoneFx: Boolean = false,
+    onHeadphoneFxChange: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     Column(modifier.padding(16.dp)) {
-        Text("Headphones only. The dry take stays clean.", style = MaterialTheme.typography.titleMedium)
-        Spacer(Modifier.height(8.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
+                Text("Hear my voice in headphones", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "Keep off on phone speakers to avoid feedback. Your recorded WAV stays dry.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = SwaraColors.Muted,
+                )
+            }
+            Switch(
+                checked = headphoneFx,
+                onCheckedChange = onHeadphoneFxChange,
+            )
+        }
+        Spacer(Modifier.height(12.dp))
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp),

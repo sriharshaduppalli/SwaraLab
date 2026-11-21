@@ -48,10 +48,11 @@ class WavMixRenderEngine(
             val targetSampleRate = 48_000
             onProgress(0.05f)
 
-            val stereo = renderStereo(document, sessionFolder, targetSampleRate)
+            val rawStereo = renderStereo(document, sessionFolder, targetSampleRate)
                 ?: return@withContext ExportResult.Waiting(
                     "Record at least one vocal take on the Sing stage before mixing.",
                 )
+            val stereo = sliceStereoWindow(rawStereo, targetSampleRate, request.clipStartMs, request.clipDurationMs)
             onProgress(0.45f)
 
             val safeTitle = document.title
@@ -126,11 +127,12 @@ class WavMixRenderEngine(
                     val relativePath = SessionLayout.exportFile(fileName)
                     val outFile = File(sessionFolder, relativePath).also { it.parentFile?.mkdirs() }
                     if (LyricVideoRenderer.writeMp4(
-                            outFile,
-                            document,
-                            stereo.left,
-                            stereo.right,
-                            targetSampleRate,
+                            outFile = outFile,
+                            document = document,
+                            left = stereo.left,
+                            right = stereo.right,
+                            sampleRate = targetSampleRate,
+                            clipOffsetMs = request.clipStartMs.coerceAtLeast(0L),
                         )
                     ) {
                         ExportResult.Written(
@@ -245,6 +247,44 @@ class WavMixRenderEngine(
         val backingLeft: FloatArray?,
         val backingRight: FloatArray?,
     )
+
+    private fun sliceStereoWindow(
+        source: StereoMix,
+        sampleRate: Int,
+        clipStartMs: Long,
+        clipDurationMs: Long,
+    ): StereoMix {
+        if (clipStartMs <= 0L && clipDurationMs <= 0L) return source
+        val total = min(source.left.size, source.right.size)
+        if (total <= 0) return source
+        val startIdx = ((clipStartMs.coerceAtLeast(0L) * sampleRate) / 1000L).toInt().coerceIn(0, (total - 1).coerceAtLeast(0))
+        val endIdx = if (clipDurationMs > 0L) {
+            (startIdx + ((clipDurationMs * sampleRate) / 1000L).toInt()).coerceIn(startIdx + 1, total)
+        } else {
+            total
+        }
+        fun cut(arr: FloatArray?): FloatArray? {
+            if (arr == null || arr.isEmpty()) return arr
+            val s = startIdx.coerceIn(0, arr.size)
+            val e = endIdx.coerceIn(s, arr.size)
+            val sliced = arr.copyOfRange(s, e)
+            val fadeSamples = ((sampleRate * 35) / 1000).coerceAtMost(sliced.size / 4)
+            for (i in 0 until fadeSamples) {
+                val g = i.toFloat() / fadeSamples.coerceAtLeast(1)
+                sliced[i] *= g
+                sliced[sliced.lastIndex - i] *= g
+            }
+            return sliced
+        }
+        return StereoMix(
+            left = cut(source.left) ?: source.left,
+            right = cut(source.right) ?: source.right,
+            vocalLeft = cut(source.vocalLeft) ?: source.vocalLeft,
+            vocalRight = cut(source.vocalRight) ?: source.vocalRight,
+            backingLeft = cut(source.backingLeft),
+            backingRight = cut(source.backingRight),
+        )
+    }
 
     private fun renderStereo(
         document: SessionDocument,

@@ -81,12 +81,21 @@ internal fun MixDeskSections(
                                     onClick = { viewModel.toggleTrackMute(track.id) },
                                     label = { Text(if (track.mute) "Muted" else "Mute") },
                                 )
-                                FilterChip(
-                                    selected = track.solo,
-                                    onClick = { viewModel.toggleTrackSolo(track.id) },
-                                    label = { Text("Solo") },
-                                )
+                                if (!track.isBacking) {
+                                    FilterChip(
+                                        selected = track.solo,
+                                        onClick = { viewModel.toggleTrackSolo(track.id) },
+                                        label = { Text("Solo") },
+                                    )
+                                }
                             }
+                        }
+                        if (track.isBacking && track.mute) {
+                            Text(
+                                text = "Backing music muted — preview and export will be voice-only (a cappella).",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = SwaraColors.Teal,
+                            )
                         }
                         Slider(
                             value = track.gainDb,
@@ -297,6 +306,41 @@ internal fun MixDeskSections(
                 modifier = Modifier.padding(18.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
+                Text(text = "Clip length for sharing", style = MaterialTheme.typography.titleMedium)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    FilterChip(
+                        selected = state.clipDurationSec == 0,
+                        onClick = { viewModel.setClipWindow(0) },
+                        label = { Text("Full song") },
+                    )
+                    FilterChip(
+                        selected = state.clipDurationSec == 30,
+                        onClick = { viewModel.setClipWindow(30) },
+                        label = { Text("Best 30s") },
+                    )
+                    FilterChip(
+                        selected = state.clipDurationSec == 60,
+                        onClick = { viewModel.setClipWindow(60) },
+                        label = { Text("Best 60s") },
+                    )
+                }
+                if (state.clipDurationSec > 0 && state.totalDurationSec > state.clipDurationSec) {
+                    val maxStart = (state.totalDurationSec - state.clipDurationSec).coerceAtLeast(1)
+                    val endSec = state.clipStartSec + state.clipDurationSec
+                    Text(
+                        text = "Chorus window: ${formatClipSec(state.clipStartSec)} – ${formatClipSec(endSec)}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = SwaraColors.Muted,
+                    )
+                    Slider(
+                        value = state.clipStartSec.toFloat(),
+                        onValueChange = { viewModel.setClipWindow(state.clipDurationSec, it.roundToInt()) },
+                        valueRange = 0f..maxStart.toFloat(),
+                    )
+                }
                 if (state.busy) {
                     LinearProgressIndicator(
                         progress = { state.exportProgress.coerceIn(0f, 1f) },
@@ -338,16 +382,21 @@ internal fun MixDeskSections(
                 }
                 if (state.hasCameraVideo) {
                     Button(
-                        onClick = { viewModel.exportKind(ExportKind.VIDEO) },
+                        onClick = { viewModel.exportKind(ExportKind.VIDEO, context) },
                         enabled = !state.busy,
                         modifier = Modifier.fillMaxWidth(),
                     ) { Text(copy.shareCamera) }
                 }
                 OutlinedButton(
-                    onClick = { viewModel.exportKind(ExportKind.LYRIC_VIDEO) },
+                    onClick = { viewModel.exportKind(ExportKind.LYRIC_VIDEO, context) },
                     enabled = !state.busy,
                     modifier = Modifier.fillMaxWidth(),
-                ) { Text(copy.lyricCard) }
+                ) { Text("9:16 Lyric Video (MP4 for Reels & Status)") }
+                Text(
+                    text = "Creates a 9:16 vertical MP4 with your audio mix, waveform, and lyrics so you can post to Instagram Reels, YouTube Shorts, or WhatsApp Status without a camera.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = SwaraColors.Muted,
+                )
                 Text(text = "Stem export", style = MaterialTheme.typography.titleMedium)
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -457,4 +506,9 @@ internal fun MixDeskSections(
                 onClick = { viewModel.select(target) },
             )
         }
+}
+
+private fun formatClipSec(sec: Int): String {
+    val clamped = sec.coerceAtLeast(0)
+    return "%d:%02d".format(clamped / 60, clamped % 60)
 }

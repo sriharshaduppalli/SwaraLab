@@ -488,7 +488,17 @@ class StudioViewModel(
 
     fun setHeadphoneFx(enabled: Boolean) {
         headphoneFx = enabled
-        uiState.value = uiState.value?.copy(headphoneFx = enabled)
+        val current = uiState.value
+        if (current != null) {
+            val wet = enabled &&
+                (current.route == GearRoute.WIRED || current.route == GearRoute.USB)
+            audio.applyVocalChainMonitor(
+                if (wet) current.vocalChain else current.vocalChain.copy(reverb = 0f, delay = 0f),
+                voiceGain,
+                if (current.kind == SessionKind.PRACTICE) minOf(trackGain, 0.5f) else trackGain,
+            )
+        }
+        uiState.value = current?.copy(headphoneFx = enabled)
     }
 
     fun setVoiceGain(gain: Float) {

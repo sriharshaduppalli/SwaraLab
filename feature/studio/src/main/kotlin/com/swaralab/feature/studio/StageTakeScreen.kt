@@ -130,6 +130,8 @@ fun StageTakeScreen(
     backingProgress: Float = 0f,
     onKeyShift: (Int) -> Unit = {},
     onPlaybackRate: (Float) -> Unit = {},
+    headphoneFx: Boolean = false,
+    onHeadphoneFxChange: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier,
     videoSlot: (@Composable () -> Unit)? = null,
 ) {
@@ -162,6 +164,8 @@ fun StageTakeScreen(
             livePitch = livePitch,
             keyShiftSemitones = keyShiftSemitones,
             playbackRate = playbackRate,
+            headphoneFx = headphoneFx,
+            onHeadphoneFxChange = onHeadphoneFxChange,
             onPause = onPause,
             onStop = onStop,
             onVoiceGain = onVoiceGain,
@@ -179,6 +183,8 @@ fun StageTakeScreen(
             currentEffect = currentEffect,
             keyShiftSemitones = keyShiftSemitones,
             playbackRate = playbackRate,
+            headphoneFx = headphoneFx,
+            onHeadphoneFxChange = onHeadphoneFxChange,
             onResume = onResume,
             onStop = onStop,
             onVoiceGain = onVoiceGain,
@@ -349,6 +355,8 @@ private fun RecordingStage(
     livePitch: PitchSample?,
     keyShiftSemitones: Int,
     playbackRate: Float,
+    headphoneFx: Boolean,
+    onHeadphoneFxChange: (Boolean) -> Unit,
     onPause: () -> Unit,
     onStop: () -> Unit,
     onVoiceGain: (Float) -> Unit,
@@ -405,6 +413,7 @@ private fun RecordingStage(
                 currentIndex = currentIndex,
                 progress = highlight.progressInLine,
                 wordIndex = highlight.wordIndex,
+                positionMs = state.positionMs,
                 emptyText = copy.emptyLyrics,
                 allLabel = copy.allLyrics,
                 onSeekLine = onSeekLyric,
@@ -487,6 +496,8 @@ private fun RecordingStage(
             currentEffect = currentEffect,
             voiceGain = voiceGain,
             trackGain = trackGain,
+            headphoneFx = headphoneFx,
+            onHeadphoneFxChange = onHeadphoneFxChange,
             onEffectChange = onEffectChange,
             onVoiceGain = onVoiceGain,
             onTrackGain = onTrackGain,
@@ -505,6 +516,8 @@ private fun PausedStage(
     currentEffect: LiveMonitorEffect,
     keyShiftSemitones: Int,
     playbackRate: Float,
+    headphoneFx: Boolean,
+    onHeadphoneFxChange: (Boolean) -> Unit,
     onResume: () -> Unit,
     onStop: () -> Unit,
     onVoiceGain: (Float) -> Unit,
@@ -545,6 +558,8 @@ private fun PausedStage(
             currentEffect = currentEffect,
             voiceGain = voiceGain,
             trackGain = trackGain,
+            headphoneFx = headphoneFx,
+            onHeadphoneFxChange = onHeadphoneFxChange,
             onEffectChange = onEffectChange,
             onVoiceGain = onVoiceGain,
             onTrackGain = onTrackGain,
@@ -561,6 +576,8 @@ private fun EffectsSheet(
     currentEffect: LiveMonitorEffect,
     voiceGain: Float,
     trackGain: Float,
+    headphoneFx: Boolean,
+    onHeadphoneFxChange: (Boolean) -> Unit,
     onEffectChange: (LiveMonitorEffect) -> Unit,
     onVoiceGain: (Float) -> Unit,
     onTrackGain: (Float) -> Unit,
@@ -580,6 +597,8 @@ private fun EffectsSheet(
             onVoiceGainChange = onVoiceGain,
             trackGain = trackGain,
             onTrackGainChange = onTrackGain,
+            headphoneFx = headphoneFx,
+            onHeadphoneFxChange = onHeadphoneFxChange,
         )
         Spacer(Modifier.height(32.dp))
     }
@@ -884,6 +903,7 @@ fun LyricsCenterView(
     currentIndex: Int,
     progress: Float,
     wordIndex: Int = -1,
+    positionMs: Long = 0L,
     emptyText: String = "Sing. Add words after this take if you want.",
     allLabel: String = "All lyrics",
     onSeekLine: (Int) -> Unit = {},
@@ -898,6 +918,12 @@ fun LyricsCenterView(
         return
     }
     val index = currentIndex.coerceIn(0, lyrics.lastIndex)
+    val firstStartMs = lyrics.firstOrNull()?.startMs
+    val entryWaitMs = if (index == 0 && firstStartMs != null && firstStartMs > positionMs) {
+        firstStartMs - positionMs
+    } else {
+        0L
+    }
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(16.dp),
@@ -907,6 +933,15 @@ fun LyricsCenterView(
             }
         },
     ) {
+        if (entryWaitMs in 400L..8_000L) {
+            val secsLeft = ((entryWaitMs + 999L) / 1_000L).coerceAtLeast(1L)
+            Text(
+                text = "Sing in ${secsLeft}s…",
+                color = SwaraColors.Gold,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+            )
+        }
         lyrics.getOrNull(index - 1)?.let { line ->
             Text(
                 line.text,

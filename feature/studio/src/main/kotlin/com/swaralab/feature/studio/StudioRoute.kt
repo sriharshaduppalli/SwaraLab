@@ -668,6 +668,8 @@ fun StudioRoute(
             backingProgress = backingPrep.progress,
             onKeyShift = { viewModel.setMusical(keyShiftSemitones = it) },
             onPlaybackRate = { viewModel.setMusical(playbackRate = it) },
+            headphoneFx = state.headphoneFx,
+            onHeadphoneFxChange = viewModel::setHeadphoneFx,
             onStart = {
                 karaokePrep = false
                 requestAndRecord()

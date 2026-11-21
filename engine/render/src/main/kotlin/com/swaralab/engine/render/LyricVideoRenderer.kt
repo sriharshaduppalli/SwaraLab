@@ -30,6 +30,7 @@ object LyricVideoRenderer {
         left: FloatArray,
         right: FloatArray = left,
         sampleRate: Int,
+        clipOffsetMs: Long = 0L,
     ): Boolean = runCatching {
         if (left.isEmpty()) return false
         outFile.parentFile?.mkdirs()
@@ -66,7 +67,9 @@ object LyricVideoRenderer {
         var outputDone = false
         val bitmap = Bitmap.createBitmap(WIDTH, HEIGHT, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bitmap)
+        val pixels = IntArray(WIDTH * HEIGHT)
         val yuv = ByteArray(WIDTH * HEIGHT * 3 / 2)
+        val samplesPerVideoFrame = (sampleRate / FPS).coerceAtLeast(1)
 
         while (!outputDone) {
             if (!inputDone) {
@@ -77,8 +80,20 @@ object LyricVideoRenderer {
                         inputDone = true
                     } else {
                         val ptsUs = (frameIndex * 1_000_000L) / FPS
-                        drawFrame(canvas, document, ptsUs / 1000L)
-                        rgbToNv12(bitmap, yuv)
+                        val sampleStart = (frameIndex * samplesPerVideoFrame).coerceIn(0, (frames - 1).coerceAtLeast(0))
+                        val sampleEnd = (sampleStart + samplesPerVideoFrame).coerceAtMost(frames)
+                        val progress = frameIndex.toFloat() / frameCount.coerceAtLeast(1)
+                        drawFrame(
+                            canvas = canvas,
+                            document = document,
+                            timeMs = clipOffsetMs + (ptsUs / 1000L),
+                            progress = progress,
+                            left = left,
+                            right = right,
+                            sampleStart = sampleStart,
+                            sampleEnd = sampleEnd,
+                        )
+                        rgbToNv12(bitmap, pixels, yuv)
                         val inBuf = encoder.getInputBuffer(inIndex)
                         if (inBuf != null) {
                             inBuf.clear()
@@ -133,35 +148,96 @@ object LyricVideoRenderer {
         outFile.isFile && outFile.length() > 0L
     }.getOrDefault(false)
 
-    private fun drawFrame(canvas: Canvas, document: SessionDocument, timeMs: Long) {
-        canvas.drawColor(0xFF111827.toInt())
+    private fun drawFrame(
+        canvas: Canvas,
+        document: SessionDocument,
+        timeMs: Long,
+        progress: Float,
+        left: FloatArray,
+        right: FloatArray,
+        sampleStart: Int,
+        sampleEnd: Int,
+    ) {
+        canvas.drawColor(0xFF0E1520.toInt())
         val insets = SafeFrames.forTarget(document.publish.target)
         val scaleX = WIDTH / SafeFrames.MASTER_WIDTH.toFloat()
         val scaleY = HEIGHT / SafeFrames.MASTER_HEIGHT.toFloat()
-        val left = insets.left * scaleX
-        val top = insets.top * scaleY
-        val right = WIDTH - insets.right * scaleX
-        val bottom = HEIGHT - insets.bottom * scaleY
+        val leftInset = insets.left * scaleX
+        val topInset = insets.top * scaleY
+        val rightInset = WIDTH - insets.right * scaleX
+        val bottomInset = HEIGHT - insets.bottom * scaleY
 
         val framePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = 0x33F4C430
             style = Paint.Style.STROKE
             strokeWidth = 3f
         }
-        canvas.drawRoundRect(RectF(left, top, right, bottom), 28f, 28f, framePaint)
+        canvas.drawRoundRect(RectF(leftInset, topInset, rightInset, bottomInset), 28f, 28f, framePaint)
 
         val titlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = 0xFFFFFFFF.toInt()
             textSize = 54f
             isFakeBoldText = true
         }
-        canvas.drawText(document.title.take(28), left + 24f, top + 72f, titlePaint)
+        canvas.drawText(document.title.take(26), leftInset + 28f, topInset + 74f, titlePaint)
+
+        val subtitlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0xFF26A69A.toInt()
+            textSize = 30f
+            isFakeBoldText = true
+        }
+        val keyInfo = document.musical.keyName?.let { "Key $it · " }.orEmpty()
+        canvas.drawText("${keyInfo}SwaraLab Studio", leftInset + 28f, topInset + 122f, subtitlePaint)
 
         val badgePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = 0xFFF4C430.toInt()
-            textSize = 32f
+            textSize = 30f
+            isFakeBoldText = true
         }
-        canvas.drawText(document.publish.target.name, right - 240f, top + 72f, badgePaint)
+        canvas.drawText(document.publish.target.name, rightInset - 220f, topInset + 74f, badgePaint)
+
+        var sumSq = 0.0
+        val count = (sampleEnd - sampleStart).coerceAtLeast(1)
+        for (i in sampleStart until sampleEnd) {
+            val m = (left[i] + right[i]) * 0.5f
+            sumSq += m * m
+        }
+        val rms = kotlin.math.sqrt(sumSq / count).toFloat().coerceIn(0f, 1f)
+        val centerX = WIDTH / 2f
+        val centerY = HEIGHT * 0.40f
+        val pulse = 0.16f + rms * 0.22f + 0.03f * kotlin.math.sin(timeMs / 180.0).toFloat()
+        val outerGlow = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x2626A69A }
+        val innerGlow = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x4826A69A }
+        canvas.drawCircle(centerX, centerY, WIDTH * (pulse + 0.07f), outerGlow)
+        canvas.drawCircle(centerX, centerY, WIDTH * pulse, innerGlow)
+
+        val bars = 24
+        val barAreaWidth = (rightInset - leftInset - 120f).coerceAtLeast(240f)
+        val barStartX = leftInset + 60f
+        val barSlot = barAreaWidth / bars
+        val barWidth = (barSlot * 0.58f).coerceAtLeast(8f)
+        val barPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0xFFE6B450.toInt()
+            style = Paint.Style.FILL
+        }
+        val chunk = (count / bars).coerceAtLeast(1)
+        for (b in 0 until bars) {
+            val bStart = (sampleStart + b * chunk).coerceAtMost(sampleEnd)
+            val bEnd = (bStart + chunk).coerceAtMost(sampleEnd)
+            var peak = 0.04f
+            for (i in bStart until bEnd) {
+                val mag = kotlin.math.abs((left[i] + right[i]) * 0.5f)
+                if (mag > peak) peak = mag
+            }
+            val barH = (peak.coerceIn(0.05f, 1f) * 240f).coerceAtLeast(14f)
+            val x = barStartX + b * barSlot
+            canvas.drawRoundRect(
+                RectF(x, centerY - barH / 2f, x + barWidth, centerY + barH / 2f),
+                barWidth / 2f,
+                barWidth / 2f,
+                barPaint,
+            )
+        }
 
         val lines = document.lyrics.lines
         val active = if (lines.any { it.startMs != null }) {
@@ -171,23 +247,34 @@ object LyricVideoRenderer {
         }
         val lyricPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = 0xFFFFFFFF.toInt()
-            textSize = 64f
+            textSize = 60f
             isFakeBoldText = true
         }
         val nextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = 0xB3FFFFFF.toInt()
             textSize = 40f
         }
-        val currentText = lines.getOrNull(active)?.text ?: "Sing with SwaraLab"
+        val currentText = lines.getOrNull(active)?.text ?: document.title.ifBlank { "Sing with SwaraLab" }
         val nextText = lines.getOrNull(active + 1)?.text.orEmpty()
-        drawWrapped(canvas, currentText, left + 28f, bottom - 220f, right - left - 56f, lyricPaint)
+        drawWrapped(canvas, currentText, leftInset + 28f, bottomInset - 240f, rightInset - leftInset - 56f, lyricPaint)
         if (nextText.isNotBlank()) {
-            drawWrapped(canvas, nextText, left + 28f, bottom - 100f, right - left - 56f, nextPaint)
+            drawWrapped(canvas, nextText, leftInset + 28f, bottomInset - 110f, rightInset - leftInset - 56f, nextPaint)
         }
 
-        val pulse = 0.18f + 0.08f * kotlin.math.sin(timeMs / 180.0).toFloat()
-        val glow = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x4026A69A }
-        canvas.drawCircle(WIDTH / 2f, HEIGHT * 0.42f, WIDTH * pulse, glow)
+        val barY = bottomInset - 36f
+        val trackPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0x33FFFFFF
+            style = Paint.Style.FILL
+        }
+        val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0xFF26A69A.toInt()
+            style = Paint.Style.FILL
+        }
+        val barLeft = leftInset + 28f
+        val barRight = rightInset - 28f
+        canvas.drawRoundRect(RectF(barLeft, barY, barRight, barY + 10f), 5f, 5f, trackPaint)
+        val fillRight = barLeft + (barRight - barLeft) * progress.coerceIn(0f, 1f)
+        canvas.drawRoundRect(RectF(barLeft, barY, fillRight, barY + 10f), 5f, 5f, fillPaint)
     }
 
     private fun drawWrapped(
@@ -214,10 +301,9 @@ object LyricVideoRenderer {
         if (line.isNotBlank()) canvas.drawText(line, x, cursorY, paint)
     }
 
-    private fun rgbToNv12(bitmap: Bitmap, out: ByteArray) {
+    private fun rgbToNv12(bitmap: Bitmap, pixels: IntArray, out: ByteArray) {
         val width = bitmap.width
         val height = bitmap.height
-        val pixels = IntArray(width * height)
         bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
         var yIndex = 0
         var uvIndex = width * height

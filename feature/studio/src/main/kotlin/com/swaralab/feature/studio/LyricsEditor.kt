@@ -1,5 +1,6 @@
 package com.swaralab.feature.studio
 
+import android.os.SystemClock
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -12,7 +13,10 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -24,6 +28,7 @@ import com.swaralab.domain.usecase.encodeLyricLines
 import com.swaralab.domain.usecase.parseLyricClock
 import com.swaralab.ui.SwaraColors
 import java.util.UUID
+import kotlinx.coroutines.delay
 
 data class EditableLyricLine(
     val id: String = UUID.randomUUID().toString(),
@@ -52,12 +57,71 @@ fun LyricsEditor(
             },
         )
     }
+    var tapSyncRunning by remember { mutableStateOf(false) }
+    var tapSyncStartRealtime by remember { mutableLongStateOf(0L) }
+    var tapSyncElapsedMs by remember { mutableLongStateOf(0L) }
+    var tapSyncLineIndex by remember { mutableIntStateOf(0) }
+    LaunchedEffect(tapSyncRunning) {
+        if (!tapSyncRunning) return@LaunchedEffect
+        while (tapSyncRunning) {
+            tapSyncElapsedMs = (SystemClock.elapsedRealtime() - tapSyncStartRealtime).coerceAtLeast(0L)
+            delay(100L)
+        }
+    }
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text(
-            "One line per row. Times can be rough — every 4 or 5 seconds is enough.",
+            "One line per row. Times can be rough — every 4 or 5 seconds is enough, or use Tap-Sync below.",
             style = MaterialTheme.typography.bodyMedium,
             color = SwaraColors.Muted,
         )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (!tapSyncRunning) {
+                OutlinedButton(
+                    onClick = {
+                        tapSyncLineIndex = 0
+                        tapSyncStartRealtime = SystemClock.elapsedRealtime()
+                        tapSyncElapsedMs = 0L
+                        tapSyncRunning = true
+                    },
+                ) {
+                    Text("Start Tap-Sync timer")
+                }
+                OutlinedButton(
+                    onClick = {
+                        lines = lines.mapIndexed { idx, row ->
+                            row.copy(startTimeMs = idx * 4_500L)
+                        }
+                    },
+                ) {
+                    Text("Auto-space 4.5s")
+                }
+            } else {
+                val targetIdx = tapSyncLineIndex.coerceIn(0, lines.lastIndex)
+                Button(
+                    onClick = {
+                        val stamped = tapSyncElapsedMs
+                        lines = lines.toMutableList().apply {
+                            this[targetIdx] = this[targetIdx].copy(startTimeMs = stamped)
+                        }
+                        if (targetIdx + 1 < lines.size) {
+                            tapSyncLineIndex = targetIdx + 1
+                        } else {
+                            tapSyncRunning = false
+                        }
+                    },
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text("Stamp line ${targetIdx + 1} (${formatEditorTime(tapSyncElapsedMs)})")
+                }
+                TextButton(onClick = { tapSyncRunning = false }) {
+                    Text("Done")
+                }
+            }
+        }
         lines.forEachIndexed { index, line ->
             LyricEditorItem(
                 line = line,

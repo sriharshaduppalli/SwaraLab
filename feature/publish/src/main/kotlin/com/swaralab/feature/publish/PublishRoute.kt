@@ -88,6 +88,7 @@ data class TrackMixRowUi(
     val mute: Boolean,
     val solo: Boolean = false,
     val pan: Float = 0f,
+    val isBacking: Boolean = false,
 )
 
 data class PublishUi(
@@ -110,6 +111,9 @@ data class PublishUi(
     val backingPath: String? = null,
     val stems: StemSelection = StemSelection(),
     val exportProgress: Float = 0f,
+    val clipDurationSec: Int = 0,
+    val clipStartSec: Int = 0,
+    val totalDurationSec: Int = 180,
 )
 
 class PublishViewModel(
@@ -189,6 +193,15 @@ class PublishViewModel(
         val current = uiState.value ?: return
         uiState.value = current.copy(syncOffsetMs = offsetMs)
         scheduleSliderSave()
+    }
+
+    fun setClipWindow(durationSec: Int, startSec: Int = uiState.value?.clipStartSec ?: 0) {
+        val current = uiState.value ?: return
+        val maxStart = (current.totalDurationSec - durationSec).coerceAtLeast(0)
+        uiState.value = current.copy(
+            clipDurationSec = durationSec.coerceAtLeast(0),
+            clipStartSec = if (durationSec <= 0) 0 else startSec.coerceIn(0, maxStart),
+        )
     }
 
     fun updateChainSliders(
@@ -318,6 +331,13 @@ class PublishViewModel(
         viewModelScope.launch {
             val current = uiState.value ?: return@launch
             if (current.busy) return@launch
+            if (packageName == null &&
+                !current.exportedRelativePath.isNullOrBlank() &&
+                current.exportedRelativePath.endsWith(".mp4", ignoreCase = true)
+            ) {
+                shareExportToApps(context, null)
+                return@launch
+            }
             val kind = shareKindFor(current, packageName)
             sliderSaveJob?.cancel()
             flushSlidersToDisk()
@@ -331,7 +351,17 @@ class PublishViewModel(
                 return@launch
             }
             val aimed = document.copy(publish = document.publish.withTarget(current.target))
-            when (val result = render.export(aimed, ExportRequest(current.target, kind))) {
+            when (
+                val result = render.export(
+                    aimed,
+                    ExportRequest(
+                        target = current.target,
+                        kind = kind,
+                        clipStartMs = current.clipStartSec * 1000L,
+                        clipDurationMs = current.clipDurationSec * 1000L,
+                    ),
+                )
+            ) {
                 is ExportResult.Written -> {
                     val shareable = ensureWhatsAppSize(aimed, result.relativePath)
                     exportedRelativePath = shareable
@@ -359,7 +389,12 @@ class PublishViewModel(
             val document = loadSession(sessionId) ?: return@launch
             when (val result = render.export(
                 document,
-                ExportRequest(document.publish.target, ExportKind.MIX),
+                ExportRequest(
+                    target = document.publish.target,
+                    kind = ExportKind.MIX,
+                    clipStartMs = current.clipStartSec * 1000L,
+                    clipDurationMs = current.clipDurationSec * 1000L,
+                ),
             ) { progress ->
                 uiState.value = uiState.value?.copy(exportProgress = progress)
             }) {
@@ -395,7 +430,7 @@ class PublishViewModel(
         )
     }
 
-    fun exportKind(kind: ExportKind) {
+    fun exportKind(kind: ExportKind, autoShareContext: Context? = null) {
         viewModelScope.launch {
             val current = uiState.value ?: return@launch
             if (current.busy) return@launch
@@ -407,27 +442,35 @@ class PublishViewModel(
                 ExportKind.BACKING -> "Exporting backing stem..."
                 ExportKind.COMPACT -> "Encoding compact audio for WhatsApp and Reels..."
                 ExportKind.VIDEO -> "Mixing your camera take..."
-                ExportKind.LYRIC_VIDEO -> "Rendering lyric card..."
+                ExportKind.LYRIC_VIDEO -> "Rendering 9:16 lyric video..."
                 ExportKind.MIX -> "Mixing backing music & vocal tracks..."
                 ExportKind.STEMS -> "Exporting mix, vocals, backing, and each layer..."
             }
             uiState.value = current.copy(busy = true, status = label, exportProgress = 0.02f)
             val document = loadSession(sessionId) ?: return@launch
+            var writtenOk = false
             when (val result = render.export(
                 document,
-                ExportRequest(document.publish.target, kind, stems = current.stems),
+                ExportRequest(
+                    target = document.publish.target,
+                    kind = kind,
+                    stems = current.stems,
+                    clipStartMs = current.clipStartSec * 1000L,
+                    clipDurationMs = current.clipDurationSec * 1000L,
+                ),
             ) { progress ->
                 uiState.value = uiState.value?.copy(exportProgress = progress)
             }) {
                 is ExportResult.Written -> {
+                    writtenOk = true
                     exportedRelativePath = result.relativePath
                     exportedMime = mimeFor(result.relativePath)
                     status = when (kind) {
                         ExportKind.VOCALS -> "Vocals stem ready. Share or save it."
                         ExportKind.BACKING -> "Backing stem ready. Share or save it."
                         ExportKind.COMPACT -> "Compact M4A ready for WhatsApp, Reels, and Shorts."
-                        ExportKind.VIDEO -> "Camera take ready. Share the MP4 to Reels or Shorts."
-                        ExportKind.LYRIC_VIDEO -> "Lyric card ready. Share the MP4."
+                        ExportKind.VIDEO -> "Camera take MP4 ready. Opening Share..."
+                        ExportKind.LYRIC_VIDEO -> "9:16 Lyric Video ready (${result.durationMs / 1000}s). Opening Share..."
                         ExportKind.MIX -> "Master mix ready. Tap Play, Share, or Save."
                         ExportKind.STEMS -> "Stems ready: mix, dry lead, all vocals, and each layer."
                     }
@@ -435,6 +478,9 @@ class PublishViewModel(
                 is ExportResult.Waiting -> status = result.message
             }
             refresh()
+            if (writtenOk && autoShareContext != null) {
+                shareExportToApps(autoShareContext)
+            }
         }
     }
 
@@ -498,29 +544,40 @@ class PublishViewModel(
                 }
             }
             val fileName = File(sharePath).name.ifBlank { "swaralab-mix.m4a" }
+            val isVideo = exportedMime.startsWith("video/")
+            val isZip = exportedMime.contains("zip")
             val uri = withContext(Dispatchers.IO) {
                 runCatching {
                     val resolver = context.contentResolver
+                    val relativeDir = when {
+                        isVideo -> Environment.DIRECTORY_MOVIES + "/SwaraLab"
+                        isZip -> Environment.DIRECTORY_DOWNLOADS + "/SwaraLab"
+                        else -> Environment.DIRECTORY_MUSIC + "/SwaraLab"
+                    }
                     val values = ContentValues().apply {
-                        put(MediaStore.Audio.Media.DISPLAY_NAME, fileName)
-                        put(MediaStore.Audio.Media.TITLE, current.title)
-                        put(MediaStore.Audio.Media.MIME_TYPE, exportedMime)
+                        put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
+                        put(MediaStore.MediaColumns.TITLE, current.title)
+                        put(MediaStore.MediaColumns.MIME_TYPE, exportedMime)
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                            put(MediaStore.Audio.Media.RELATIVE_PATH, Environment.DIRECTORY_MUSIC + "/SwaraLab")
-                            put(MediaStore.Audio.Media.IS_PENDING, 1)
+                            put(MediaStore.MediaColumns.RELATIVE_PATH, relativeDir)
+                            put(MediaStore.MediaColumns.IS_PENDING, 1)
                         }
                     }
                     val collection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                         when {
-                            exportedMime.startsWith("video/") ->
+                            isVideo ->
                                 MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
-                            exportedMime.contains("zip") ->
+                            isZip ->
                                 MediaStore.Downloads.EXTERNAL_CONTENT_URI
                             else ->
                                 MediaStore.Audio.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
                         }
                     } else {
-                        MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
+                        if (isVideo) {
+                            MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+                        } else {
+                            MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
+                        }
                     }
                     val inserted = resolver.insert(collection, values) ?: return@runCatching null
                     resolver.openOutputStream(inserted)?.use { out ->
@@ -528,7 +585,7 @@ class PublishViewModel(
                     }
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                         val ready = ContentValues().apply {
-                            put(MediaStore.Audio.Media.IS_PENDING, 0)
+                            put(MediaStore.MediaColumns.IS_PENDING, 0)
                         }
                         resolver.update(inserted, ready, null, null)
                     }
@@ -543,10 +600,11 @@ class PublishViewModel(
                     title = current.title,
                     packageName = packageName,
                 )
+                val folderName = if (isVideo) "Movies/SwaraLab" else if (isZip) "Downloads/SwaraLab" else "Music/SwaraLab"
                 status = if (packageName != null) {
-                    "Saved to Music/SwaraLab and opened that app."
+                    "Saved to $folderName and opened that app."
                 } else {
-                    "Saved to Music/SwaraLab. WhatsApp, Instagram, and YouTube sit first if they are on this phone."
+                    "Saved to $folderName. WhatsApp, Instagram, and YouTube sit first if they are on this phone."
                 }
                 refresh()
             } else {
@@ -604,8 +662,15 @@ class PublishViewModel(
                         mute = track.mute,
                         solo = track.solo,
                         pan = track.pan,
+                        isBacking = track.role == TrackRole.BACKING,
                     )
                 }
+            val maxDurMs = document.tracks
+                .flatMap { it.clips }
+                .maxOfOrNull { it.timelineStartMs + it.durationMs }
+                ?.coerceAtLeast(15_000L)
+                ?: 180_000L
+            val totalSec = ((maxDurMs + 999L) / 1000L).toInt().coerceAtLeast(15)
             uiState.value = PublishUi(
                 title = document.title,
                 target = publish.target,
@@ -621,6 +686,9 @@ class PublishViewModel(
                 previewDry = uiState.value?.previewDry ?: false,
                 keyName = document.musical.keyName ?: "C",
                 stems = uiState.value?.stems ?: StemSelection(),
+                clipDurationSec = uiState.value?.clipDurationSec ?: 0,
+                clipStartSec = uiState.value?.clipStartSec ?: 0,
+                totalDurationSec = totalSec,
                 vocalPath = document.tracks
                     .filter { it.role != TrackRole.BACKING }
                     .flatMap { it.clips }
@@ -897,7 +965,13 @@ private fun shareKindFor(current: PublishUi, packageName: String?): ExportKind {
     val pkg = packageName.orEmpty()
     val whatsApp = pkg.contains("whatsapp") || current.target == PublishTarget.WHATSAPP
     if (whatsApp) return ExportKind.COMPACT
-    if (pkg.contains("instagram") || pkg.contains("youtube")) {
+    val wantsVideo = pkg.contains("instagram") ||
+        pkg.contains("youtube") ||
+        current.target == PublishTarget.REELS ||
+        current.target == PublishTarget.SHORTS ||
+        current.target == PublishTarget.SQUARE ||
+        current.target == PublishTarget.LANDSCAPE
+    if (wantsVideo) {
         return if (current.hasCameraVideo) ExportKind.VIDEO else ExportKind.LYRIC_VIDEO
     }
     return ExportKind.COMPACT
