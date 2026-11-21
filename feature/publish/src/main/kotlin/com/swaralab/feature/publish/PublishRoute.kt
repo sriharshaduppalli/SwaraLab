@@ -141,7 +141,8 @@ class PublishViewModel(
 
     fun select(target: PublishTarget) {
         val current = uiState.value ?: return
-        uiState.value = current.copy(target = target, status = null)
+        exportedRelativePath = null
+        uiState.value = current.copy(target = target, exportedRelativePath = null, status = null)
         viewModelScope.launch {
             updatePublish(sessionId, target)
             status = null
@@ -154,7 +155,8 @@ class PublishViewModel(
         val updatedTracks = current.tracks.map {
             if (it.id == trackId) it.copy(gainDb = gainDb) else it
         }
-        uiState.value = current.copy(tracks = updatedTracks)
+        exportedRelativePath = null
+        uiState.value = current.copy(tracks = updatedTracks, exportedRelativePath = null)
         scheduleSliderSave()
     }
 
@@ -163,7 +165,8 @@ class PublishViewModel(
         val updatedTracks = current.tracks.map {
             if (it.id == trackId) it.copy(pan = pan.coerceIn(-1f, 1f)) else it
         }
-        uiState.value = current.copy(tracks = updatedTracks)
+        exportedRelativePath = null
+        uiState.value = current.copy(tracks = updatedTracks, exportedRelativePath = null)
         scheduleSliderSave()
     }
 
@@ -174,7 +177,8 @@ class PublishViewModel(
         val updatedTracks = current.tracks.map {
             if (it.id == trackId) it.copy(solo = nextSolo) else it
         }
-        uiState.value = current.copy(tracks = updatedTracks)
+        exportedRelativePath = null
+        uiState.value = current.copy(tracks = updatedTracks, exportedRelativePath = null)
         scheduleSliderSave()
     }
 
@@ -185,22 +189,26 @@ class PublishViewModel(
         val updatedTracks = current.tracks.map {
             if (it.id == trackId) it.copy(mute = nextMute) else it
         }
-        uiState.value = current.copy(tracks = updatedTracks)
+        exportedRelativePath = null
+        uiState.value = current.copy(tracks = updatedTracks, exportedRelativePath = null)
         scheduleSliderSave()
     }
 
     fun setSyncOffset(offsetMs: Float) {
         val current = uiState.value ?: return
-        uiState.value = current.copy(syncOffsetMs = offsetMs)
+        exportedRelativePath = null
+        uiState.value = current.copy(syncOffsetMs = offsetMs, exportedRelativePath = null)
         scheduleSliderSave()
     }
 
     fun setClipWindow(durationSec: Int, startSec: Int = uiState.value?.clipStartSec ?: 0) {
         val current = uiState.value ?: return
         val maxStart = (current.totalDurationSec - durationSec).coerceAtLeast(0)
+        exportedRelativePath = null
         uiState.value = current.copy(
             clipDurationSec = durationSec.coerceAtLeast(0),
             clipStartSec = if (durationSec <= 0) 0 else startSec.coerceIn(0, maxStart),
+            exportedRelativePath = null,
         )
     }
 
@@ -238,7 +246,8 @@ class PublishViewModel(
             noiseGate = noiseGate,
             pitchSpeed = pitchSpeed,
         )
-        uiState.value = current.copy(chain = updatedChain)
+        exportedRelativePath = null
+        uiState.value = current.copy(chain = updatedChain, exportedRelativePath = null)
         scheduleSliderSave()
     }
 
@@ -251,10 +260,10 @@ class PublishViewModel(
     private fun scheduleSliderSave() {
         sliderSaveJob?.cancel()
         sliderSaveJob = viewModelScope.launch {
-            delay(160L)
+            delay(320L)
             flushSlidersToDisk()
             if (uiState.value?.previewDry == false && audio.state.value.playingRelativePath == "preview-mix") {
-                playCurrentPreview()
+                playCurrentPreview(maxDurationMs = 25_000L)
             }
         }
     }
@@ -292,7 +301,7 @@ class PublishViewModel(
         playCurrentPreview()
     }
 
-    fun playCurrentPreview() {
+    fun playCurrentPreview(maxDurationMs: Long = 0L) {
         viewModelScope.launch {
             val snap = uiState.value ?: return@launch
             sliderSaveJob?.cancel()
@@ -314,7 +323,7 @@ class PublishViewModel(
                     chain = snap.chain,
                     publish = document.publish.withTarget(snap.target),
                 )
-                val preview = render.preview(aimed, 0L)
+                val preview = render.preview(aimed, maxDurationMs)
                 if (preview != null) {
                     audio.playPcm(sessionId, preview.left, preview.right, preview.sampleRate, loop = false)
                     val lufs = aimed.publish.loudnessLufs.toInt()

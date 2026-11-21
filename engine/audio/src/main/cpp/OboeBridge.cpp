@@ -154,7 +154,7 @@ public:
             return oboe::DataCallbackResult::Continue;
         }
         if (stream == input.get()) {
-            copyInput(audioData, numFrames, stream->getFormat());
+            copyInput(audioData, numFrames, std::max(1, stream->getChannelCount()), stream->getFormat());
             cv.notify_all();
             return oboe::DataCallbackResult::Continue;
         }
@@ -167,29 +167,54 @@ public:
         cv.notify_all();
     }
 
+    void resetDcBlocker() {
+        inDcX = 0.f;
+        inDcY = 0.f;
+    }
+
 private:
-    void copyInput(void *audioData, int32_t numFrames, oboe::AudioFormat format) {
+    float inDcX{0.f};
+    float inDcY{0.f};
+
+    void copyInput(void *audioData, int32_t numFrames, int32_t channelCount, oboe::AudioFormat format) {
+        const int32_t ch = std::max(1, channelCount);
+        constexpr float dcA = 0.9974f; // ~20 Hz subsonic DC blocker at 48 kHz
+        int16_t tmp[1024];
+        int32_t left = numFrames;
+        int32_t frameOff = 0;
         if (format == oboe::AudioFormat::I16) {
             auto *src = static_cast<const int16_t *>(audioData);
-            dry.write(src, numFrames);
-            tap.write(src, numFrames);
+            while (left > 0) {
+                int32_t n = std::min(left, 1024);
+                for (int32_t i = 0; i < n; ++i) {
+                    float x = src[(frameOff + i) * ch] / 32768.f;
+                    float y = dcA * (inDcY + x - inDcX);
+                    inDcX = x;
+                    inDcY = y;
+                    tmp[i] = static_cast<int16_t>(std::clamp(y, -1.f, 1.f) * 32767.f);
+                }
+                dry.write(tmp, n);
+                tap.write(tmp, n);
+                left -= n;
+                frameOff += n;
+            }
             return;
         }
         if (format != oboe::AudioFormat::Float) return;
         auto *src = static_cast<const float *>(audioData);
-        int16_t tmp[1024];
-        int32_t left = numFrames;
-        int32_t off = 0;
         while (left > 0) {
             int32_t n = std::min(left, 1024);
             for (int32_t i = 0; i < n; ++i) {
-                float x = std::clamp(src[off + i], -1.f, 1.f);
-                tmp[i] = static_cast<int16_t>(x * 32767.f);
+                float x = std::clamp(src[(frameOff + i) * ch], -1.f, 1.f);
+                float y = dcA * (inDcY + x - inDcX);
+                inDcX = x;
+                inDcY = y;
+                tmp[i] = static_cast<int16_t>(std::clamp(y, -1.f, 1.f) * 32767.f);
             }
             dry.write(tmp, n);
             tap.write(tmp, n);
             left -= n;
-            off += n;
+            frameOff += n;
         }
     }
 
@@ -248,12 +273,20 @@ void MixerState::render(void *audioData, int32_t numFrames, int32_t channelCount
             if (b <= a) b = bedLen;
             if (b > bedLen) b = bedLen;
             if (head >= b || head >= bedLen) {
-                head = doLoop ? a : std::max(0, bedLen - 1);
-            }
-            bed = bedPtr[head] / 32768.f;
-            if (head < b - 1 || doLoop) {
+                if (doLoop) {
+                    head = a;
+                    bed = bedPtr[head] / 32768.f;
+                    head++;
+                } else {
+                    head = b;
+                    bed = 0.f;
+                }
+            } else {
+                bed = bedPtr[head] / 32768.f;
                 head++;
-                if (head >= b) head = doLoop ? a : b - 1;
+                if (head >= b && doLoop) {
+                    head = a;
+                }
             }
         }
         float out = std::clamp(wet * vg + bed * tg, -1.f, 1.f);
@@ -341,6 +374,7 @@ Java_com_swaralab_engine_audio_OboeMic_nativeStart(
     closeAll();
     gEngine.dry.reset();
     gEngine.tap.reset();
+    gEngine.resetDcBlocker();
     gEngine.mix.playHead.store(0);
     gEngine.mix.paused.store(false);
     gEngine.mix.rev = 0.f;

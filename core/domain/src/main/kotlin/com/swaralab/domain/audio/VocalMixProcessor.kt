@@ -285,6 +285,9 @@ object VocalMixProcessor {
         val rumbleBins = ((90.0 * n) / sampleRate).toInt().coerceAtLeast(1)
         val hissBin = ((4_200.0 * n) / sampleRate).toInt()
         val airBin = ((7_500.0 * n) / sampleRate).toInt()
+        val prevGain = FloatArray(n / 2 + 1) { 1f }
+        val rawGain = FloatArray(n / 2 + 1)
+        val smoothGain = FloatArray(n / 2 + 1)
         for (f in 0 until frameCount) {
             val speech = rms[f] / (quietLimit + 1e-8f)
             val frameGate = if (speech < 1.65f) {
@@ -305,7 +308,25 @@ object VocalMixProcessor {
                 if (k <= rumbleBins) gain *= 0.34f
                 if (k >= hissBin) gain *= 1f - amount * 0.22f
                 if (k >= airBin) gain *= 1f - amount * 0.18f
-                mag[f][k] = sMag * (gain * frameGate).coerceIn(0.002f, 1f)
+                rawGain[k] = (gain * frameGate).coerceIn(0.002f, 1f)
+            }
+            // Smooth noise-dominated bins across frequency & time to prevent "musical noise" chirps while keeping vocal harmonics untouched
+            val lastK = rawGain.lastIndex
+            for (k in rawGain.indices) {
+                val g = rawGain[k]
+                val smoothed = if (g >= 0.42f) {
+                    g
+                } else {
+                    val adj = when (k) {
+                        0 -> 0.75f * g + 0.25f * rawGain[min(1, lastK)]
+                        lastK -> 0.75f * g + 0.25f * rawGain[max(0, lastK - 1)]
+                        else -> 0.20f * rawGain[k - 1] + 0.60f * g + 0.20f * rawGain[k + 1]
+                    }
+                    if (f == 0) adj else 0.25f * prevGain[k] + 0.75f * adj
+                }
+                smoothGain[k] = smoothed
+                prevGain[k] = smoothed
+                mag[f][k] = mag[f][k] * smoothed.coerceIn(0.002f, 1f)
             }
         }
 
@@ -361,8 +382,10 @@ object VocalMixProcessor {
             val local = sqrt(
                 ((energy[left1] - energy[left0]) + (energy[right1] - energy[right0])) / count,
             ).toFloat()
-            if (local < 0.12f) {
-                samples[i] *= (0.06f / a).coerceIn(0.03f, 0.40f)
+            if (local < 0.115f) {
+                // Monotonic soft-knee transient attenuation in quiet gaps
+                val compressedMag = 0.06f + 0.05f * (a - 0.10f)
+                samples[i] *= (compressedMag / a).coerceIn(0.03f, 0.45f)
             }
         }
     }
@@ -370,16 +393,19 @@ object VocalMixProcessor {
     private fun gateGaps(samples: FloatArray, amount: Float) {
         val threshold = (0.0075f + (1f - amount.coerceIn(0f, 1f)) * 0.006f)
         var env = 0f
+        var smoothGate = 0.02f
         for (i in samples.indices) {
             val mag = abs(samples[i])
             val attack = if (env < threshold * 1.5f) 0.048f else 0.22f
-            env = if (mag > env) env + attack * (mag - env) else env * 0.9958f
-            val gate = if (env < threshold) {
+            env = if (mag > env) env + attack * (mag - env) else env * 0.9968f
+            val targetGate = if (env < threshold) {
                 (env / threshold).pow(2.4f + amount * 0.9f).coerceIn(0.008f, 1f)
             } else {
                 1f
             }
-            samples[i] *= gate
+            val gateStep = if (targetGate > smoothGate) 0.20f else 0.04f
+            smoothGate += gateStep * (targetGate - smoothGate)
+            samples[i] *= smoothGate
         }
     }
 
@@ -426,18 +452,24 @@ object VocalMixProcessor {
     }
 
     private fun deEss(samples: FloatArray, sampleRate: Int, amount: Float) {
-        val band = Biquad.bandPass(sampleRate, 7000.0, q = 1.1)
+        val band = Biquad.bandPass(sampleRate, 6800.0, q = 1.0)
         var ess = 0f
         var body = 0f
+        var smoothCut = 0f
         for (i in samples.indices) {
             val x = samples[i]
-            val s = abs(band.process(x))
-            ess = if (s > ess) s else ess * 0.96f
-            body = if (abs(x) > body) abs(x) else body * 0.99f
-            if (ess > body * 0.42f && body > 0.02f) {
-                val cut = 1f - amount * 0.55f * ((ess / (body + 1e-4f) - 0.42f).coerceIn(0f, 1.4f))
-                samples[i] = x * cut.coerceIn(0.35f, 1f)
+            val sBand = band.process(x)
+            val s = abs(sBand)
+            ess = if (s > ess) ess + 0.04f * (s - ess) else ess * 0.992f
+            body = if (abs(x) > body) body + 0.02f * (abs(x) - body) else body * 0.996f
+            val targetCut = if (ess > body * 0.40f && body > 0.018f) {
+                (amount * 0.65f * ((ess / (body + 1e-4f) - 0.40f).coerceIn(0f, 1.4f))).coerceIn(0f, 0.72f)
+            } else {
+                0f
             }
+            smoothCut += 0.03f * (targetCut - smoothCut)
+            // Split-band subtraction removes harsh sibilance without ducking warm vocal body
+            samples[i] = x - sBand * smoothCut
         }
     }
 
@@ -521,23 +553,58 @@ object VocalMixProcessor {
     }
 
     private fun addReverb(wet: FloatArray, dry: FloatArray, sampleRate: Int, amount: Float) {
-        val taps = intArrayOf(
-            (sampleRate * 0.029).toInt(),
-            (sampleRate * 0.053).toInt(),
-            (sampleRate * 0.083).toInt(),
-            (sampleRate * 0.127).toInt(),
-            (sampleRate * 0.181).toInt(),
+        if (dry.isEmpty() || amount <= 0.005f) return
+        val preDelay = (sampleRate * 0.022).toInt().coerceAtLeast(1)
+        val combDelays = intArrayOf(
+            (sampleRate * 0.0297).toInt().coerceAtLeast(1),
+            (sampleRate * 0.0371).toInt().coerceAtLeast(1),
+            (sampleRate * 0.0411).toInt().coerceAtLeast(1),
+            (sampleRate * 0.0437).toInt().coerceAtLeast(1),
         )
-        val weights = floatArrayOf(0.28f, 0.22f, 0.16f, 0.12f, 0.08f)
-        val mix = amount * 0.30f
-        val lp = Biquad.lowPass(sampleRate, 4_200.0)
+        val combBuffers = Array(combDelays.size) { idx -> FloatArray(combDelays[idx]) }
+        val combIndices = IntArray(combDelays.size)
+        val combFilterStates = FloatArray(combDelays.size)
+        val feedback = (0.48f + amount * 0.24f).coerceIn(0.42f, 0.74f)
+        val damp = 0.32f
+
+        val apDelay1 = (sampleRate * 0.0050).toInt().coerceAtLeast(1)
+        val apDelay2 = (sampleRate * 0.0017).toInt().coerceAtLeast(1)
+        val apBuf1 = FloatArray(apDelay1)
+        val apBuf2 = FloatArray(apDelay2)
+        var apIdx1 = 0
+        var apIdx2 = 0
+
+        val hpMud = Biquad.highPass(sampleRate, 185.0)
+        val lpWarm = Biquad.lowPass(sampleRate, 4_200.0)
+        val mix = amount * 0.26f
+
         for (i in dry.indices) {
-            var room = 0f
-            for (t in taps.indices) {
-                val idx = i - taps[t]
-                if (idx >= 0) room += dry[idx] * weights[t]
+            val srcIdx = i - preDelay
+            val input = if (srcIdx >= 0) hpMud.process(dry[srcIdx]) * 0.25f else 0f
+            var sum = 0f
+            for (c in combDelays.indices) {
+                val buf = combBuffers[c]
+                val idx = combIndices[c]
+                val delayed = buf[idx]
+                val filtered = delayed * (1f - damp) + combFilterStates[c] * damp
+                combFilterStates[c] = filtered
+                buf[idx] = input + filtered * feedback
+                combIndices[c] = if (idx + 1 >= buf.size) 0 else idx + 1
+                sum += delayed
             }
-            wet[i] += lp.process(room) * mix
+            // All-pass diffuser 1
+            val bufOut1 = apBuf1[apIdx1]
+            val apOut1 = -sum * 0.5f + bufOut1
+            apBuf1[apIdx1] = sum + bufOut1 * 0.5f
+            apIdx1 = if (apIdx1 + 1 >= apDelay1) 0 else apIdx1 + 1
+
+            // All-pass diffuser 2
+            val bufOut2 = apBuf2[apIdx2]
+            val apOut2 = -apOut1 * 0.5f + bufOut2
+            apBuf2[apIdx2] = apOut1 + bufOut2 * 0.5f
+            apIdx2 = if (apIdx2 + 1 >= apDelay2) 0 else apIdx2 + 1
+
+            wet[i] += lpWarm.process(apOut2) * mix
         }
     }
 
@@ -583,24 +650,30 @@ object VocalMixProcessor {
         val window = FloatArray(frame) { i -> (0.5f * (1.0 - cos(2.0 * PI * i / (frame - 1))).toFloat()) }
         val centsLimit = 28.0 + speed.coerceIn(0f, 1f) * 55.0
         val ratioLimit = 0.03f + speed.coerceIn(0f, 1f) * 0.03f
+        val half = frame * 0.5f
+        var smoothedRatio = 1f
         var pos = 0
         while (pos + frame <= samples.size) {
             val slice = FloatArray(frame) { i -> samples[pos + i] }
             val hz = VocalSignalAnalyzer.detectPitchHz(slice, frame, sampleRate)
-            var ratio = 1f
+            var targetRatio = 1f
             if (hz > 70f) {
                 val target = nearestScaleHz(hz, scale)
                 val cents = (1200.0 * kotlin.math.ln((hz / target).toDouble()) / kotlin.math.ln(2.0))
                     .coerceIn(-centsLimit, centsLimit)
                 val correctCents = -cents * strength.coerceIn(0f, 1f)
-                ratio = 2.0.pow(correctCents / 1200.0).toFloat().coerceIn(1f - ratioLimit, 1f + ratioLimit)
+                targetRatio = 2.0.pow(correctCents / 1200.0).toFloat().coerceIn(1f - ratioLimit, 1f + ratioLimit)
             }
-            val shifted = resample(slice, ratio)
-            val n = min(frame, shifted.size)
-            for (i in 0 until n) {
+            smoothedRatio = 0.65f * smoothedRatio + 0.35f * targetRatio
+            for (i in 0 until frame) {
                 val dest = pos + i
                 if (dest < out.size) {
-                    out[dest] += shifted[i] * window[i]
+                    val srcPos = ((i - half) * smoothedRatio + half).coerceIn(0f, (frame - 1).toFloat())
+                    val idx0 = srcPos.toInt().coerceIn(0, frame - 1)
+                    val idx1 = (idx0 + 1).coerceAtMost(frame - 1)
+                    val frac = srcPos - idx0
+                    val interp = slice[idx0] * (1f - frac) + slice[idx1] * frac
+                    out[dest] += interp * window[i]
                     weight[dest] += window[i]
                 }
             }
@@ -649,9 +722,19 @@ object VocalMixProcessor {
         val peakAfter = (peak * loudnessGain).coerceAtLeast(1e-6f)
         val scale = if (peakAfter > ceiling) ceiling / peakAfter else loudnessGain
         for (i in 0 until n) {
-            left[i] = (left[i] * scale).coerceIn(-ceiling, ceiling)
-            right[i] = (right[i] * scale).coerceIn(-ceiling, ceiling)
+            left[i] = softLimitSample(left[i] * scale, ceiling)
+            right[i] = softLimitSample(right[i] * scale, ceiling)
         }
+    }
+
+    private fun softLimitSample(sample: Float, ceiling: Float): Float {
+        val knee = ceiling * 0.90f
+        val mag = abs(sample)
+        if (mag <= knee) return sample
+        val sign = if (sample >= 0f) 1f else -1f
+        val span = (ceiling - knee).coerceAtLeast(1e-4f)
+        val compressed = knee + span * kotlin.math.tanh(((mag - knee) / span).toDouble()).toFloat()
+        return (sign * compressed).coerceIn(-ceiling, ceiling)
     }
 
     private fun nearestScaleHz(hz: Float, scale: List<ScaleTargetNote>): Float {

@@ -30,7 +30,7 @@ object CompactAudioEncoder {
 
         val format = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, sampleRate, channels).apply {
             setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
-            setInteger(MediaFormat.KEY_BIT_RATE, if (stereo) 128_000 else 96_000)
+            setInteger(MediaFormat.KEY_BIT_RATE, if (stereo) 192_000 else 128_000)
             setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 32_768)
         }
         val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
@@ -45,6 +45,7 @@ object CompactAudioEncoder {
         var inputDone = false
         var outputDone = false
         val pcmChunk = ShortArray(1024 * channels)
+        val reusableBytes = ByteBuffer.allocate(pcmChunk.size * 2).order(ByteOrder.LITTLE_ENDIAN)
 
         while (!outputDone) {
             if (!inputDone) {
@@ -68,10 +69,10 @@ object CompactAudioEncoder {
                                     pcmChunk[w++] = max(Short.MIN_VALUE.toInt(), min(Short.MAX_VALUE.toInt(), r)).toShort()
                                 }
                             }
-                            val bytes = ByteBuffer.allocate(w * 2).order(ByteOrder.LITTLE_ENDIAN)
-                            for (i in 0 until w) bytes.putShort(pcmChunk[i])
-                            bytes.flip()
-                            inBuf.put(bytes)
+                            reusableBytes.clear()
+                            for (i in 0 until w) reusableBytes.putShort(pcmChunk[i])
+                            reusableBytes.flip()
+                            inBuf.put(reusableBytes)
                             val pts = (offset * 1_000_000L) / sampleRate
                             codec.queueInputBuffer(inIndex, 0, w * 2, pts, 0)
                             offset += count

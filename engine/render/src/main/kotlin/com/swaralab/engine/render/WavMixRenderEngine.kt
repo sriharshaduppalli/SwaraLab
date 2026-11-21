@@ -376,7 +376,8 @@ class WavMixRenderEngine(
     }
 
     private fun highPassInPlace(samples: FloatArray, sampleRate: Int) {
-        val rc = 1.0 / (2.0 * Math.PI * 80.0)
+        // 24 Hz subsonic DC blocker preserves backing kick & bass while removing DC offset
+        val rc = 1.0 / (2.0 * Math.PI * 24.0)
         val dt = 1.0 / sampleRate
         val a = (rc / (rc + dt)).toFloat()
         var prevX = samples.firstOrNull() ?: return
