@@ -59,8 +59,10 @@ object CameraMixMuxer {
         var outH = VideoFraming.PORTRAIT_HEIGHT
         for ((w, h) in sizes) {
             val tried = runCatching {
+                @Suppress("DEPRECATION")
+                val colorFormat = MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar
                 val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, w, h).apply {
-                    setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar)
+                    setInteger(MediaFormat.KEY_COLOR_FORMAT, colorFormat)
                     setInteger(MediaFormat.KEY_BIT_RATE, if (w >= 1080) 10_000_000 else 4_500_000)
                     setInteger(MediaFormat.KEY_FRAME_RATE, 30)
                     setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
