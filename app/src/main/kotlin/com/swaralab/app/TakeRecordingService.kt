@@ -21,32 +21,28 @@ class TakeRecordingService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        when (intent?.action) {
-            ACTION_STOP -> {
-                stopForeground(STOP_FOREGROUND_REMOVE)
-                stopSelf()
-                return START_NOT_STICKY
-            }
-            else -> {
-                ensureChannel()
-                val notification = buildNotification()
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                    ServiceCompat.startForeground(
-                        this,
-                        NOTIFICATION_ID,
-                        notification,
-                        ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE,
-                    )
-                } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    startForeground(
-                        NOTIFICATION_ID,
-                        notification,
-                        ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE,
-                    )
-                } else {
-                    startForeground(NOTIFICATION_ID, notification)
-                }
-            }
+        ensureChannel()
+        val notification = buildNotification()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            ServiceCompat.startForeground(
+                this,
+                NOTIFICATION_ID,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE,
+            )
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(
+                NOTIFICATION_ID,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE,
+            )
+        } else {
+            startForeground(NOTIFICATION_ID, notification)
+        }
+        if (intent?.action == ACTION_STOP) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return START_NOT_STICKY
         }
         return START_STICKY
     }
@@ -89,19 +85,23 @@ class TakeRecordingService : Service() {
         private const val NOTIFICATION_ID = 48
         const val ACTION_START = "com.swaralab.app.action.TAKE_RECORDING_START"
         const val ACTION_STOP = "com.swaralab.app.action.TAKE_RECORDING_STOP"
+        @Volatile
+        private var started = false
 
         fun start(context: Context) {
-            val intent = Intent(context, TakeRecordingService::class.java).setAction(ACTION_START)
+            started = true
+            val intent = Intent(context.applicationContext, TakeRecordingService::class.java).setAction(ACTION_START)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
+                context.applicationContext.startForegroundService(intent)
             } else {
-                context.startService(intent)
+                context.applicationContext.startService(intent)
             }
         }
 
         fun stop(context: Context) {
-            val intent = Intent(context, TakeRecordingService::class.java).setAction(ACTION_STOP)
-            context.startService(intent)
+            if (!started) return
+            started = false
+            context.applicationContext.stopService(Intent(context.applicationContext, TakeRecordingService::class.java))
         }
     }
 }
